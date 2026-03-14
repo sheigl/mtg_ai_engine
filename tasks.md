@@ -237,7 +237,7 @@
 
 ## Phase 6 — Training Data Export
 
-- [ ] TASK-20: Implement snapshot recorder in `export/snapshots.py`
+- [x] TASK-20: Implement snapshot recorder in `export/snapshots.py`
   - Hook into priority-grant events; record snapshot at each grant
   - `record_snapshot(game_state, legal_actions)` — stores in memory
   - `finalize_snapshot(action_taken)` — attaches the chosen action
@@ -245,7 +245,7 @@
   Done when: a 5-turn game produces snapshots at every priority grant
   with correct `action_taken` attached to each
 
-- [ ] TASK-21: Implement transcript recorder in `export/transcript.py`
+- [x] TASK-21: Implement transcript recorder in `export/transcript.py`
   - Event listener that appends to transcript on every engine event
   - Event types: cast, resolve, trigger, sba, zone_change, damage,
     phase_change, priority_grant, choice_made
@@ -253,7 +253,7 @@
   Done when: a complete game transcript is human-readable and
   every action in the game appears in order
 
-- [ ] TASK-22: Implement rules Q&A generator in `export/rules_qa.py`
+- [x] TASK-22: Implement rules Q&A generator in `export/rules_qa.py`
   - Hooks into: layer resolution, replacement effect application,
     damage assignment, SBA application, targeting validation
   - Templates Q&A pairs from context: card names, board state,
@@ -263,7 +263,7 @@
   produces at least 3 rules Q&A pairs with correct answers and
   CR citations
 
-- [ ] TASK-23: Implement outcome recorder and all export endpoints
+- [x] TASK-23: Implement outcome recorder and all export endpoints
   - `GET /export/{game_id}/snapshots` → JSONL file of all snapshots
   - `GET /export/{game_id}/transcript` → JSON array of transcript events
   - `GET /export/{game_id}/rules-qa` → JSON array of Q&A pairs

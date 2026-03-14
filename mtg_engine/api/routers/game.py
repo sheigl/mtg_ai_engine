@@ -93,6 +93,38 @@ def get_game(game_id: str) -> dict:
     return _ok(_get_gs(game_id))
 
 
+def _write_to_mongodb(game_id: str, gs: GameState) -> None:
+    """Write all four export documents to MongoDB. REQ-P03."""
+    from mtg_engine.export.store import get_export_store, delete_export_store
+    from mtg_engine.export.outcome import build_outcome
+    try:
+        import pymongo
+        client = pymongo.MongoClient("mongodb://localhost:27017/", serverSelectionTimeoutMS=1000)
+        db = client["mtg_training_data"]
+        store = get_export_store(game_id)
+        store.snapshots.flush()
+
+        snapshots = store.snapshots.get_all()
+        transcript = store.transcript.get_all()
+        qa_pairs = store.rules_qa.get_all()
+        outcome = build_outcome(gs, len(snapshots), len(transcript))
+
+        if snapshots:
+            db["snapshots"].insert_many([s.model_dump() for s in snapshots])
+        if transcript:
+            db["transcripts"].insert_one({"game_id": game_id, "entries": [e.model_dump() for e in transcript]})
+        if qa_pairs:
+            db["rules_qa"].insert_many([p.model_dump() for p in qa_pairs])
+        db["outcomes"].insert_one(outcome.model_dump())
+
+        logger.info("Exported game %s to MongoDB (%d snapshots, %d transcript entries, %d Q&A)",
+                    game_id, len(snapshots), len(transcript), len(qa_pairs))
+        delete_export_store(game_id)
+    except Exception as e:
+        logger.warning("MongoDB export failed for game %s: %s", game_id, e)
+        # REQ-P04: don't fail the DELETE if export fails
+
+
 @router.delete("/{game_id}")
 def delete_game(game_id: str) -> dict:
     """DELETE /game/{game_id} — end game, trigger export. REQ-G03"""
@@ -101,7 +133,7 @@ def delete_game(game_id: str) -> dict:
         gs = mgr.delete(game_id)
     except KeyError:
         raise _err("Game not found", "GAME_NOT_FOUND", 404)
-    # Export hooks will be wired in Phase 6
+    _write_to_mongodb(game_id, gs)
     return {"data": {"game_id": game_id, "status": "deleted", "winner": gs.winner}}
 
 
