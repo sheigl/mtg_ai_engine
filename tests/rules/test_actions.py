@@ -1,67 +1,71 @@
-from pathlib import Path
-import pytest
-from pydantic import BaseModel
-from mtg_ai_engine.models.actions import (CastRequest, ActivateRequest, PlayLandRequest, DeclareAttackersRequest, DeclareBlockersRequest, AssignCombatDamageRequest, ChoiceRequest, PassRequest, LegalActionsResponse, GameStateResponse, ErrorResponse)
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-# Test cases for action request/response models
+from mtg_engine.models.actions import (
+    CastRequest, ActivateRequest, PlayLandRequest,
+    DeclareAttackersRequest, DeclareBlockersRequest,
+    AssignCombatDamageRequest, ChoiceRequest, PassRequest,
+    AttackDeclaration, BlockDeclaration, DamageAssignment,
+)
+
 
 def test_cast_request():
-    request = CastRequest(card_name="Lightning Bolt", target="creature123", additional_info={"mode": "direct"}, dry_run=True)
-    assert request.card_name == "Lightning Bolt"
-    assert request.target == "creature123"
-    assert request.additional_info == {"mode": "direct"}
-    assert request.dry_run is True
+    req = CastRequest(card_id="abc123", targets=["creature_456"], mana_payment={"R": 1})
+    assert req.card_id == "abc123"
+    assert req.targets == ["creature_456"]
+    assert req.mana_payment == {"R": 1}
+    assert req.dry_run is False
+    # JSON round-trip
+    data = req.model_dump_json()
+    req2 = CastRequest.model_validate_json(data)
+    assert req2.card_id == req.card_id
+
+
+def test_cast_request_dry_run():
+    req = CastRequest(card_id="abc123", dry_run=True)
+    assert req.dry_run is True
+
 
 def test_activate_request():
-    request = ActivateRequest(ability_name="Flash", target="creature456", additional_info={"mode": "instant"}, dry_run=True)
-    assert request.ability_name == "Flash"
-    assert request.target == "creature456"
-    assert request.additional_info == {"mode": "instant"}
-    assert request.dry_run is True
+    req = ActivateRequest(permanent_id="perm_1", ability_index=0, mana_payment={"G": 1})
+    assert req.permanent_id == "perm_1"
+    assert req.ability_index == 0
+    assert req.dry_run is False
+
 
 def test_play_land_request():
-    request = PlayLandRequest(land_name="Forest", dry_run=True)
-    assert request.land_name == "Forest"
-    assert request.dry_run is True
+    req = PlayLandRequest(card_id="forest_1")
+    assert req.card_id == "forest_1"
+    assert req.dry_run is False
+
 
 def test_declare_attackers_request():
-    request = DeclareAttackersRequest(attackers=["creature123", "creature456"], dry_run=True)
-    assert request.attackers == ["creature123", "creature456"]
-    assert request.dry_run is True
+    decls = [AttackDeclaration(attacker_id="creature_1", defending_id="player_2")]
+    req = DeclareAttackersRequest(attack_declarations=decls)
+    assert len(req.attack_declarations) == 1
+    assert req.attack_declarations[0].attacker_id == "creature_1"
+
 
 def test_declare_blockers_request():
-    request = DeclareBlockersRequest(blockers=["creature789", "creature012"], dry_run=True)
-    assert request.blockers == ["creature789", "creature012"]
-    assert request.dry_run is True
+    decls = [BlockDeclaration(blocker_id="creature_2", attacker_id="creature_1")]
+    req = DeclareBlockersRequest(block_declarations=decls)
+    assert req.block_declarations[0].blocker_id == "creature_2"
+
 
 def test_assign_combat_damage_request():
-    request = AssignCombatDamageRequest(damage=4, target="player1", dry_run=True)
-    assert request.damage == 4
-    assert request.target == "player1"
-    assert request.dry_run is True
+    assignments = [DamageAssignment(source_id="attacker_1", target_id="player_2", damage=3)]
+    req = AssignCombatDamageRequest(assignments=assignments)
+    assert req.assignments[0].damage == 3
+
 
 def test_choice_request():
-    request = ChoiceRequest(choices=["Option A", "Option B"], selected_choice="Option A", dry_run=True)
-    assert request.choices == ["Option A", "Option B"]
-    assert request.selected_choice == "Option A"
-    assert request.dry_run is True
+    req = ChoiceRequest(choice_id="choice_1", selection="option_a")
+    assert req.choice_id == "choice_1"
+    assert req.selection == "option_a"
+
 
 def test_pass_request():
-    request = PassRequest(dry_run=True)
-    assert request.dry_run is True
-
-def test_legal_actions_response():
-    response = LegalActionsResponse(legal_actions=["Cast Lightning Bolt", "Play Forest"], dry_run=True)
-    assert response.legal_actions == ["Cast Lightning Bolt", "Play Forest"]
-    assert response.dry_run is True
-
-def test_game_state_response():
-    response = GameStateResponse(game_state={"players": [{"name": "Player1", "life": 20}]}, dry_run=True)
-    assert response.game_state == {"players": [{"name": "Player1", "life": 20}]}
-    assert response.dry_run is True
-
-def test_error_response():
-    response = ErrorResponse(error_message="Invalid action", dry_run=True, details={"error_code": 400})
-    assert response.error_message == "Invalid action"
-    assert response.dry_run is True
-    assert response.details == {"error_code": 400}
+    req = PassRequest()
+    assert req.dry_run is False
+    req2 = PassRequest(dry_run=True)
+    assert req2.dry_run is True

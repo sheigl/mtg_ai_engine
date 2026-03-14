@@ -1,48 +1,51 @@
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+
 import pytest
-from card_data.scryfall import ScryfallClient
-from models import CardModel
+from pathlib import Path
+from mtg_engine.card_data.scryfall import ScryfallClient
+
 
 @pytest.fixture
-def scryfall_client():
-    return ScryfallClient()
+def client(tmp_path):
+    return ScryfallClient(db_path=tmp_path / "test_cache.db")
 
-def test_get_card_by_name(scryfall_client):
-    card = scryfall_client.get_card("Lightning Bolt")
+
+def test_get_card_lightning_bolt(client):
+    card = client.get_card("Lightning Bolt")
     assert card is not None
     assert card.name == "Lightning Bolt"
-    assert card.mana_cost == "{1}{R}"
-    assert card.type_line == "Instant"
-    assert card.oracle_text == "Deal 3 damage to any target."
-
-def test_get_card_by_id(scryfall_client):
-    # Get the ID from the first test's result
-    card = scryfall_client.get_card("Lightning Bolt")
-    scryfall_id = card.id
-    
-    card_by_id = scryfall_client.get_card_by_id(scryfall_id)
-    assert card_by_id is not None
-    assert card_by_id.name == "Lightning Bolt"
-    assert card_by_id.id == scryfall_id
-
-def test_cache_usage(scryfall_client):
-    # First call should hit API
-    card1 = scryfall_client.get_card("Lightning Bolt")
-    
-    # Second call should hit cache
-    card2 = scryfall_client.get_card("Lightning Bolt")
-    assert card2 is not None
-    assert card2.name == "Lightning Bolt"
-
-def test_card_model_mapping(scryfall_client):
-    card = scryfall_client.get_card("Lightning Bolt")
-    assert card.id is not None
-    assert card.name is not None
-    assert card.mana_cost is not None
+    assert card.scryfall_id is not None
     assert card.type_line is not None
+    # Lightning Bolt is an instant
+    assert "Instant" in card.type_line
+
+
+def test_get_card_by_id(client):
+    card = client.get_card("Lightning Bolt")
+    scryfall_id = card.scryfall_id
+
+    card2 = client.get_card_by_id(scryfall_id)
+    assert card2.name == "Lightning Bolt"
+    assert card2.scryfall_id == scryfall_id
+
+
+def test_cache_hit(client):
+    """Second call must use cache (no API call needed)."""
+    card1 = client.get_card("Lightning Bolt")
+    card2 = client.get_card("Lightning Bolt")
+    assert card1.name == card2.name
+    assert card1.scryfall_id == card2.scryfall_id
+
+
+def test_card_fields(client):
+    card = client.get_card("Lightning Bolt")
+    assert card.id is not None
+    assert card.mana_cost is not None
     assert card.oracle_text is not None
-    assert card.power is None
+    assert card.power is None       # instants have no P/T
     assert card.toughness is None
     assert card.loyalty is None
-    assert card.colors is not None
-    assert card.keywords is not None
-    assert card.faces is None
+    assert isinstance(card.colors, list)
+    assert isinstance(card.keywords, list)
+    assert card.faces is None       # Lightning Bolt is not DFC

@@ -7,7 +7,7 @@
 
 ## Phase 1 — Project Scaffold & Data Models
 
-- [ ] TASK-01: Initialize project structure
+- [x] TASK-01: Initialize project structure
   ```
   mtg_engine/
     api/          ← FastAPI routers
@@ -33,7 +33,7 @@
   Done when: `uvicorn mtg_engine.api.main:app` starts without errors
   and `PYTHONPATH=. pytest tests/ -v` runs without ImportError
 
-- [ ] TASK-02: Define core Pydantic models in `models/`
+- [x] TASK-02: Define core Pydantic models in `models/`
   - `Card` (id, name, mana_cost, type_line, oracle_text, power,
     toughness, loyalty, colors, keywords, faces for DFC/split)
   - `Permanent` (card, controller, tapped, damage_marked, counters,
@@ -48,7 +48,7 @@
   Done when: all models instantiate, serialize to JSON, and
   deserialize back without data loss
 
-- [ ] TASK-03: Define action request/response Pydantic models
+- [x] TASK-03: Define action request/response Pydantic models
   - `CastRequest`, `ActivateRequest`, `PlayLandRequest`,
     `DeclareAttackersRequest`, `DeclareBlockersRequest`,
     `AssignCombatDamageRequest`, `ChoiceRequest`, `PassRequest`
@@ -60,7 +60,7 @@
 
 ## Phase 2 — Scryfall Integration & Card Parser
 
-- [ ] TASK-04: Implement `ScryfallClient` in `card_data/scryfall.py`
+- [x] TASK-04: Implement `ScryfallClient` in `card_data/scryfall.py`
   - `get_card(name: str) -> Card` — fetches by exact name
   - `get_card_by_id(scryfall_id: str) -> Card` — fetches by id
   - Local SQLite cache (`card_data/cache.db`); cache hit skips API call
@@ -68,7 +68,7 @@
   Done when: `get_card("Lightning Bolt")` returns correct Card with
   cached result on second call
 
-- [ ] TASK-05: Implement ability parser in `card_data/ability_parser.py`
+- [x] TASK-05: Implement ability parser in `card_data/ability_parser.py`
   - Parse triggered abilities: regex on "When/Whenever/At [trigger],
     [effect]" → `TriggeredAbility(trigger_condition, effect)`
   - Parse activated abilities: "{cost}: effect" →
@@ -79,7 +79,7 @@
   Done when: Lightning Bolt, Llanowar Elves, Serra Angel, Counterspell,
   and Dark Ritual all parse with no UnparsedAbility segments
 
-- [ ] TASK-06: Implement deck loader
+- [x] TASK-06: Implement deck loader
   - `load_deck(card_names: list[str]) -> list[Card]` — resolves all
     cards via ScryfallClient, validates 60-card minimum, assigns unique
     instance IDs to each card object
@@ -90,7 +90,7 @@
 
 ## Phase 3 — Core Rules Engine
 
-- [ ] TASK-07: Implement `ZoneManager` in `engine/zones.py`
+- [x] TASK-07: Implement `ZoneManager` in `engine/zones.py`
   - Move operations: `move_to_zone(card_id, from_zone, to_zone,
     player, position="top"|"bottom"|"random")`
   - Enforces REQ-G07 (atomic), REQ-G08 (library order)
@@ -98,7 +98,7 @@
   Done when: moving a card between all zone combinations works
   without duplication or loss; token in non-battlefield zone is removed
 
-- [ ] TASK-08: Implement turn structure and phase/step advancement
+- [x] TASK-08: Implement turn structure and phase/step advancement
   in `engine/turn_manager.py`
   - Full phase/step sequence per REQ-T01
   - `advance_phase()` — moves to next step/phase, applies start-of-step
@@ -108,7 +108,7 @@
   Done when: an empty-hand, no-permanents game advances correctly
   through all phases for 3 turns without intervention
 
-- [ ] TASK-09: Implement state-based actions in `engine/sba.py`
+- [x] TASK-09: Implement state-based actions in `engine/sba.py`
   Before writing any code, read CR 704 in full:
   `awk '/^704\./{found=1} found{print} /^705\./{exit}' cr.txt`
   - `check_and_apply_sbas(game_state) -> list[SBAEvent]`
@@ -119,7 +119,7 @@
   player at 0 life is marked as losing; legend rule fires when
   two copies of the same legendary enter
 
-- [ ] TASK-10: Implement mana system in `engine/mana.py`
+- [x] TASK-10: Implement mana system in `engine/mana.py`
   - `ManaPool` — tracks available mana by type (W, U, B, R, G, C)
   - `can_pay_cost(pool, cost) -> bool`
   - `pay_cost(pool, cost, payment: dict) -> ManaPool`
@@ -129,7 +129,7 @@
   Done when: Lightning Bolt ({R}), Counterspell ({U}{U}), and
   Emrakul ({15}) costs all validate correctly against matching pools
 
-- [ ] TASK-11: Implement casting and the stack in `engine/stack.py`
+- [x] TASK-11: Implement casting and the stack in `engine/stack.py`
   Before writing any code, read CR 601-608:
   `awk '/^601\./{found=1} found{print} /^609\./{exit}' cr.txt`
   - `cast_spell(game_state, player, card_id, targets, mana_payment,
@@ -143,7 +143,7 @@
   a creature; the creature dies on resolution; Counterspell can be
   cast in response; countered Lightning Bolt goes to graveyard
 
-- [ ] TASK-12: Implement trigger detection in `engine/triggers.py`
+- [x] TASK-12: Implement trigger detection in `engine/triggers.py`
   Before writing any code, read CR 603 in full:
   `awk '/^603\./{found=1} found{print} /^604\./{exit}' cr.txt`
   - Listen for zone-change, damage, phase-change, and other events
@@ -158,7 +158,7 @@
 
 ## Phase 4 — Layer System & Replacement Effects
 
-- [ ] TASK-13: Implement the layer system in `engine/layers.py`
+- [x] TASK-13: Implement the layer system in `engine/layers.py`
   Before writing any code, read CR 613 IN FULL — this is mandatory:
   `awk '/^613\./{found=1} found{print} /^614\./{exit}' cr.txt`
   Pay special attention to CR 613.8 (dependency) and CR 613.10
@@ -171,7 +171,7 @@
   a creature with a static P/T boost resolve correctly with Humility
   winning in layer 6 (ability removal) then layer 7b (set P/T to 1/1)
 
-- [ ] TASK-14: Implement replacement effects in `engine/replacement.py`
+- [x] TASK-14: Implement replacement effects in `engine/replacement.py`
   Before writing any code, read CR 616 in full:
   `awk '/^616\./{found=1} found{print} /^617\./{exit}' cr.txt`
   Also read CR 614 (preventing damage) and CR 615 (text-changing):
@@ -184,7 +184,7 @@
   instead of being destroyed; damage prevention effect reduces
   incoming damage correctly
 
-- [ ] TASK-15: Implement combat in `engine/combat.py`
+- [x] TASK-15: Implement combat in `engine/combat.py`
   Before writing any code, read CR 508-511 (combat phases):
   `awk '/^508\./{found=1} found{print} /^512\./{exit}' cr.txt`
   Also read CR 702.19 (trample) and CR 702.2 (deathtouch):
@@ -205,7 +205,7 @@
 
 ## Phase 5 — REST API
 
-- [ ] TASK-16: Implement FastAPI app and game router in `api/`
+- [x] TASK-16: Implement FastAPI app and game router in `api/`
   - All endpoints from REQ-API section
   - `GameManager` singleton: dict of `game_id → GameState` in memory
   - All action endpoints call the relevant engine function and return
@@ -213,7 +213,7 @@
   Done when: `POST /game` with two 60-card decks returns a valid
   game state with correct initial zones
 
-- [ ] TASK-17: Implement `GET /legal-actions` endpoint
+- [x] TASK-17: Implement `GET /legal-actions` endpoint
   - Computes all legal actions for the priority holder
   - Action types: pass, play-land, cast (per card in hand), activate
     (per permanent ability), put-trigger, special-action, declare-attackers
@@ -222,13 +222,13 @@
   3 lands on battlefield, legal actions include all castable spells
   and all activatable abilities
 
-- [ ] TASK-18: Implement `dry_run` support on all action endpoints
+- [x] TASK-18: Implement `dry_run` support on all action endpoints
   - When `dry_run: true` in request body, validate and return projected
     state but do not commit to game_state (REQ-P05)
   Done when: dry_run cast of Lightning Bolt returns next state with
   bolt on stack but does not modify live game state
 
-- [ ] TASK-19: Implement `GET /pending-triggers` and
+- [x] TASK-19: Implement `GET /pending-triggers` and
   `POST /put-trigger` endpoints
   Done when: a "whenever a creature dies" trigger appears in pending
   after a creature dies; putting it on the stack moves it to stack
