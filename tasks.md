@@ -7,7 +7,7 @@
 
 ## Phase 1 — Project Scaffold & Data Models
 
-- [x] TASK-01: Initialize project structure
+- [ ] TASK-01: Initialize project structure
   ```
   mtg_engine/
     api/          ← FastAPI routers
@@ -16,11 +16,24 @@
     card_data/    ← Scryfall client + cache
     export/       ← training data exporters
     tests/
+      conftest.py ← sys.path setup so imports work without install
+      rules/
+      api/
+  ```
+  Create `tests/conftest.py` with this exact content:
+  ```python
+  import sys, os
+  sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+  ```
+  This makes `import mtg_engine` work from any pytest invocation.
+  Install dependencies with plain pip (no -e flag):
+  ```bash
+  pip install fastapi uvicorn pydantic httpx pymongo pytest pytest-asyncio
   ```
   Done when: `uvicorn mtg_engine.api.main:app` starts without errors
-  and returns 404 on unknown routes
+  and `PYTHONPATH=. pytest tests/ -v` runs without ImportError
 
-- [x] TASK-02: Define core Pydantic models in `models/`
+- [ ] TASK-02: Define core Pydantic models in `models/`
   - `Card` (id, name, mana_cost, type_line, oracle_text, power,
     toughness, loyalty, colors, keywords, faces for DFC/split)
   - `Permanent` (card, controller, tapped, damage_marked, counters,
@@ -40,7 +53,8 @@
     `DeclareAttackersRequest`, `DeclareBlockersRequest`,
     `AssignCombatDamageRequest`, `ChoiceRequest`, `PassRequest`
   - `LegalActionsResponse`, `GameStateResponse`, `ErrorResponse`
-  Done when: models pass mypy strict mode
+  Done when: all models instantiate with correct types and
+  `PYTHONPATH=. pytest tests/ -v` confirms no import errors or type mismatches
 
 ---
 
@@ -95,6 +109,8 @@
   through all phases for 3 turns without intervention
 
 - [ ] TASK-09: Implement state-based actions in `engine/sba.py`
+  Before writing any code, read CR 704 in full:
+  `awk '/^704\./{found=1} found{print} /^705\./{exit}' cr.txt`
   - `check_and_apply_sbas(game_state) -> list[SBAEvent]`
   - All SBAs listed in REQ-R01
   - Returns list of events that occurred (for transcript logging)
@@ -114,6 +130,8 @@
   Emrakul ({15}) costs all validate correctly against matching pools
 
 - [ ] TASK-11: Implement casting and the stack in `engine/stack.py`
+  Before writing any code, read CR 601-608:
+  `awk '/^601\./{found=1} found{print} /^609\./{exit}' cr.txt`
   - `cast_spell(game_state, player, card_id, targets, mana_payment,
     alternative_cost) -> GameState`
   - Validates timing (sorcery vs instant, REQ-A03), mana, targets
@@ -126,6 +144,8 @@
   cast in response; countered Lightning Bolt goes to graveyard
 
 - [ ] TASK-12: Implement trigger detection in `engine/triggers.py`
+  Before writing any code, read CR 603 in full:
+  `awk '/^603\./{found=1} found{print} /^604\./{exit}' cr.txt`
   - Listen for zone-change, damage, phase-change, and other events
   - Match events against all permanents' `TriggeredAbility` conditions
   - Queue matching triggers as pending for their controller (REQ-A08)
@@ -139,6 +159,10 @@
 ## Phase 4 — Layer System & Replacement Effects
 
 - [ ] TASK-13: Implement the layer system in `engine/layers.py`
+  Before writing any code, read CR 613 IN FULL — this is mandatory:
+  `awk '/^613\./{found=1} found{print} /^614\./{exit}' cr.txt`
+  Pay special attention to CR 613.8 (dependency) and CR 613.10
+  (timestamp order). Do not begin coding until you understand both.
   - `apply_continuous_effects(game_state) -> GameState`
   - Apply effects in layer order 1–7 per REQ-R02
   - Timestamp tracking on all continuous effects
@@ -148,6 +172,10 @@
   winning in layer 6 (ability removal) then layer 7b (set P/T to 1/1)
 
 - [ ] TASK-14: Implement replacement effects in `engine/replacement.py`
+  Before writing any code, read CR 616 in full:
+  `awk '/^616\./{found=1} found{print} /^617\./{exit}' cr.txt`
+  Also read CR 614 (preventing damage) and CR 615 (text-changing):
+  `awk '/^614\./{found=1} found{print} /^616\./{exit}' cr.txt`
   - `get_applicable_replacements(event, game_state) -> list[Effect]`
   - `apply_replacement(event, effect) -> event` — modifies the event
   - Multiple replacement effects: prompt controller for order (REQ-R05)
@@ -157,6 +185,11 @@
   incoming damage correctly
 
 - [ ] TASK-15: Implement combat in `engine/combat.py`
+  Before writing any code, read CR 508-511 (combat phases):
+  `awk '/^508\./{found=1} found{print} /^512\./{exit}' cr.txt`
+  Also read CR 702.19 (trample) and CR 702.2 (deathtouch):
+  `grep -A 20 "^702\.19\." cr.txt`
+  `grep -A 15 "^702\.2\." cr.txt`
   - `declare_attackers(game_state, attack_declarations) -> GameState`
   - `declare_blockers(game_state, block_declarations) -> GameState`
   - `assign_combat_damage(game_state, assignments) -> GameState`
