@@ -276,7 +276,7 @@
 
 ## Phase 7 — Validation & Hardening
 
-- [ ] TASK-24: Write rules interaction test suite in `tests/rules/`
+- [x] TASK-24: Write rules interaction test suite in `tests/rules/`
   - 50 specific known-tricky interactions (spec success criteria)
   - Priority: Humility + Opalescence, clone copying a clone, damage
     prevention + lifelink, undying + -1/-1 counters, cascade into
@@ -284,20 +284,20 @@
     copy of a copy
   Done when: all 50 tests pass
 
-- [ ] TASK-25: Write API integration tests in `tests/api/`
+- [x] TASK-25: Write API integration tests in `tests/api/`
   - Full game simulation: two scripted bots play a 5-turn game via
     HTTP using only `GET /legal-actions` → pick action → POST action
   - Verify no illegal states are reachable via the API
   Done when: 100 scripted games complete without 500 errors
 
-- [ ] TASK-26: Performance benchmark
+- [x] TASK-26: Performance benchmark
   - Measure `GET /legal-actions` latency at various game complexities
     (empty board, 20 permanents, complex stack)
   - Confirm REQ-P01 (under 200ms) on target hardware
   Done when: p99 latency is documented; any hotspot over 200ms
   has a filed optimization note
 
-- [ ] TASK-27: Concurrent game stress test
+- [x] TASK-27: Concurrent game stress test
   - Spin up 10 games simultaneously, run scripted bots on all, verify
     no state bleed between games (REQ-P02)
   Done when: 10 concurrent games complete with correct, isolated
