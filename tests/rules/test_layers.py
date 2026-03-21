@@ -1,0 +1,76 @@
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+
+import time
+from mtg_engine.models.game import GameState, Phase, Step, PlayerState, Card, Permanent
+from mtg_engine.engine.zones import put_permanent_onto_battlefield
+from mtg_engine.engine.layers import apply_continuous_effects, get_effective_power_toughness
+
+
+def _make_game() -> GameState:
+    p1 = PlayerState(name="p1")
+    p2 = PlayerState(name="p2")
+    return GameState(game_id="t", seed=1, active_player="p1", priority_holder="p1", players=[p1, p2])
+
+
+def test_counter_modifies_power_toughness():
+    gs = _make_game()
+    card = Card(name="Bear", type_line="Creature — Bear", power="2", toughness="2")
+    gs, perm = put_permanent_onto_battlefield(gs, card, "p1")
+    perm.counters["+1/+1"] = 2
+    p, t = get_effective_power_toughness(perm)
+    assert p == 4 and t == 4
+
+
+def test_humility_sets_all_creatures_to_1_1():
+    """Humility: all creatures become 1/1 and lose abilities. Layer 6 then 7b."""
+    gs = _make_game()
+    humility = Card(
+        name="Humility",
+        type_line="Enchantment",
+        oracle_text="All creatures lose all abilities and are 1/1.",
+    )
+    bear = Card(name="Bear", type_line="Creature — Bear", power="4", toughness="4")
+    gs, h_perm = put_permanent_onto_battlefield(gs, humility, "p1")
+    # Give Humility an earlier timestamp
+    h_perm.timestamp = 1.0
+    gs, b_perm = put_permanent_onto_battlefield(gs, bear, "p2")
+    b_perm.timestamp = 2.0
+
+    gs = apply_continuous_effects(gs)
+
+    # Bear should be 1/1
+    bear_perm = next(p for p in gs.battlefield if p.card.name == "Bear")
+    assert bear_perm.card.power == "1", f"expected power 1, got {bear_perm.card.power}"
+    assert bear_perm.card.toughness == "1", f"expected toughness 1, got {bear_perm.card.toughness}"
+
+
+def test_pt_boost_with_humility():
+    """
+    Giant Growth (+3/+3 until EOT) then Humility:
+    Humility in layer 7b sets to 1/1, overriding the boost which is in layer 7c.
+    Net result: layer 7b sets to 1/1, then layer 7c adds +1/+1 counter = 2/2.
+    This tests that layer ordering matters.
+    """
+    gs = _make_game()
+    humility = Card(
+        name="Humility",
+        type_line="Enchantment",
+        oracle_text="All creatures lose all abilities and are 1/1.",
+    )
+    bear = Card(name="Bear", type_line="Creature — Bear", power="2", toughness="2")
+    gs, h_perm = put_permanent_onto_battlefield(gs, humility, "p1")
+    h_perm.timestamp = 1.0
+    gs, b_perm = put_permanent_onto_battlefield(gs, bear, "p2")
+    b_perm.timestamp = 2.0
+    # Simulate a +1/+1 counter (layer 7c)
+    b_perm.counters["+1/+1"] = 1
+
+    gs = apply_continuous_effects(gs)
+
+    # Layer 7b: Humility sets to 1/1
+    # Layer 7c: +1/+1 counter adds 1/1 → result is 2/2
+    bear_perm = next(p for p in gs.battlefield if p.card.name == "Bear")
+    p_val = int(bear_perm.card.power)
+    t_val = int(bear_perm.card.toughness)
+    assert p_val == 2 and t_val == 2, f"Expected 2/2, got {p_val}/{t_val}"

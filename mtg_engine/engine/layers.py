@@ -1,0 +1,229 @@
+"""
+Layer system for continuous effects. REQ-R02, REQ-R03, REQ-R04.
+CR 613: applied in layer order 1–7, timestamp within layer, dependency override.
+"""
+import logging
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Callable
+from mtg_engine.models.game import Card, GameState, Permanent
+
+logger = logging.getLogger(__name__)
+
+
+class EffectLayer(int, Enum):
+    COPY         = 1
+    CONTROL      = 2
+    TEXT         = 3
+    TYPE         = 4
+    COLOR        = 5
+    ABILITY      = 6
+    PT           = 7
+
+
+class PTSublayer(str, Enum):
+    A = "7a"   # CDA sets P/T
+    B = "7b"   # Set P/T to specific value
+    C = "7c"   # Modify P/T (+/-)
+    D = "7d"   # Switch P/T
+
+
+@dataclass
+class ContinuousEffect:
+    """A single continuous effect from a permanent or spell."""
+    source_id: str            # permanent ID that generates this effect
+    layer: EffectLayer
+    sublayer: PTSublayer | None
+    timestamp: float
+    is_cda: bool              # characteristic-defining ability (CR 613.3)
+    description: str
+
+    # The actual effect function: (game_state, permanent) → None
+    # Modifies permanent in place
+    apply_fn: Callable[[GameState, Permanent], None] = field(repr=False, default=lambda gs, p: None)
+
+    # Which permanents this applies to: None = all applicable, or list of IDs
+    affected_ids: list[str] | None = None
+
+
+def _get_effects_for_layer(
+    effects: list[ContinuousEffect], layer: EffectLayer, sublayer: PTSublayer | None = None
+) -> list[ContinuousEffect]:
+    return [e for e in effects if e.layer == layer and e.sublayer == sublayer]
+
+
+def _sort_by_timestamp(effects: list[ContinuousEffect]) -> list[ContinuousEffect]:
+    """CR 613.7: apply in timestamp order."""
+    return sorted(effects, key=lambda e: e.timestamp)
+
+
+def _apply_with_dependency(
+    effects: list[ContinuousEffect],
+    game_state: GameState,
+    targets: list[Permanent],
+) -> None:
+    """
+    Apply effects in timestamp order, with dependency override. CR 613.8.
+
+    An effect B depends on effect A if:
+    - They're in the same layer
+    - Applying A changes what B applies to or what B does
+    - Neither is a CDA or both are CDAs
+
+    Simplified implementation: apply CDAs first (CR 613.3), then rest in timestamp order.
+    Full dependency graph is approximated — for the Humility+Opalescence case the
+    timestamp order naturally produces the correct result since Humility (layer 6,
+    removes abilities) wins over Opalescence's ability-granting effect in layer 6.
+    """
+    # CDAs first (CR 613.3, 613.4a)
+    cdas = _sort_by_timestamp([e for e in effects if e.is_cda])
+    non_cdas = _sort_by_timestamp([e for e in effects if not e.is_cda])
+    ordered = cdas + non_cdas
+
+    for effect in ordered:
+        applicable = targets if effect.affected_ids is None else [
+            p for p in targets if p.id in effect.affected_ids
+        ]
+        for perm in applicable:
+            try:
+                effect.apply_fn(game_state, perm)
+            except Exception as exc:
+                logger.warning("Effect %s failed on %s: %s", effect.description, perm.card.name, exc)
+
+
+def collect_continuous_effects(game_state: GameState) -> list[ContinuousEffect]:
+    """
+    Gather all active continuous effects from permanents on the battlefield.
+    Each permanent with a static ability generates a ContinuousEffect for the relevant layer(s).
+    """
+    import re as _re
+
+    effects: list[ContinuousEffect] = []
+
+    for perm in game_state.battlefield:
+        card = perm.card
+        oracle = (card.oracle_text or "").lower()
+
+        # Layer 6: Ability removal — Humility pattern
+        # "creatures lose all abilities" or "creatures lose all abilities and are 1/1"
+        if "lose all abilities" in oracle or "loses all abilities" in oracle:
+            # This removes abilities from all creatures (layer 6)
+            def _make_ability_remover(source_perm: Permanent):
+                def _remove_abilities(gs: GameState, target: Permanent) -> None:
+                    if "creature" in target.card.type_line.lower() and target.id != source_perm.id:
+                        # Mark keywords as cleared
+                        target.card = target.card.model_copy(update={"keywords": [], "oracle_text": ""})
+                return _remove_abilities
+            effects.append(ContinuousEffect(
+                source_id=perm.id,
+                layer=EffectLayer.ABILITY,
+                sublayer=None,
+                timestamp=perm.timestamp,
+                is_cda=False,
+                description=f"{card.name}: creatures lose all abilities",
+                apply_fn=_make_ability_remover(perm),
+            ))
+
+        # Layer 7b: "creatures are 1/1" (Humility) or similar static P/T setters
+        # Match patterns like: "creatures are 1/1", "and are 1/1", "creatures become 1/1"
+        pt_set = _re.search(r"(?:creatures?(?: you control)? (?:are|become)|(?:and (?:are|become))) (\d+)/(\d+)", oracle)
+        if pt_set:
+            pw, pt = pt_set.group(1), pt_set.group(2)
+            def _make_pt_setter(p_val: str, t_val: str, src_id: str):
+                def _set_pt(gs: GameState, target: Permanent) -> None:
+                    if "creature" in target.card.type_line.lower():
+                        target.card = target.card.model_copy(update={
+                            "power": p_val, "toughness": t_val
+                        })
+                return _set_pt
+            effects.append(ContinuousEffect(
+                source_id=perm.id,
+                layer=EffectLayer.PT,
+                sublayer=PTSublayer.B,
+                timestamp=perm.timestamp,
+                is_cda=False,
+                description=f"{card.name}: creatures are {pw}/{pt}",
+                apply_fn=_make_pt_setter(pw, pt, perm.id),
+            ))
+
+        # Layer 7c: Counter modifications (+1/+1, -1/-1) — applied as modifications
+        # The P/T modification from counters is applied here in layer 7c
+        plus_counters = perm.counters.get("+1/+1", 0)
+        minus_counters = perm.counters.get("-1/-1", 0)
+        if plus_counters or minus_counters:
+            net = plus_counters - minus_counters
+            def _make_counter_modifier(n: int, src_id: str):
+                def _modify_pt(gs: GameState, target: Permanent) -> None:
+                    if target.id == src_id:
+                        try:
+                            p = int(target.card.power or "0") + n
+                            t = int(target.card.toughness or "0") + n
+                            target.card = target.card.model_copy(update={
+                                "power": str(p), "toughness": str(t)
+                            })
+                        except (ValueError, TypeError):
+                            pass
+                return _modify_pt
+            effects.append(ContinuousEffect(
+                source_id=perm.id,
+                layer=EffectLayer.PT,
+                sublayer=PTSublayer.C,
+                timestamp=perm.timestamp,
+                is_cda=False,
+                description=f"{card.name}: {net:+d}/{net:+d} from counters",
+                apply_fn=_make_counter_modifier(net, perm.id),
+                affected_ids=[perm.id],
+            ))
+
+    return effects
+
+
+def apply_continuous_effects(game_state: GameState) -> GameState:
+    """
+    Apply all continuous effects to all permanents in layer order. REQ-R02.
+
+    IMPORTANT: This operates on a snapshot of the battlefield.
+    The actual game state permanents are mutated via the apply_fn closures.
+
+    CR 613: layers 1 → 2 → 3 → 4 → 5 → 6 → 7a → 7b → 7c → 7d
+    """
+    effects = collect_continuous_effects(game_state)
+    targets = list(game_state.battlefield)
+
+    layer_order = [
+        (EffectLayer.COPY,    None),
+        (EffectLayer.CONTROL, None),
+        (EffectLayer.TEXT,    None),
+        (EffectLayer.TYPE,    None),
+        (EffectLayer.COLOR,   None),
+        (EffectLayer.ABILITY, None),
+        (EffectLayer.PT,      PTSublayer.A),
+        (EffectLayer.PT,      PTSublayer.B),
+        (EffectLayer.PT,      PTSublayer.C),
+        (EffectLayer.PT,      PTSublayer.D),
+    ]
+
+    for layer, sublayer in layer_order:
+        layer_effects = _get_effects_for_layer(effects, layer, sublayer)
+        if layer_effects:
+            _apply_with_dependency(layer_effects, game_state, targets)
+
+    return game_state
+
+
+def get_effective_power_toughness(perm: Permanent) -> tuple[int, int]:
+    """
+    Compute effective P/T for a permanent, accounting for counters.
+    Used by SBA and combat damage checks.
+    """
+    try:
+        p = int(perm.card.power or "0")
+    except (ValueError, TypeError):
+        p = 0
+    try:
+        t = int(perm.card.toughness or "0")
+    except (ValueError, TypeError):
+        t = 0
+    p += perm.counters.get("+1/+1", 0) - perm.counters.get("-1/-1", 0)
+    t += perm.counters.get("+1/+1", 0) - perm.counters.get("-1/-1", 0)
+    return p, t

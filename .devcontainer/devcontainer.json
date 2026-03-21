@@ -1,0 +1,10 @@
+{
+  "name": "mtg-ai-engine",
+  "features": {
+    "python": {
+      "version": "3.11"
+    }
+  },
+  "dockerFile": "../Dockerfile",
+  "postAttachCommand": "curl -fsSL https://claude.ai/install.sh | bash && echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> ~/.bashrc && source ~/.bashrc"
+}
