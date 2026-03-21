@@ -6,7 +6,7 @@ from .ai_player import AIPlayer
 from .client import EngineClient
 from .game_loop import GameLoop
 from .models import GameConfig, PlayerConfig
-from .prompts import DEFAULT_DECK
+from .prompts import DEFAULT_COMMANDER_DECK, DEFAULT_DECK
 
 
 def parse_player_flag(value: str) -> PlayerConfig:
@@ -70,6 +70,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated card names for player 2 (default: built-in test deck)",
     )
     parser.add_argument(
+        "--format",
+        metavar="FORMAT",
+        choices=["standard", "commander"],
+        default="standard",
+        dest="format",
+        help="Game format: standard or commander (default: standard)",
+    )
+    parser.add_argument(
+        "--commander",
+        metavar="NAME",
+        action="append",
+        dest="commanders",
+        help="Commander name (repeatable, exactly 2 required for --format commander)",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         default=False,
@@ -101,8 +116,30 @@ def main() -> None:
         )
         sys.exit(1)
 
-    deck1 = parse_deck_flag(args.deck1) if args.deck1 else list(DEFAULT_DECK)
-    deck2 = parse_deck_flag(args.deck2) if args.deck2 else list(DEFAULT_DECK)
+    # Validate commander flags
+    game_format: str = args.format
+    commanders: list[str] = args.commanders or []
+    commander1: str | None = None
+    commander2: str | None = None
+    if game_format == "commander":
+        if len(commanders) != 2:
+            print(
+                "Error: --format commander requires exactly 2 --commander flags.\n"
+                "Example: --commander \"Ghalta, Primal Hunger\" --commander \"Multani, Maro-Sorcerer\"",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        commander1 = commanders[0]
+        commander2 = commanders[1]
+
+    if game_format == "commander":
+        # Prepend commander to default deck so load_commander_deck can find it.
+        # User-provided decks must already include the commander card name.
+        deck1 = parse_deck_flag(args.deck1) if args.deck1 else [commander1] + list(DEFAULT_COMMANDER_DECK)
+        deck2 = parse_deck_flag(args.deck2) if args.deck2 else [commander2] + list(DEFAULT_COMMANDER_DECK)
+    else:
+        deck1 = parse_deck_flag(args.deck1) if args.deck1 else list(DEFAULT_DECK)
+        deck2 = parse_deck_flag(args.deck2) if args.deck2 else list(DEFAULT_DECK)
 
     config = GameConfig(
         players=players,
@@ -111,6 +148,9 @@ def main() -> None:
         deck2=deck2,
         verbose=args.verbose,
         max_turns=args.max_turns,
+        format=game_format,
+        commander1=commander1,
+        commander2=commander2,
     )
 
     with EngineClient(config.engine_url) as engine:

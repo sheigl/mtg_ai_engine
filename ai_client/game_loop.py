@@ -63,6 +63,14 @@ def _map_action_to_request(action: dict) -> tuple[str, dict]:
             "targets": [],
         }
 
+    if action_type == "cast_commander":
+        return "cast", {
+            "card_id": action.get("card_id", ""),
+            "targets": [],
+            "mana_payment": {},
+            "from_command_zone": True,
+        }
+
     # Fallback: pass
     return "pass", {}
 
@@ -92,6 +100,11 @@ def print_game_summary(summary: GameSummary) -> None:
     print(f"Turns  : {summary.total_turns}")
     print(f"Decisions made: {summary.total_decisions}")
     print(f"Reason : {summary.termination_reason}")
+    if summary.commander_damage:
+        print("Commander damage totals:")
+        for perm_id, dmg_by_player in summary.commander_damage.items():
+            for player_name, total in dmg_by_player.items():
+                print(f"  {perm_id[:8]}... → {player_name}: {total}")
     print(_DOUBLE_SEPARATOR)
 
 
@@ -134,12 +147,16 @@ class GameLoop:
         termination_reason = "game_over"
         winner = None
 
-        # Print startup banner (T025)
-        print("Starting MTG AI Game")
+        # Print startup banner
+        is_commander = self._config.format == "commander"
+        title_suffix = " [Commander]" if is_commander else ""
+        print(f"Starting MTG AI Game{title_suffix}")
         print(f"Engine  : {self._config.engine_url}")
         for i, pc in enumerate(self._config.players):
             label = "Players :" if i == 0 else "          "
             print(f"{label} {pc.name} ({pc.model} @ {pc.base_url})")
+        if is_commander:
+            print(f"Commanders: {self._config.commander1} vs {self._config.commander2}")
         print(f"Game ID : {game_id}")
         print()
 
@@ -251,12 +268,22 @@ class GameLoop:
             except EngineError:
                 pass
 
+        # Fetch final game state for commander damage totals
+        final_commander_damage: dict = {}
+        if self._config.format == "commander":
+            try:
+                final_gs = self._engine.get_game_state(game_id)
+                final_commander_damage = final_gs.get("commander_damage", {})
+            except EngineError:
+                pass
+
         summary = GameSummary(
             game_id=game_id,
             winner=winner,
             total_turns=turn_count,
             total_decisions=decision_count,
             termination_reason=termination_reason,
+            commander_damage=final_commander_damage,
         )
         print_game_summary(summary)
         return summary

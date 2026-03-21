@@ -22,7 +22,7 @@ from mtg_engine.engine.combat import (
     declare_attackers, declare_blockers, order_blockers, assign_combat_damage, end_combat
 )
 from mtg_engine.engine.triggers import put_trigger_on_stack
-from mtg_engine.card_data.deck_loader import load_deck
+from mtg_engine.card_data.deck_loader import load_deck, load_commander_deck
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/game", tags=["game"])
@@ -37,6 +37,9 @@ class CreateGameRequest(BaseModel):
     deck2: list[str]
     seed: int | None = None
     verbose: bool = False
+    format: str = "standard"
+    commander1: str | None = None
+    commander2: str | None = None
 
 
 class VerboseToggleRequest(BaseModel):
@@ -136,19 +139,54 @@ def _record_transition_events(
 @router.post("")
 def create_game(req: CreateGameRequest) -> dict:
     """POST /game — create a new game. REQ-G01"""
-    try:
-        deck1_cards = load_deck(req.deck1)
-        deck2_cards = load_deck(req.deck2)
-    except Exception as e:
-        raise _err(str(e), "DECK_LOAD_ERROR")
-
     mgr = get_manager()
-    gs = mgr.create_game(
-        req.player1_name, req.player2_name,
-        deck1_cards, deck2_cards,
-        seed=req.seed,
-        verbose=req.verbose,
-    )
+
+    if req.format == "commander":
+        if not req.commander1 or not req.commander2:
+            raise _err("Commander format requires commander1 and commander2", "INVALID_COMMANDER")
+        try:
+            deck1_cards, commander1_card = load_commander_deck(req.deck1, req.commander1)
+        except ValueError as e:
+            msg = str(e)
+            code = (
+                "SINGLETON_VIOLATION" if "Singleton" in msg
+                else "COLOR_IDENTITY_VIOLATION" if "Color identity" in msg
+                else "INVALID_COMMANDER" if "legendary" in msg.lower() or "not found" in msg
+                else "DECK_LOAD_ERROR"
+            )
+            raise _err(msg, code)
+        try:
+            deck2_cards, commander2_card = load_commander_deck(req.deck2, req.commander2)
+        except ValueError as e:
+            msg = str(e)
+            code = (
+                "SINGLETON_VIOLATION" if "Singleton" in msg
+                else "COLOR_IDENTITY_VIOLATION" if "Color identity" in msg
+                else "INVALID_COMMANDER" if "legendary" in msg.lower() or "not found" in msg
+                else "DECK_LOAD_ERROR"
+            )
+            raise _err(msg, code)
+        gs = mgr.create_game(
+            req.player1_name, req.player2_name,
+            deck1_cards, deck2_cards,
+            seed=req.seed,
+            verbose=req.verbose,
+            format="commander",
+            commander1_card=commander1_card,
+            commander2_card=commander2_card,
+        )
+    else:
+        try:
+            deck1_cards = load_deck(req.deck1)
+            deck2_cards = load_deck(req.deck2)
+        except Exception as e:
+            raise _err(str(e), "DECK_LOAD_ERROR")
+        gs = mgr.create_game(
+            req.player1_name, req.player2_name,
+            deck1_cards, deck2_cards,
+            seed=req.seed,
+            verbose=req.verbose,
+        )
     return _ok(gs)
 
 
@@ -314,6 +352,42 @@ def cast(game_id: str, req: CastRequest) -> dict:
     caster = gs.priority_holder
     cast_turn, cast_phase, cast_step = gs.turn, gs.phase.value, gs.step.value
     player_gs = get_player(gs, caster)
+
+    if req.from_command_zone:
+        # Commander cast: find card in command zone, validate tax, then cast
+        cmd_card = next((c for c in player_gs.command_zone if c.id == req.card_id), None)
+        if cmd_card is None:
+            raise _err("Commander not in command zone", "INVALID_ACTION")
+        card_name = cmd_card.name
+        tax = 2 * player_gs.commander_cast_count
+
+        # Temporarily move commander into hand so cast_spell can find it
+        player_gs.command_zone[:] = [c for c in player_gs.command_zone if c.id != req.card_id]
+        player_gs.hand.append(cmd_card)
+        try:
+            gs = cast_spell(
+                gs, caster, req.card_id, req.targets, req.mana_payment,
+                alternative_cost=req.alternative_cost, modes_chosen=req.modes_chosen,
+            )
+            gs = _run_sbas(gs)
+        except ValueError as e:
+            # Rollback: put commander back in command zone
+            player_gs2 = get_player(gs, caster)
+            player_gs2.hand[:] = [c for c in player_gs2.hand if c.id != req.card_id]
+            player_gs2.command_zone.append(cmd_card)
+            raise _err(str(e), "INVALID_ACTION")
+
+        # Increment commander cast count
+        player_gs2 = get_player(gs, caster)
+        player_gs2.commander_cast_count += 1
+
+        if not req.dry_run:
+            mgr.update(game_id, gs)
+            recorder = _get_recorder_safe(game_id, mgr)
+            if recorder:
+                recorder.record_cast(caster, card_name, req.targets, cast_turn, cast_phase, cast_step)
+        return _ok(gs)
+
     card_obj = next((c for c in player_gs.hand if c.id == req.card_id), None)
     card_name = card_obj.name if card_obj else req.card_id
 
@@ -724,5 +798,23 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                 action_type="put_trigger",
                 description=f"Put trigger on stack: {trigger.effect_description}",
             ))
+
+    # Commander: cast commander from command zone
+    if gs.format == "commander" and is_active and is_main and stack_empty:
+        from mtg_engine.engine.mana import can_pay_cost as _can_pay
+        for cmd_card in player.command_zone:
+            base_cost = cmd_card.mana_cost or ""
+            tax = 2 * player.commander_cast_count
+            # Build taxed cost string: append {tax} generic if tax > 0
+            taxed_cost = base_cost if tax == 0 else f"{{{tax}}}{base_cost}"
+            if _can_pay(player.mana_pool, taxed_cost):
+                tax_str = f" + {{{tax}}} tax" if tax > 0 else ""
+                actions.append(LegalAction(
+                    action_type="cast_commander",
+                    card_id=cmd_card.id,
+                    card_name=cmd_card.name,
+                    mana_options=[{"mana_cost": base_cost, "commander_tax": tax}],
+                    description=f"Cast {cmd_card.name} from command zone (cost: {base_cost}{tax_str})",
+                ))
 
     return actions

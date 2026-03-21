@@ -19,6 +19,9 @@ class GameConfig:
     deck2: list[str] = field(default_factory=list)
     verbose: bool = False
     max_turns: int = 200
+    format: str = "standard"
+    commander1: str | None = None
+    commander2: str | None = None
 
 
 @dataclass
@@ -43,3 +46,4 @@ class GameSummary:
     total_turns: int
     total_decisions: int
     termination_reason: str
+    commander_damage: dict = field(default_factory=dict)

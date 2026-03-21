@@ -5,6 +5,8 @@ Auto-generated from all feature plans. Last updated: 2026-03-21
 ## Active Technologies
 - Python 3.11 (matches existing codebase) + `httpx` (HTTP to engine API), `openai` (OpenAI-compatible LLM client), `argparse` (stdlib CLI parsing) (008-ai-cli-client)
 - None — stateless client; game state lives in the engine (008-ai-cli-client)
+- Python 3.11 (matches existing codebase) + FastAPI, Pydantic v2, httpx, openai (all existing) (009-commander-format)
+- In-memory game state (existing); SQLite Scryfall cache extended with `color_identity` (009-commander-format)
 
 - Python 3.11 + FastAPI, Pydantic v2, standard `logging` module (007-play-by-play-log)
 
@@ -24,6 +26,7 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.11: Follow standard conventions
 
 ## Recent Changes
+- 009-commander-format: Added Python 3.11 (matches existing codebase) + FastAPI, Pydantic v2, httpx, openai (all existing)
 - 008-ai-cli-client: Added Python 3.11 (matches existing codebase) + `httpx` (HTTP to engine API), `openai` (OpenAI-compatible LLM client), `argparse` (stdlib CLI parsing)
 
 - 007-play-by-play-log: Added Python 3.11 + FastAPI, Pydantic v2, standard `logging` module

@@ -125,6 +125,7 @@ class ScryfallClient:
             toughness=raw.get("toughness"),
             loyalty=raw.get("loyalty"),
             colors=raw.get("colors", []),
+            color_identity=raw.get("color_identity", []),
             keywords=[k.lower() for k in raw.get("keywords", [])],
             faces=faces,
             cmc=float(raw.get("cmc", 0.0)),

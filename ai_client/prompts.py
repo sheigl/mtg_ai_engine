@@ -1,5 +1,28 @@
 """Prompt building and default deck for the AI CLI client."""
 
+# Built-in 99-card mono-green Commander deck (for use with a legendary green commander).
+# NOTE: This deck contains duplicates for testing convenience; real Commander games
+# require a proper singleton deck provided via --deck1/--deck2.
+DEFAULT_COMMANDER_DECK: list[str] = (
+    ["Forest"] * 37
+    + ["Llanowar Elves"] * 4
+    + ["Elvish Mystic"] * 4
+    + ["Grizzly Bears"] * 4
+    + ["Giant Growth"] * 4
+    + ["Elvish Warrior"] * 4
+    + ["Troll Ascetic"] * 4
+    + ["Leatherback Baloth"] * 4
+    + ["Garruk's Companion"] * 4
+    + ["Rancor"] * 4
+    + ["Giant Spider"] * 4
+    + ["Kalonian Tusker"] * 4
+    + ["Prey Upon"] * 4
+    + ["Titanic Growth"] * 4
+    + ["Woodfall Primus"] * 3
+    + ["Elvish Visionary"] * 4
+    + ["Reclamation Sage"] * 3
+)
+
 # Built-in 60-card test deck
 DEFAULT_DECK: list[str] = (
     ["Plains"] * 24
@@ -50,6 +73,31 @@ def build_game_state_prompt(state: dict, legal_actions: list[dict]) -> str:
     stack = state.get("stack", [])
     stack_desc = [s.get("description", str(s)) for s in stack]
 
+    # Commander-specific info
+    game_format = state.get("format", "standard")
+    commander_lines: list[str] = []
+    if game_format == "commander":
+        my_cmd_zone = [c.get("name", "?") for c in my_info.get("command_zone", [])]
+        opp_cmd_zone = [c.get("name", "?") for c in opp_info.get("command_zone", [])]
+        my_cast_count = my_info.get("commander_cast_count", 0)
+        my_tax = my_cast_count * 2
+        opp_cast_count = opp_info.get("commander_cast_count", 0)
+        opp_tax = opp_cast_count * 2
+        commander_lines.append(
+            f"Your command zone: {', '.join(my_cmd_zone) if my_cmd_zone else '(empty)'}"
+            + (f" (tax: +{my_tax})" if my_tax else "")
+        )
+        commander_lines.append(
+            f"Opponent command zone: {', '.join(opp_cmd_zone) if opp_cmd_zone else '(empty)'}"
+            + (f" (tax: +{opp_tax})" if opp_tax else "")
+        )
+        # Commander damage totals
+        cmd_damage = state.get("commander_damage", {})
+        if cmd_damage:
+            for perm_id, dmg_by_player in cmd_damage.items():
+                for player_name, total in dmg_by_player.items():
+                    commander_lines.append(f"Commander damage to {player_name} from {perm_id[:8]}: {total}")
+
     lines = [
         f"=== MTG Game — Turn {turn} | {phase} / {step} ===",
         f"You are: {priority_player}",
@@ -59,6 +107,9 @@ def build_game_state_prompt(state: dict, legal_actions: list[dict]) -> str:
         f"Your battlefield: {', '.join(battlefield_names) if battlefield_names else '(none)'}",
         f"Opponent battlefield: {', '.join(opp_battlefield) if opp_battlefield else '(none)'}",
         f"Stack: {', '.join(stack_desc) if stack_desc else '(empty)'}",
+    ]
+    lines.extend(commander_lines)
+    lines += [
         "",
         "Legal actions (choose one by index):",
     ]

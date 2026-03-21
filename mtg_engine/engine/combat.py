@@ -355,6 +355,14 @@ def assign_combat_damage(
                         player.poison_counters += assign.damage
                     else:
                         player.life -= assign.damage
+                        # Commander damage tracking: record if attacker is a commander
+                        if game_state.format == "commander" and assign.damage > 0:
+                            controller = get_player(game_state, source.controller)
+                            if controller.commander_name and source.card.name == controller.commander_name:
+                                if source.id not in game_state.commander_damage:
+                                    game_state.commander_damage[source.id] = {}
+                                prev = game_state.commander_damage[source.id].get(player.name, 0)
+                                game_state.commander_damage[source.id][player.name] = prev + assign.damage
                     break
 
         # Lifelink: source controller gains life (REQ-R11)

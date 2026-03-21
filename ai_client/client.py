@@ -36,7 +36,13 @@ class EngineClient:
             "deck1": config.deck1,
             "deck2": config.deck2,
             "verbose": config.verbose,
+            "format": config.format,
         }
+        if config.format == "commander":
+            if config.commander1:
+                body["commander1"] = config.commander1
+            if config.commander2:
+                body["commander2"] = config.commander2
         data = self._request("POST", "/game", json=body)
         gs = data["data"]
         return gs["game_id"]

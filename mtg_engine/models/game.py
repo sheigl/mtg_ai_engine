@@ -51,6 +51,7 @@ class Card(BaseModel):
     toughness: Optional[str] = None
     loyalty: Optional[str] = None
     colors: list[str] = Field(default_factory=list)
+    color_identity: list[str] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
     faces: Optional[list[CardFace]] = None
     cmc: float = 0.0
@@ -106,6 +107,10 @@ class PlayerState(BaseModel):
     lands_played_this_turn: int = 0
     has_lost: bool = False
     max_hand_size: int = 7
+    # Commander format
+    command_zone: list[Card] = Field(default_factory=list)
+    commander_name: Optional[str] = None
+    commander_cast_count: int = 0
 
 
 class PendingTrigger(BaseModel):
@@ -148,6 +153,9 @@ class GameState(BaseModel):
     is_game_over: bool = False
     winner: Optional[str] = None
     combat: Optional[CombatState] = None
+    # Commander format
+    format: str = "standard"
+    commander_damage: dict[str, dict[str, int]] = Field(default_factory=dict)
 
     def compute_hash(self) -> str:
         """Compute deterministic hash of state, excluding state_hash itself. REQ-API05"""

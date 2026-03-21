@@ -51,6 +51,19 @@ def _check_once(game_state: GameState) -> tuple[GameState, list[SBAEvent]]:
             p.has_lost = True
             events.append(SBAEvent("poison", f"{p.name} has 10+ poison counters and loses", [p.name]))
 
+    # Commander damage SBA: 21+ damage from a single commander → player loses
+    if game_state.format == "commander":
+        for perm_id, damage_by_player in game_state.commander_damage.items():
+            for defender_name, total in damage_by_player.items():
+                player = next((p for p in game_state.players if p.name == defender_name), None)
+                if player and total >= 21 and not player.has_lost:
+                    player.has_lost = True
+                    events.append(SBAEvent(
+                        "commander_damage",
+                        f"{defender_name} has taken 21+ commander damage from {perm_id} and loses",
+                        [defender_name],
+                    ))
+
     # CR 704.5d: tokens in non-battlefield zones cease to exist
     for p in game_state.players:
         p.graveyard[:] = [c for c in p.graveyard if not getattr(c, "is_token", False)]
