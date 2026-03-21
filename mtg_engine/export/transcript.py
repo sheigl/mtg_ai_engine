@@ -3,7 +3,7 @@ Play-by-play transcript recorder. REQ-D04, REQ-D05, REQ-D06.
 Records every engine event in sequence with natural-language descriptions.
 """
 import uuid
-from typing import Any
+from typing import Any, Callable
 from pydantic import BaseModel, Field
 
 
@@ -25,6 +25,18 @@ class TranscriptRecorder:
         self.game_id = game_id
         self._entries: list[TranscriptEntry] = []
         self._seq = 0
+        self._listeners: list[Callable[["TranscriptEntry"], None]] = []
+
+    def register_listener(self, fn: Callable[["TranscriptEntry"], None]) -> None:
+        """Register a callback invoked for every new TranscriptEntry."""
+        self._listeners.append(fn)
+
+    def _notify_listeners(self, entry: "TranscriptEntry") -> None:
+        for fn in self._listeners:
+            try:
+                fn(entry)
+            except Exception:
+                pass
 
     def _next_seq(self) -> int:
         self._seq += 1
@@ -49,15 +61,16 @@ class TranscriptRecorder:
             step=step,
         )
         self._entries.append(e)
+        self._notify_listeners(e)
         return e
 
     # ── Event recording methods ──────────────────────────────────────────────
 
-    def record_phase_change(self, turn: int, phase: str, step: str) -> None:
+    def record_phase_change(self, turn: int, phase: str, step: str, active_player: str = "") -> None:
         self._entry(
             "phase_change",
             f"Turn {turn}: entering {phase} — {step}",
-            {"turn": turn, "phase": phase, "step": step},
+            {"turn": turn, "phase": phase, "step": step, "active_player": active_player},
             turn, phase, step,
         )
 
@@ -144,6 +157,71 @@ class TranscriptRecorder:
             "choice_made",
             f"{player} chooses: {selection} ({choice_type})",
             {"player": player, "choice_type": choice_type, "selection": str(selection)},
+            turn, phase, step,
+        )
+
+    def record_attack(
+        self, player: str, card_name: str, defending_id: str,
+        turn: int, phase: str, step: str,
+    ) -> None:
+        self._entry(
+            "attack",
+            f"{player} attacks with {card_name} \u2192 {defending_id}.",
+            {"player": player, "card_name": card_name, "defending_id": defending_id},
+            turn, phase, step,
+        )
+
+    def record_block(
+        self, blocker_controller: str, blocker_name: str, attacker_name: str,
+        turn: int, phase: str, step: str,
+    ) -> None:
+        self._entry(
+            "block",
+            f"{blocker_controller} blocks {attacker_name} with {blocker_name}.",
+            {"blocker_controller": blocker_controller, "blocker_name": blocker_name, "attacker_name": attacker_name},
+            turn, phase, step,
+        )
+
+    def record_activate(
+        self, player: str, perm_name: str, ability_index: int, targets: list[str],
+        turn: int, phase: str, step: str,
+    ) -> None:
+        target_str = f" targeting {', '.join(targets)}" if targets else ""
+        self._entry(
+            "activate",
+            f"{player} activates ability of {perm_name}{target_str}.",
+            {"player": player, "perm_name": perm_name, "ability_index": ability_index, "targets": targets},
+            turn, phase, step,
+        )
+
+    def record_life_change(
+        self, player: str, delta: int, source: str, new_total: int,
+        turn: int, phase: str, step: str,
+    ) -> None:
+        if delta == 0:
+            return
+        direction = "gains" if delta > 0 else "loses"
+        amount = abs(delta)
+        self._entry(
+            "life_change",
+            f"{player} {direction} {amount} life from {source}. ({player} life: {new_total})",
+            {"player": player, "delta": delta, "source": source, "new_total": new_total},
+            turn, phase, step,
+        )
+
+    def record_draw(self, player: str, turn: int, phase: str, step: str) -> None:
+        self._entry(
+            "draw",
+            f"{player} draws a card.",
+            {"player": player},
+            turn, phase, step,
+        )
+
+    def record_game_end(self, winner: str, reason: str, turn: int, phase: str, step: str) -> None:
+        self._entry(
+            "game_end",
+            f"Game over. Winner: {winner} ({reason}).",
+            {"winner": winner, "reason": reason},
             turn, phase, step,
         )
 
