@@ -34,6 +34,7 @@ class CastRequest(BaseModel):
     alternative_cost: Optional[str] = None
     modes_chosen: list[int] = Field(default_factory=list)
     dry_run: bool = False
+    from_command_zone: bool = False
 
 
 class ActivateRequest(BaseModel):
