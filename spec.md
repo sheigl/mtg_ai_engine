@@ -43,6 +43,39 @@ automatically without human involvement in each game.
   clone entering as a copy, damage prevention replacement effects)
 - Training data output is valid JSON conforming to defined schemas
 
+## Performance Considerations
+
+- Benchmark deck load times for decks with 100+ cards (REQ-P01)
+- Ensure API latency remains under 200ms for all core game actions (REQ-P02)
+- Support 100+ concurrent game sessions without degradation (REQ-P03)
+
+## Security Validation
+
+- Validate all file uploads for malicious content (REQ-S01)
+- Enforce strict content-type validation for uploaded deck files (REQ-S02)
+- Implement rate-limiting for file upload endpoints (REQ-S03)
+
+## User Interface & Experience
+
+- Import workflow includes: file selection → format validation → preview → confirmation (REQ-U01)
+- Clear error messages for invalid deck formats (REQ-U02)
+- Progress indicators for large file uploads (REQ-U03)
+
+## Error Code Alignment
+
+- Map all error responses to specific requirement numbers in `requirements.md`:
+  - 400: Invalid deck format → REQ-D01
+  - 403: File upload rejected → REQ-S02
+  - 500: Internal rule engine error → REQ-R01
+
+## Test Coverage
+
+- Integration tests for edge cases:
+  - Invalid file formats (REQ-T01)
+  - Large file uploads (>10MB) (REQ-T02)
+  - Concurrent imports (REQ-T03)
+  - Malformed JSON in deck files (REQ-T04)
+
 ## Out of Scope (v1)
 
 - Multiplayer (more than 2 players)

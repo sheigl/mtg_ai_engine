@@ -302,3 +302,147 @@
     no state bleed between games (REQ-P02)
   Done when: 10 concurrent games complete with correct, isolated
   outcomes
+
+---
+
+## Phase 8 — Archidekt Deck Import Integration
+
+- [x] TASK-28: Implement Archidekt deck import feature
+  Before writing any code, review the updated `spec.md` for the
+  Archidekt deck import feature requirements (REQ-P01, REQ-P02,
+  REQ-P03, REQ-S01, REQ-S02, REQ-S03, REQ-U01, REQ-U02, REQ-U03, REQ-T01, REQ-T02, REQ-T03, REQ-T04)
+
+  ### Implementation Steps
+
+  #### 1. Create Pydantic models for deck import
+  - `DeckImportRequest` (Pydantic v2):
+    - `archidekt_url: str | None` (URL to Archidekt deck)
+    - `file_data: bytes | None` (uploaded file content)
+    - `format: DeckFormat` (enum: ARCHIDEKT_JSON, ARCHIDEKT_TEXT, SCRYALLAH_TXT)
+    - `deck_name: str` (optional custom name)
+  - `DeckPreview` (Pydantic v2):
+    - `main_deck: list[CardPreview]` (list of cards with quantities)
+    - `sideboard: list[CardPreview]` (optional sideboard)
+    - `total_cards: int` (main deck count)
+    - `sideboard_count: int` (sideboard count)
+    - `is_valid: bool` (deck legality check)
+    - `errors: list[str]` (validation errors if invalid)
+  - `CardPreview` (Pydantic v2):
+    - `name: str`
+    - `quantity: int`
+    - `scryfall_id: str | None`
+    - `is_legal: bool`
+
+  #### 2. Implement deck parser in `card_data/archidekt_parser.py`
+  - `parse_archidekt_json(url: str) -> dict` — fetches and parses Archidekt JSON API
+  - `parse_archidekt_text(content: str) -> dict` — parses text format (card name xN)
+  - `parse_scryfall_txt(content: str) -> dict` — parses Scryfall text format
+  - All parsers return: `{"main": [(name, qty), ...], "sideboard": [(name, qty), ...]}`
+  - Validate deck size: main deck 60+ cards, sideboard max 15
+  - Validate card count: max 4 of each non-basic card
+  - Handle special cases: basic lands (unlimited), token cards (warn but allow)
+
+  #### 3. Implement deck validation in `card_data/deck_validator.py`
+  - `validate_deck_format(deck_data: dict) -> tuple[bool, list[str]]`
+  - `check_card_legality(card_name: str, format: str) -> bool`
+  - `resolve_cards(card_names: list[str]) -> list[Card]` — uses ScryfallClient
+  - Handle unknown cards: return list of names that couldn't be resolved
+  - Enforce format restrictions (Standard, Modern, etc.) if specified
+  - Performance: cache card lookups, batch API calls (REQ-P01)
+
+  #### 4. Implement security validation in `card_data/security.py`
+  - `validate_file_upload(file_content: bytes, content_type: str) -> bool` (REQ-S01)
+  - `sanitize_input(deck_name: str) -> str` — strip dangerous characters
+  - `check_file_size(content: bytes) -> bool` — max 10MB (REQ-T02)
+  - `validate_content_type(content_type: str) -> bool` (REQ-S02)
+  - Rate limiting: max 10 imports per minute per IP (REQ-S03)
+  - Input sanitization: prevent injection attacks
+
+  #### 5. Implement API endpoints in `api/deck_import.py`
+  - `POST /deck/import` — import deck from URL or file upload
+    - Request body: `DeckImportRequest`
+    - Returns: `DeckPreview` with validation results
+    - HTTP 200: success with preview
+    - HTTP 400: invalid format (REQ-D01)
+    - HTTP 403: upload rejected (REQ-S02)
+    - HTTP 500: internal error (REQ-R01)
+  - `POST /deck/import/{deck_id}/preview` — get preview of imported deck
+  - `GET /deck/import/{deck_id}` — retrieve saved deck
+  - `DELETE /deck/import/{deck_id}` — delete imported deck
+  - All endpoints support `dry_run` parameter for validation without saving
+
+  #### 6. Implement deck preview workflow (REQ-U01)
+  - Step 1: File selection or URL input
+  - Step 2: Format validation and parsing
+  - Step 3: Preview display (card list, errors, warnings)
+  - Step 4: User confirmation or edit
+  - Step 5: Save to deck library or use in game
+  - Progress indicators for large files (REQ-U03)
+  - Clear error messages for invalid decks (REQ-U02)
+
+  #### 7. Integrate with game creation
+  - `POST /game` accepts `deck_id` parameter to use imported deck
+  - `POST /game` accepts `deck_preview` parameter to create game from preview
+  - Imported decks are stored in memory with TTL (24 hours)
+  - Deck library persists across sessions (optional MongoDB storage)
+
+  #### 8. Performance optimizations (REQ-P01, REQ-P02)
+  - Batch card resolution: resolve 100 cards in parallel
+  - Cache resolved decks in Redis/Memory (TTL 1 hour)
+  - Async file processing for large decks
+  - API latency under 200ms for deck preview (REQ-P02)
+  - Support 100+ concurrent imports (REQ-P03)
+
+  #### 9. Error handling and logging
+  - Log all import attempts with timestamps
+  - Track failed imports for debugging
+  - Return structured error responses with error codes
+  - Map errors to requirement numbers (REQ-D01, REQ-S02, REQ-R01)
+
+  ### Done when:
+  - [x] Pydantic models for `DeckImportRequest`, `DeckPreview`, `CardPreview` are defined
+  - [x] Archidekt JSON parser works with real Archidekt deck URLs
+  - [x] Text format parser handles standard decklist formats
+  - [x] Deck validation enforces 60-card minimum, 4-copy limit
+  - [x] Security validation rejects malicious file uploads
+  - [x] Rate limiting prevents abuse (10 imports/minute/IP)
+  - [x] API endpoints return correct HTTP status codes and error messages
+  - [x] Preview workflow completes in under 30 seconds for valid decks
+  - [x] Performance benchmarks: 100+ card deck loads in under 5s
+  - [x] Integration tests pass for all edge cases (REQ-T01 to REQ-T04)
+  - [x] Clear error messages displayed for invalid deck formats
+  - [x] Progress indicators shown for large file uploads
+
+  ### Testing Requirements
+  - Unit tests for all parser functions
+  - Integration tests for API endpoints
+  - Edge case tests:
+    - Invalid file formats (REQ-T01)
+    - Large file uploads (>10MB) (REQ-T02)
+    - Concurrent imports (REQ-T03)
+    - Malformed JSON in deck files (REQ-T04)
+  - Performance tests: deck load times for 100+ card decks
+  - Security tests: file upload validation, rate limiting
+
+  ### Files to Create/Modify
+  - `models/deck_import.py` — Pydantic models for deck import
+  - `card_data/archidekt_parser.py` — Archidekt deck parser
+  - `card_data/deck_validator.py` — Deck validation logic
+  - `card_data/security.py` — Security validation
+  - `api/deck_import.py` — Deck import API endpoints
+  - `tests/api/test_deck_import.py` — API integration tests
+  - `tests/card_data/test_archidekt_parser.py` — Parser unit tests
+
+  ### Dependencies
+  - `httpx` — Async HTTP client for Archidekt API
+  - `aiofiles` — Async file I/O for large files
+  - `tenacity` — Retry logic for API calls
+  - `pydantic` — All data models (v2)
+
+  ### Notes
+  - Do not hard-code card names — use Scryfall API for resolution
+  - All game state must be fully serializable to JSON
+  - Engine must be deterministic given a fixed random seed
+  - Follow project coding conventions (type hints, Pydantic v2)
+  - Reference CR numbers in comments for rules-related validation
+
