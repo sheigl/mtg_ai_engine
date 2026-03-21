@@ -189,10 +189,23 @@ def draw_card(game_state: GameState, player_name: str) -> tuple[GameState, Card 
     """
     Draw the top card from the player's library. REQ-G08.
     Returns None if the library is empty (SBA 704.5b will catch this).
+    Emits a zone-change event with is_draw=True so the verbose logger can record
+    the draw without revealing the card identity.
     """
     player = get_player(game_state, player_name)
     if not player.library:
         return game_state, None  # SBA will handle the loss condition
     card = player.library.pop(0)
     player.hand.append(card)
+    # Emit draw event (card_name intentionally omitted — private information)
+    event: ZoneChangeEvent = {
+        "card_id": card.id,
+        "card_name": None,
+        "from_zone": "library",
+        "to_zone": "hand",
+        "player": player_name,
+        "is_token": False,
+        "is_draw": True,
+    }
+    _emit_zone_change(event, game_state)
     return game_state, card
