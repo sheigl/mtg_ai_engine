@@ -1,13 +1,16 @@
 """Prompt building and default deck for the AI CLI client."""
 
-# Built-in 40-card test deck (T007)
+# Built-in 60-card test deck
 DEFAULT_DECK: list[str] = (
-    ["Plains"] * 20
+    ["Plains"] * 24
+    + ["Forest"] * 8
     + ["Llanowar Elves"] * 4
     + ["Grizzly Bears"] * 4
     + ["Giant Growth"] * 4
     + ["Lightning Bolt"] * 4
     + ["Counterspell"] * 4
+    + ["Elvish Warrior"] * 4
+    + ["Rancor"] * 4
 )
 
 
