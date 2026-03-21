@@ -348,3 +348,6 @@ against CR 603.3b.
 - Do not ask the user questions mid-task via AskUserQuestion. If a
   tool or dependency is missing, install it with pip and continue.
   Only stop if a task is fundamentally blocked with no workaround.
+
+## Recent Changes
+- 006-plan-spec-from-existing: Added [if applicable, e.g., PostgreSQL, CoreData, files or N/A]
