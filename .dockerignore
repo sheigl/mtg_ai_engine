@@ -1,0 +1,78 @@
+# Selective exclude
+.git
+.gitignore
+.gitattributes
+
+# Development files
+Dockerfile
+docker-compose.yml
+docker-compose.*.yml
+
+# Test files
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Archive files
+*.zip
+*.tar
+*.tar.gz
+
+# MyPy cache
+.mypy_cache/
+
+# PyType cache
+.pytype/
+
+# Hypothesis cache
+.hypothesis/

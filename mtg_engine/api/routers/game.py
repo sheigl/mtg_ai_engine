@@ -22,7 +22,7 @@ from mtg_engine.engine.combat import (
     declare_attackers, declare_blockers, order_blockers, assign_combat_damage, end_combat
 )
 from mtg_engine.engine.triggers import put_trigger_on_stack
-from mtg_engine.card_data.deck_loader import load_deck
+from mtg_engine.card_data.deck_loader import load_deck, load_commander_deck
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/game", tags=["game"])
@@ -36,6 +36,14 @@ class CreateGameRequest(BaseModel):
     deck1: list[str]   # card names
     deck2: list[str]
     seed: int | None = None
+    verbose: bool = False
+    format: str = "standard"
+    commander1: str | None = None
+    commander2: str | None = None
+
+
+class VerboseToggleRequest(BaseModel):
+    enabled: bool
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -67,23 +75,118 @@ def _run_sbas(gs: GameState) -> GameState:
     return gs
 
 
+def _get_recorder_safe(game_id: str, mgr=None):
+    """Return the recorder for a game, or None if not available."""
+    try:
+        return (mgr or get_manager()).get_recorder(game_id)
+    except KeyError:
+        return None
+
+
+def _record_transition_events(
+    recorder,
+    gs_after: GameState,
+    before_turn: int,
+    before_phase,
+    before_step,
+    before_game_over: bool,
+    before_hand_sizes: dict,
+    before_life: dict,
+) -> None:
+    """Record phase transitions, draws, life changes, and game end detected by comparing states."""
+    turn = gs_after.turn
+    phase = gs_after.phase.value
+    step = gs_after.step.value
+
+    # Phase / turn transition
+    if gs_after.turn != before_turn or gs_after.phase != before_phase or gs_after.step != before_step:
+        recorder.record_phase_change(turn, phase, step, active_player=gs_after.active_player)
+
+    # Draws (hand size grew)
+    for p in gs_after.players:
+        old_size = before_hand_sizes.get(p.name, 0)
+        draws = len(p.hand) - old_size
+        for _ in range(draws):
+            recorder.record_draw(p.name, turn, phase, step)
+
+    # Life changes
+    for p in gs_after.players:
+        old_life = before_life.get(p.name, p.life)
+        if p.life != old_life:
+            delta = p.life - old_life
+            source = "unknown"
+            recorder.record_life_change(p.name, delta, source, p.life, turn, phase, step)
+
+    # Game over
+    if not before_game_over and gs_after.is_game_over:
+        winner = gs_after.winner or "unknown"
+        # Derive reason from player states
+        reason = "unknown"
+        for p in gs_after.players:
+            if p.has_lost:
+                if p.life <= 0:
+                    reason = "life_total_zero"
+                elif p.poison_counters >= 10:
+                    reason = "poison_counters"
+                elif not p.library:
+                    reason = "decked"
+                break
+        recorder.record_game_end(winner, reason, turn, phase, step)
+
+
 # ─── Game lifecycle ───────────────────────────────────────────────────────────
 
 @router.post("")
 def create_game(req: CreateGameRequest) -> dict:
     """POST /game — create a new game. REQ-G01"""
-    try:
-        deck1_cards = load_deck(req.deck1)
-        deck2_cards = load_deck(req.deck2)
-    except Exception as e:
-        raise _err(str(e), "DECK_LOAD_ERROR")
-
     mgr = get_manager()
-    gs = mgr.create_game(
-        req.player1_name, req.player2_name,
-        deck1_cards, deck2_cards,
-        seed=req.seed,
-    )
+
+    if req.format == "commander":
+        if not req.commander1 or not req.commander2:
+            raise _err("Commander format requires commander1 and commander2", "INVALID_COMMANDER")
+        try:
+            deck1_cards, commander1_card = load_commander_deck(req.deck1, req.commander1)
+        except ValueError as e:
+            msg = str(e)
+            code = (
+                "SINGLETON_VIOLATION" if "Singleton" in msg
+                else "COLOR_IDENTITY_VIOLATION" if "Color identity" in msg
+                else "INVALID_COMMANDER" if "legendary" in msg.lower() or "not found" in msg
+                else "DECK_LOAD_ERROR"
+            )
+            raise _err(msg, code)
+        try:
+            deck2_cards, commander2_card = load_commander_deck(req.deck2, req.commander2)
+        except ValueError as e:
+            msg = str(e)
+            code = (
+                "SINGLETON_VIOLATION" if "Singleton" in msg
+                else "COLOR_IDENTITY_VIOLATION" if "Color identity" in msg
+                else "INVALID_COMMANDER" if "legendary" in msg.lower() or "not found" in msg
+                else "DECK_LOAD_ERROR"
+            )
+            raise _err(msg, code)
+        gs = mgr.create_game(
+            req.player1_name, req.player2_name,
+            deck1_cards, deck2_cards,
+            seed=req.seed,
+            verbose=req.verbose,
+            format="commander",
+            commander1_card=commander1_card,
+            commander2_card=commander2_card,
+        )
+    else:
+        try:
+            deck1_cards = load_deck(req.deck1)
+            deck2_cards = load_deck(req.deck2)
+        except Exception as e:
+            raise _err(str(e), "DECK_LOAD_ERROR")
+        gs = mgr.create_game(
+            req.player1_name, req.player2_name,
+            deck1_cards, deck2_cards,
+            seed=req.seed,
+            verbose=req.verbose,
+        )
     return _ok(gs)
 
 
@@ -137,6 +240,20 @@ def delete_game(game_id: str) -> dict:
     return {"data": {"game_id": game_id, "status": "deleted", "winner": gs.winner}}
 
 
+# ─── Verbose logging toggle ───────────────────────────────────────────────────
+
+@router.post("/{game_id}/verbose")
+def toggle_verbose(game_id: str, req: VerboseToggleRequest) -> dict:
+    """POST /game/{game_id}/verbose — enable or disable play-by-play logging."""
+    mgr = get_manager()
+    _get_gs(game_id)  # raise 404 if game not found
+    try:
+        mgr.set_verbose(game_id, req.enabled)
+    except KeyError:
+        raise _err("Game not found", "GAME_NOT_FOUND", 404)
+    return _ok({"game_id": game_id, "verbose_enabled": req.enabled})
+
+
 # ─── Priority and turn ────────────────────────────────────────────────────────
 
 @router.post("/{game_id}/pass")
@@ -149,6 +266,14 @@ def pass_priority_endpoint(game_id: str, req: PassRequest) -> dict:
         gs = _get_gs(game_id)
 
     player = gs.priority_holder
+    # Save before-state for event detection
+    before_turn = gs.turn
+    before_phase = gs.phase
+    before_step = gs.step
+    before_game_over = gs.is_game_over
+    before_hand_sizes = {p.name: len(p.hand) for p in gs.players}
+    before_life = {p.name: p.life for p in gs.players}
+
     try:
         gs = pass_priority(gs, player)
         gs = _run_sbas(gs)
@@ -157,6 +282,13 @@ def pass_priority_endpoint(game_id: str, req: PassRequest) -> dict:
 
     if not req.dry_run:
         mgr.update(game_id, gs)
+        recorder = _get_recorder_safe(game_id, mgr)
+        if recorder:
+            _record_transition_events(
+                recorder, gs,
+                before_turn, before_phase, before_step,
+                before_game_over, before_hand_sizes, before_life,
+            )
     return _ok(gs)
 
 
@@ -216,10 +348,53 @@ def cast(game_id: str, req: CastRequest) -> dict:
     else:
         gs = _get_gs(game_id)
 
+    # Save caster and card name before cast_spell modifies state
+    caster = gs.priority_holder
+    cast_turn, cast_phase, cast_step = gs.turn, gs.phase.value, gs.step.value
+    player_gs = get_player(gs, caster)
+
+    if req.from_command_zone:
+        # Commander cast: find card in command zone, validate tax, then cast
+        cmd_card = next((c for c in player_gs.command_zone if c.id == req.card_id), None)
+        if cmd_card is None:
+            raise _err("Commander not in command zone", "INVALID_ACTION")
+        card_name = cmd_card.name
+        tax = 2 * player_gs.commander_cast_count
+
+        # Temporarily move commander into hand so cast_spell can find it
+        player_gs.command_zone[:] = [c for c in player_gs.command_zone if c.id != req.card_id]
+        player_gs.hand.append(cmd_card)
+        try:
+            gs = cast_spell(
+                gs, caster, req.card_id, req.targets, req.mana_payment,
+                alternative_cost=req.alternative_cost, modes_chosen=req.modes_chosen,
+            )
+            gs = _run_sbas(gs)
+        except ValueError as e:
+            # Rollback: put commander back in command zone
+            player_gs2 = get_player(gs, caster)
+            player_gs2.hand[:] = [c for c in player_gs2.hand if c.id != req.card_id]
+            player_gs2.command_zone.append(cmd_card)
+            raise _err(str(e), "INVALID_ACTION")
+
+        # Increment commander cast count
+        player_gs2 = get_player(gs, caster)
+        player_gs2.commander_cast_count += 1
+
+        if not req.dry_run:
+            mgr.update(game_id, gs)
+            recorder = _get_recorder_safe(game_id, mgr)
+            if recorder:
+                recorder.record_cast(caster, card_name, req.targets, cast_turn, cast_phase, cast_step)
+        return _ok(gs)
+
+    card_obj = next((c for c in player_gs.hand if c.id == req.card_id), None)
+    card_name = card_obj.name if card_obj else req.card_id
+
     try:
         gs = cast_spell(
             gs,
-            gs.priority_holder,
+            caster,
             req.card_id,
             req.targets,
             req.mana_payment,
@@ -232,6 +407,9 @@ def cast(game_id: str, req: CastRequest) -> dict:
 
     if not req.dry_run:
         mgr.update(game_id, gs)
+        recorder = _get_recorder_safe(game_id, mgr)
+        if recorder:
+            recorder.record_cast(caster, card_name, req.targets, cast_turn, cast_phase, cast_step)
     return _ok(gs)
 
 
@@ -246,6 +424,11 @@ def activate(game_id: str, req: ActivateRequest) -> dict:
     else:
         gs = _get_gs(game_id)
 
+    # Save activator context before ability fires
+    activator = gs.priority_holder
+    act_turn, act_phase, act_step = gs.turn, gs.phase.value, gs.step.value
+    perm_name_for_log = req.permanent_id  # fallback; overwritten below if perm found
+
     try:
         from mtg_engine.card_data.ability_parser import parse_oracle_text, ActivatedAbility
         from mtg_engine.engine.mana import pay_cost, add_mana
@@ -255,6 +438,7 @@ def activate(game_id: str, req: ActivateRequest) -> dict:
             raise ValueError(f"Permanent {req.permanent_id!r} not on battlefield")
         if perm.controller != gs.priority_holder:
             raise ValueError("You don't control that permanent")
+        perm_name_for_log = perm.card.name
 
         abilities = parse_oracle_text(perm.card.oracle_text or "", perm.card.type_line)
         activated = [a for a in abilities if isinstance(a, ActivatedAbility)]
@@ -289,6 +473,12 @@ def activate(game_id: str, req: ActivateRequest) -> dict:
 
     if not req.dry_run:
         mgr.update(game_id, gs)
+        recorder = _get_recorder_safe(game_id, mgr)
+        if recorder:
+            recorder.record_activate(
+                activator, perm_name_for_log, req.ability_index, req.targets,
+                act_turn, act_phase, act_step,
+            )
     return _ok(gs)
 
 
@@ -333,6 +523,17 @@ def do_declare_attackers(game_id: str, req: DeclareAttackersRequest) -> dict:
     else:
         gs = _get_gs(game_id)
 
+    # Build attacker name map before declaring (permanents still on battlefield)
+    attacker_map = {
+        decl.attacker_id: (
+            next((p.card.name for p in gs.battlefield if p.id == decl.attacker_id), decl.attacker_id),
+            decl.defending_id,
+        )
+        for decl in req.attack_declarations
+    }
+    attacker_player = gs.active_player
+    atk_turn, atk_phase, atk_step = gs.turn, gs.phase.value, gs.step.value
+
     try:
         gs = declare_attackers(gs, req.attack_declarations)
         gs = _run_sbas(gs)
@@ -341,6 +542,10 @@ def do_declare_attackers(game_id: str, req: DeclareAttackersRequest) -> dict:
 
     if not req.dry_run:
         mgr.update(game_id, gs)
+        recorder = _get_recorder_safe(game_id, mgr)
+        if recorder:
+            for card_name, defending_id in attacker_map.values():
+                recorder.record_attack(attacker_player, card_name, defending_id, atk_turn, atk_phase, atk_step)
     return _ok(gs)
 
 
@@ -353,6 +558,18 @@ def do_declare_blockers(game_id: str, req: DeclareBlockersRequest) -> dict:
     else:
         gs = _get_gs(game_id)
 
+    # Build blocker/attacker name map before declaring
+    blocker_map = []
+    blk_turn, blk_phase, blk_step = gs.turn, gs.phase.value, gs.step.value
+    for decl in req.block_declarations:
+        blocker_perm = next((p for p in gs.battlefield if p.id == decl.blocker_id), None)
+        attacker_perm = next((p for p in gs.battlefield if p.id == decl.attacker_id), None)
+        blocker_map.append((
+            blocker_perm.controller if blocker_perm else "unknown",
+            blocker_perm.card.name if blocker_perm else decl.blocker_id,
+            attacker_perm.card.name if attacker_perm else decl.attacker_id,
+        ))
+
     try:
         gs = declare_blockers(gs, req.block_declarations)
         gs = _run_sbas(gs)
@@ -361,6 +578,10 @@ def do_declare_blockers(game_id: str, req: DeclareBlockersRequest) -> dict:
 
     if not req.dry_run:
         mgr.update(game_id, gs)
+        recorder = _get_recorder_safe(game_id, mgr)
+        if recorder:
+            for blocker_controller, blocker_name, attacker_name in blocker_map:
+                recorder.record_block(blocker_controller, blocker_name, attacker_name, blk_turn, blk_phase, blk_step)
     return _ok(gs)
 
 
@@ -393,6 +614,10 @@ def do_assign_combat_damage(game_id: str, req: AssignCombatDamageRequest) -> dic
     else:
         gs = _get_gs(game_id)
 
+    before_game_over = gs.is_game_over
+    before_life = {p.name: p.life for p in gs.players}
+    dmg_turn, dmg_phase, dmg_step = gs.turn, gs.phase.value, gs.step.value
+
     try:
         gs = assign_combat_damage(gs, req.assignments)
         gs = _run_sbas(gs)
@@ -401,6 +626,24 @@ def do_assign_combat_damage(game_id: str, req: AssignCombatDamageRequest) -> dic
 
     if not req.dry_run:
         mgr.update(game_id, gs)
+        recorder = _get_recorder_safe(game_id, mgr)
+        if recorder:
+            for p in gs.players:
+                old_life = before_life.get(p.name, p.life)
+                if p.life != old_life:
+                    delta = p.life - old_life
+                    recorder.record_life_change(p.name, delta, "combat", p.life, dmg_turn, dmg_phase, dmg_step)
+            if not before_game_over and gs.is_game_over:
+                winner = gs.winner or "unknown"
+                reason = "unknown"
+                for p in gs.players:
+                    if p.has_lost:
+                        if p.life <= 0:
+                            reason = "life_total_zero"
+                        elif p.poison_counters >= 10:
+                            reason = "poison_counters"
+                        break
+                recorder.record_game_end(winner, reason, dmg_turn, dmg_phase, dmg_step)
     return _ok(gs)
 
 
@@ -555,5 +798,23 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                 action_type="put_trigger",
                 description=f"Put trigger on stack: {trigger.effect_description}",
             ))
+
+    # Commander: cast commander from command zone
+    if gs.format == "commander" and is_active and is_main and stack_empty:
+        from mtg_engine.engine.mana import can_pay_cost as _can_pay
+        for cmd_card in player.command_zone:
+            base_cost = cmd_card.mana_cost or ""
+            tax = 2 * player.commander_cast_count
+            # Build taxed cost string: append {tax} generic if tax > 0
+            taxed_cost = base_cost if tax == 0 else f"{{{tax}}}{base_cost}"
+            if _can_pay(player.mana_pool, taxed_cost):
+                tax_str = f" + {{{tax}}} tax" if tax > 0 else ""
+                actions.append(LegalAction(
+                    action_type="cast_commander",
+                    card_id=cmd_card.id,
+                    card_name=cmd_card.name,
+                    mana_options=[{"mana_cost": base_cost, "commander_tax": tax}],
+                    description=f"Cast {cmd_card.name} from command zone (cost: {base_cost}{tax_str})",
+                ))
 
     return actions
