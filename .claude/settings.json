@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -c \":*)"
+      "Bash(python -c \":*)",
+      "Bash(.specify/scripts/bash/create-new-feature.sh \"I would like to create a very visually appealing web ui front end to observe the currently running games that AI are playing. It doesn''t need to 3d effects, but I would like to see cards etc move around the board\" --json --short-name \"game-observer-ui\" \"Game Observer Web UI\")",
+      "Bash(DESC=\"I would like to create a very visually appealing web ui front end to observe the currently running games that AI are playing. It does not need 3d effects, but I would like to see cards etc move around the board\")",
+      "Bash(.specify/scripts/bash/create-new-feature.sh \"$DESC\" --json --short-name \"game-observer-ui\" \"Game Observer Web UI\")"
     ]
   }
 }
