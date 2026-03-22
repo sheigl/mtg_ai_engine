@@ -1,0 +1,128 @@
+.card {
+  width: var(--card-width);
+  min-width: 80px;
+  height: var(--card-height);
+  border: 2px solid var(--border-default);
+  border-radius: var(--card-radius);
+  background: var(--bg-card);
+  padding: 0.375rem;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  font-size: 0.7rem;
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.card:hover {
+  box-shadow: 0 0 8px rgba(88, 166, 255, 0.3);
+  z-index: 10;
+}
+
+/* MTG color borders */
+.card[data-colors="W"] { border-color: var(--mtg-white); }
+.card[data-colors="U"] { border-color: var(--mtg-blue); }
+.card[data-colors="B"] { border-color: var(--mtg-black); }
+.card[data-colors="R"] { border-color: var(--mtg-red); }
+.card[data-colors="G"] { border-color: var(--mtg-green); }
+.card[data-colors="C"] { border-color: var(--mtg-colorless); }
+.card[data-colors="land"] { border-color: var(--mtg-land); }
+.card[data-colors="multi"] {
+  border-image: linear-gradient(135deg, var(--mtg-white), var(--mtg-blue), var(--mtg-black), var(--mtg-red), var(--mtg-green)) 1;
+}
+
+/* Tapped state */
+.card.tapped {
+  transform: rotate(90deg);
+  margin: 20px 8px;
+}
+
+.card-name {
+  font-weight: 600;
+  font-size: 0.75rem;
+  color: var(--text-primary);
+  line-height: 1.2;
+  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card-type {
+  font-size: 0.625rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-top: 1px solid var(--border-muted);
+  padding-top: 2px;
+  margin-top: auto;
+}
+
+.card-mana-cost {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  font-size: 0.6rem;
+  color: var(--text-secondary);
+  background: rgba(0, 0, 0, 0.5);
+  padding: 1px 3px;
+  border-radius: 3px;
+}
+
+.card-pt {
+  position: absolute;
+  bottom: 3px;
+  right: 4px;
+  font-weight: 700;
+  font-size: 0.75rem;
+  color: var(--text-primary);
+  background: rgba(0, 0, 0, 0.6);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.card-loyalty {
+  position: absolute;
+  bottom: 3px;
+  right: 4px;
+  font-weight: 700;
+  font-size: 0.75rem;
+  color: #e0c060;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.card-counters {
+  position: absolute;
+  top: 3px;
+  left: 4px;
+  display: flex;
+  gap: 2px;
+}
+
+.card-counter-badge {
+  font-size: 0.55rem;
+  padding: 1px 3px;
+  border-radius: 3px;
+  background: var(--active-glow);
+  color: #000;
+  font-weight: 700;
+}
+
+.card-token-badge {
+  position: absolute;
+  bottom: 3px;
+  left: 4px;
+  font-size: 0.5rem;
+  padding: 1px 3px;
+  border-radius: 3px;
+  background: var(--mtg-colorless);
+  color: #000;
+  font-weight: 600;
+}
+
+.card-summoning-sick {
+  opacity: 0.7;
+}

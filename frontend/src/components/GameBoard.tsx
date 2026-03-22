@@ -1,0 +1,119 @@
+import { useParams, useNavigate } from 'react-router-dom'
+import { useGameState } from '../hooks/useGameState'
+import { PlayerZone } from './PlayerZone'
+import { Battlefield } from './Battlefield'
+import { StackView } from './StackView'
+import { PhaseTracker } from './PhaseTracker'
+import { ConnectionStatus } from './ConnectionStatus'
+import { ActionLog } from './ActionLog'
+import type { GameState } from '../types/game'
+import '../styles/board.css'
+
+function getPlayerPermanents(gs: GameState, playerName: string) {
+  return gs.battlefield.filter(p => p.controller === playerName)
+}
+
+function GameOverOverlay({ gs }: { gs: GameState }) {
+  const navigate = useNavigate()
+  if (!gs.is_game_over) return null
+
+  return (
+    <div className="game-over-overlay" onClick={() => navigate('/')}>
+      <div className="game-over-box" onClick={e => e.stopPropagation()}>
+        <div className="game-over-title">Game Over</div>
+        <div className="game-over-winner">
+          {gs.winner === 'draw' ? 'Draw!' : `${gs.winner} wins!`}
+        </div>
+        <button style={{ marginTop: '1rem' }} onClick={() => navigate('/')}>
+          Back to Games
+        </button>
+      </div>
+    </div>
+  )
+}
+
+export function GameBoard() {
+  const { gameId } = useParams<{ gameId: string }>()
+  const { data: gs, isLoading, isError, error } = useGameState(gameId)
+  const navigate = useNavigate()
+
+  if (isError) {
+    const isNotFound = error instanceof Error && error.message === 'GAME_NOT_FOUND'
+    return (
+      <div className="error-container">
+        <ConnectionStatus isError={!isNotFound} isLoading={false} />
+        <div className="error-message">
+          {isNotFound ? 'Game has ended or was not found.' : 'Connection lost. Retrying...'}
+        </div>
+        <button onClick={() => navigate('/')}>Back to Games</button>
+      </div>
+    )
+  }
+
+  if (isLoading || !gs) {
+    return (
+      <div className="loading-container">
+        <ConnectionStatus isError={false} isLoading={true} />
+        Loading game...
+      </div>
+    )
+  }
+
+  const player1 = gs.players[0]
+  const player2 = gs.players[1]
+  const p1Permanents = getPlayerPermanents(gs, player1.name)
+  const p2Permanents = getPlayerPermanents(gs, player2.name)
+  const isCommander = gs.format === 'commander'
+
+  return (
+    <div className="game-board with-sidebar">
+      <ConnectionStatus isError={false} isLoading={false} />
+
+      <button className="back-button" onClick={() => navigate('/')}>
+        ← Games
+      </button>
+
+      {/* Opponent (Player 2) info */}
+      <PlayerZone
+        player={player2}
+        isActive={gs.active_player === player2.name}
+        isOpponent
+        format={gs.format}
+        commanderDamage={isCommander ? gs.commander_damage[player2.name] : undefined}
+      />
+
+      {/* Opponent battlefield */}
+      <Battlefield permanents={p2Permanents} isOpponent />
+
+      {/* Center bar: Stack + Phase */}
+      <div className="center-bar">
+        <StackView stack={gs.stack} />
+        <PhaseTracker
+          turn={gs.turn}
+          phase={gs.phase}
+          step={gs.step}
+          activePlayer={gs.active_player}
+        />
+      </div>
+
+      {/* Player 1 battlefield */}
+      <Battlefield permanents={p1Permanents} />
+
+      {/* Player 1 info */}
+      <PlayerZone
+        player={player1}
+        isActive={gs.active_player === player1.name}
+        format={gs.format}
+        commanderDamage={isCommander ? gs.commander_damage[player1.name] : undefined}
+      />
+
+      {/* Action Log sidebar */}
+      <div className="action-log-container">
+        <ActionLog gameId={gs.game_id} />
+      </div>
+
+      {/* Game over overlay */}
+      <GameOverOverlay gs={gs} />
+    </div>
+  )
+}

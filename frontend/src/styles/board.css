@@ -1,0 +1,245 @@
+.game-board {
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: auto 1fr auto auto 1fr auto;
+  gap: var(--gap-sm);
+  height: 100vh;
+  padding: var(--gap-md);
+  overflow: hidden;
+}
+
+.game-board.with-sidebar {
+  grid-template-columns: 1fr 300px;
+}
+
+.game-board.with-sidebar > .action-log-container {
+  grid-row: 1 / -1;
+  grid-column: 2;
+}
+
+/* Player info bar */
+.player-info {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-md);
+  padding: 0.5rem var(--gap-md);
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  border: 1px solid var(--border-default);
+}
+
+.player-info.active {
+  border-color: var(--active-glow);
+  box-shadow: 0 0 6px rgba(88, 166, 255, 0.2);
+}
+
+.player-info.opponent {
+  flex-direction: row-reverse;
+}
+
+.player-name {
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.player-life {
+  font-size: 1.5rem;
+  font-weight: 700;
+  min-width: 3rem;
+  text-align: center;
+}
+
+.player-life.high { color: var(--life-high); }
+.player-life.mid { color: var(--life-mid); }
+.player-life.low { color: var(--life-low); }
+
+.zone-counts {
+  display: flex;
+  gap: var(--gap-md);
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.zone-count {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.zone-label {
+  opacity: 0.7;
+}
+
+/* Battlefield */
+.battlefield {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--card-width), 1fr));
+  gap: var(--gap-sm);
+  padding: var(--gap-sm);
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  border: 1px solid var(--border-muted);
+  min-height: 100px;
+  overflow-y: auto;
+  align-content: start;
+}
+
+.battlefield.opponent {
+  border-top: 2px solid var(--border-muted);
+}
+
+.battlefield-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-style: italic;
+}
+
+/* Center bar (stack + phase) */
+.center-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.375rem var(--gap-md);
+  background: var(--bg-tertiary);
+  border-radius: 6px;
+  border: 1px solid var(--border-muted);
+  gap: var(--gap-md);
+}
+
+/* Phase tracker */
+.phase-tracker {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-sm);
+  font-size: 0.8rem;
+}
+
+.phase-badge {
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.phase-badge.beginning { background: #3d4752; }
+.phase-badge.precombat_main { background: #1a4d2e; }
+.phase-badge.combat { background: #6e2222; }
+.phase-badge.postcombat_main { background: #1a4d2e; }
+.phase-badge.ending { background: #3d4752; }
+
+.turn-counter {
+  font-weight: 700;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+/* Stack */
+.stack-view {
+  display: flex;
+  gap: var(--gap-sm);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.stack-empty {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-style: italic;
+}
+
+.stack-item {
+  padding: 0.25rem 0.5rem;
+  background: var(--bg-card);
+  border: 1px solid var(--active-glow);
+  border-radius: 4px;
+  font-size: 0.75rem;
+}
+
+.stack-item-name {
+  font-weight: 600;
+}
+
+.stack-item-controller {
+  color: var(--text-secondary);
+  font-size: 0.65rem;
+}
+
+/* Game over overlay */
+.game-over-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.game-over-box {
+  background: var(--bg-secondary);
+  border: 2px solid var(--active-glow);
+  border-radius: 12px;
+  padding: 2rem 3rem;
+  text-align: center;
+}
+
+.game-over-title {
+  font-size: 2rem;
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+}
+
+.game-over-winner {
+  font-size: 1.25rem;
+  color: var(--life-high);
+}
+
+/* Back button */
+.back-button {
+  position: absolute;
+  top: var(--gap-md);
+  left: var(--gap-md);
+  z-index: 50;
+}
+
+/* Commander zones */
+.commander-zone {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-sm);
+  padding: 0.25rem 0.5rem;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  font-size: 0.75rem;
+}
+
+.commander-damage {
+  display: flex;
+  gap: var(--gap-sm);
+  font-size: 0.7rem;
+  color: var(--life-low);
+}
+
+/* Loading / Error states */
+.loading-container,
+.error-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  font-size: 1.2rem;
+  color: var(--text-secondary);
+}
+
+.error-container {
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.error-message {
+  color: var(--life-low);
+}

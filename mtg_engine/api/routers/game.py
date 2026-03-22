@@ -28,6 +28,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/game", tags=["game"])
 
 
+# ─── Response models ─────────────────────────────────────────────────────────
+
+class GameSummary(BaseModel):
+    """Lightweight projection of GameState for the game list view."""
+    game_id: str
+    player1_name: str
+    player2_name: str
+    format: str
+    turn: int
+    phase: str
+    step: str
+    is_game_over: bool
+    winner: str | None = None
+
+
 # ─── Request bodies ───────────────────────────────────────────────────────────
 
 class CreateGameRequest(BaseModel):
@@ -135,6 +150,26 @@ def _record_transition_events(
 
 
 # ─── Game lifecycle ───────────────────────────────────────────────────────────
+
+@router.get("")
+def list_games() -> dict:
+    """GET /game — list all active games."""
+    mgr = get_manager()
+    summaries = []
+    for game_id, gs in mgr._games.items():
+        summaries.append(GameSummary(
+            game_id=game_id,
+            player1_name=gs.players[0].name,
+            player2_name=gs.players[1].name,
+            format=gs.format,
+            turn=gs.turn,
+            phase=gs.phase.value,
+            step=gs.step.value,
+            is_game_over=gs.is_game_over,
+            winner=gs.winner,
+        ).model_dump())
+    return {"data": summaries}
+
 
 @router.post("")
 def create_game(req: CreateGameRequest) -> dict:

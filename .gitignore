@@ -167,3 +167,11 @@ card_data/cache.db
 *.tar.gz
 *.rar
 *.7z
+
+# Node.js / Frontend
+node_modules/
+frontend/dist/
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
