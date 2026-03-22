@@ -105,10 +105,9 @@ def _record_transition_events(
     before_phase,
     before_step,
     before_game_over: bool,
-    before_hand_sizes: dict,
     before_life: dict,
 ) -> None:
-    """Record phase transitions, draws, life changes, and game end detected by comparing states."""
+    """Record phase transitions, life changes, and game end detected by comparing states."""
     turn = gs_after.turn
     phase = gs_after.phase.value
     step = gs_after.step.value
@@ -116,13 +115,6 @@ def _record_transition_events(
     # Phase / turn transition
     if gs_after.turn != before_turn or gs_after.phase != before_phase or gs_after.step != before_step:
         recorder.record_phase_change(turn, phase, step, active_player=gs_after.active_player)
-
-    # Draws (hand size grew)
-    for p in gs_after.players:
-        old_size = before_hand_sizes.get(p.name, 0)
-        draws = len(p.hand) - old_size
-        for _ in range(draws):
-            recorder.record_draw(p.name, turn, phase, step)
 
     # Life changes
     for p in gs_after.players:
@@ -306,7 +298,6 @@ def pass_priority_endpoint(game_id: str, req: PassRequest) -> dict:
     before_phase = gs.phase
     before_step = gs.step
     before_game_over = gs.is_game_over
-    before_hand_sizes = {p.name: len(p.hand) for p in gs.players}
     before_life = {p.name: p.life for p in gs.players}
 
     try:
@@ -322,7 +313,7 @@ def pass_priority_endpoint(game_id: str, req: PassRequest) -> dict:
             _record_transition_events(
                 recorder, gs,
                 before_turn, before_phase, before_step,
-                before_game_over, before_hand_sizes, before_life,
+                before_game_over, before_life,
             )
     return _ok(gs)
 
@@ -360,7 +351,7 @@ def play_land(game_id: str, req: PlayLandRequest) -> dict:
 
         # Move from hand to battlefield (REQ-A02: no stack)
         player.hand[:] = [c for c in player.hand if c.id != req.card_id]
-        gs, _ = put_permanent_onto_battlefield(gs, card, gs.active_player, tapped=False)
+        gs, _ = put_permanent_onto_battlefield(gs, card, gs.active_player, tapped=False, from_zone="hand")
         player.lands_played_this_turn += 1
         gs = _run_sbas(gs)
 
@@ -726,6 +717,7 @@ def legal_actions(game_id: str) -> dict:
     GET /game/{game_id}/legal-actions — compute all legal actions. REQ-S05, REQ-6.3.
     Must respond in under 200ms (REQ-P01).
     """
+    mgr = get_manager()
     gs = _get_gs(game_id)
     actions = _compute_legal_actions(gs)
     return {
@@ -734,14 +726,38 @@ def legal_actions(game_id: str) -> dict:
             "phase": gs.phase.value,
             "step": gs.step.value,
             "legal_actions": [a.model_dump() for a in actions],
+            "is_paused": mgr.is_paused(game_id),
         }
     }
+
+
+@router.post("/{game_id}/pause")
+def pause_game(game_id: str) -> dict:
+    """Pause the game — the AI client will hold before its next decision."""
+    mgr = get_manager()
+    _get_gs(game_id)  # 404 if not found
+    mgr.pause(game_id)
+    return {"data": {"is_paused": True}}
+
+
+@router.post("/{game_id}/resume")
+def resume_game(game_id: str) -> dict:
+    """Resume a paused game."""
+    mgr = get_manager()
+    _get_gs(game_id)  # 404 if not found
+    mgr.resume(game_id)
+    return {"data": {"is_paused": False}}
 
 
 def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
     """Compute all legal actions for the priority holder."""
     from mtg_engine.card_data.ability_parser import parse_oracle_text, ActivatedAbility
     from mtg_engine.engine.mana import can_pay_cost
+
+    # No priority is granted during the untap step (CR 502.4). Return only pass
+    # so the AI immediately advances to upkeep rather than tapping permanents.
+    if gs.step == Step.UNTAP:
+        return [LegalAction(action_type="pass", description="Pass priority")]
 
     actions: list[LegalAction] = []
     player_name = gs.priority_holder
@@ -768,13 +784,36 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                 ))
 
     # Cast spells
+    import re as _re_spell
     from mtg_engine.engine.stack import _is_sorcery_speed, _can_cast_at_sorcery_speed, _has_split_second
+
+    # Precompute available targets for "target creature" spells.
+    _any_creature_on_bf = any(
+        "creature" in p.card.type_line.lower() for p in gs.battlefield
+    )
+    _any_creature_target = _any_creature_on_bf  # simplified: any creature is a valid target
+
+    def _has_required_targets(card: "Card") -> bool:
+        """Return False if the spell requires a target that doesn't exist yet."""
+        oracle = (card.oracle_text or "").lower()
+        type_lower = card.type_line.lower()
+        # Auras need an enchant target — check "enchant creature" in oracle or type
+        if "enchantment" in type_lower and "enchant creature" in oracle:
+            return _any_creature_on_bf
+        # Spells with "target creature" in oracle need a creature on the battlefield
+        if _re_spell.search(r"\btarget creature\b", oracle):
+            return _any_creature_on_bf
+        return True
+
     if not _has_split_second(gs):
         for card in player.hand:
             if "land" in card.type_line.lower():
                 continue
             sorcery_speed = _is_sorcery_speed(card)
             if sorcery_speed and not _can_cast_at_sorcery_speed(gs, player_name):
+                continue
+            # Skip if the spell requires a target that doesn't exist
+            if not _has_required_targets(card):
                 continue
             # Check if player can pay the mana cost
             mana_cost = card.mana_cost or ""
@@ -789,19 +828,85 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                 ))
 
     # Activate abilities
+    # Pre-compute: what mana symbols could still be produced by untapped mana sources?
+    # Used to skip pure-mana activations that can't enable any spell in hand.
+    _re = _re_spell  # reuse the re module already imported above
+    _MANA_ADD_RE = _re.compile(r"add\s+\{([WUBRGC])\}", _re.IGNORECASE)
+
+    def _mana_add_symbol(effect: str) -> str | None:
+        """Return the mana symbol produced by a 'Add {X}' effect, or None."""
+        m = _MANA_ADD_RE.search(effect)
+        return m.group(1).upper() if m else None
+
+    def _pool_after_add(pool: "ManaPool", symbol: str) -> "ManaPool":
+        from mtg_engine.engine.mana import add_mana
+        return add_mana(pool, symbol)
+
+    def _castable_count(pool: "ManaPool") -> int:
+        """Count non-land cards in hand payable with pool and legal to cast right now."""
+        return sum(
+            1 for card in player.hand
+            if "land" not in card.type_line.lower()
+            and can_pay_cost(pool, card.mana_cost or "")
+            and (not _is_sorcery_speed(card) or _can_cast_at_sorcery_speed(gs, player_name))
+        )
+
+    def _total_available_pool() -> "ManaPool":
+        """Current pool plus mana producible from every untapped mana source.
+        Respects summoning sickness: creature tap abilities are excluded when
+        the creature just entered (CR 302.6)."""
+        from mtg_engine.engine.mana import add_mana
+        pool = player.mana_pool.model_copy()
+        for p in gs.battlefield:
+            if p.controller != player_name or p.tapped:
+                continue
+            _p_is_creature = "creature" in p.card.type_line.lower()
+            if _p_is_creature and p.summoning_sick:
+                continue
+            p_abs = parse_oracle_text(p.card.oracle_text or "", p.card.type_line)
+            for p_ab in p_abs:
+                if isinstance(p_ab, ActivatedAbility):
+                    sym = _mana_add_symbol(p_ab.effect)
+                    if sym:
+                        pool = add_mana(pool, sym)
+        return pool
+
+    _current_castable = _castable_count(player.mana_pool)
+    _total_castable = _castable_count(_total_available_pool())
+
     for perm in gs.battlefield:
         if perm.controller != player_name:
             continue
         abilities = parse_oracle_text(perm.card.oracle_text or "", perm.card.type_line)
         activated = [a for a in abilities if isinstance(a, ActivatedAbility)]
         for idx, ab in enumerate(activated):
-            # Check tap cost
-            if "{T}" in ab.cost and perm.tapped:
+            # Check tap cost — CR 302.6: a creature's {T} ability can't be
+            # activated while it has summoning sickness (non-creature permanents
+            # such as lands are unaffected by this rule).
+            is_creature = "creature" in perm.card.type_line.lower()
+            if "{T}" in ab.cost and (perm.tapped or (is_creature and perm.summoning_sick)):
                 continue
-            import re
-            mana_part = re.sub(r"\{T\}", "", ab.cost).strip().strip(",").strip()
+            mana_part = _re.sub(r"\{T\}", "", ab.cost).strip().strip(",").strip()
             if mana_part and not can_pay_cost(player.mana_pool, mana_part):
                 continue
+            # For pure mana abilities, only offer the tap if it makes progress toward
+            # casting a spell:
+            #   - If current pool already casts everything tapping everything can reach,
+            #     more mana is useless.
+            #   - If tapping this land enables more spells than the current pool, include.
+            #   - If tapping this land alone doesn't help yet (multi-tap needed), include
+            #     only when the full set of available taps would eventually reach a spell.
+            produced = _mana_add_symbol(ab.effect)
+            if produced is not None:
+                if _current_castable >= _total_castable:
+                    # Already at the maximum castable with all mana available — useless tap
+                    continue
+                pool_after = _pool_after_add(player.mana_pool, produced)
+                if _castable_count(pool_after) <= _current_castable:
+                    # This single tap doesn't unlock a new spell by itself; only include
+                    # when tapping everything available would eventually reach one
+                    if _total_castable == 0:
+                        continue
             actions.append(LegalAction(
                 action_type="activate",
                 permanent_id=perm.id,
@@ -821,9 +926,13 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
             and "defender" not in p.card.keywords
         ]
         if attackers:
+            opponent = next((p.name for p in gs.players if p.name != player_name), "")
+            attacker_names = ", ".join(p.card.name for p in attackers)
             actions.append(LegalAction(
                 action_type="declare_attackers",
-                description=f"{len(attackers)} creature(s) available to attack",
+                valid_targets=[p.id for p in attackers],  # attacker permanent IDs
+                card_name=opponent,                        # defending player
+                description=f"Attack with: {attacker_names}",
             ))
 
     # Put pending triggers on stack

@@ -1,10 +1,11 @@
 """
 Per-game export store. Holds SnapshotRecorder, TranscriptRecorder,
-RulesQARecorder for each active game.
+RulesQARecorder, DebugLogRecorder for each active game.
 """
 from mtg_engine.export.snapshots import SnapshotRecorder
 from mtg_engine.export.transcript import TranscriptRecorder
 from mtg_engine.export.rules_qa import RulesQARecorder
+from mtg_engine.export.debug_log import DebugLogRecorder
 
 
 class GameExportStore:
@@ -13,6 +14,7 @@ class GameExportStore:
         self.snapshots = SnapshotRecorder(game_id)
         self.transcript = TranscriptRecorder(game_id)
         self.rules_qa = RulesQARecorder(game_id)
+        self.debug_log = DebugLogRecorder(game_id)
 
 
 _store: dict[str, GameExportStore] = {}

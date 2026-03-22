@@ -138,19 +138,65 @@ def resolve_top(game_state: GameState) -> GameState:
 
     # Permanent spell → enters battlefield (creatures, artifacts, enchantments, planeswalkers, lands)
     if any(t in type_lower for t in ("creature", "artifact", "enchantment", "land", "planeswalker")):
-        game_state, _perm = put_permanent_onto_battlefield(
-            game_state, card, stack_obj.controller
+        game_state, perm = put_permanent_onto_battlefield(
+            game_state, card, stack_obj.controller, from_zone="stack"
         )
+        # CR 303.4: Aura enters the battlefield attached to its target
+        oracle = (card.oracle_text or "").lower()
+        if "enchant" in oracle and "aura" in type_lower and stack_obj.targets:
+            target_id = stack_obj.targets[0]
+            target_perm = next((p for p in game_state.battlefield if p.id == target_id), None)
+            if target_perm and target_perm.id != perm.id:
+                perm.attached_to = target_id
+                if perm.id not in target_perm.attachments:
+                    target_perm.attachments.append(perm.id)
     elif "instant" in type_lower or "sorcery" in type_lower:
         # Non-permanent spell → resolve effect, move to graveyard
         game_state = _apply_spell_effect(game_state, stack_obj)
         player = get_player(game_state, stack_obj.controller)
         player.graveyard.append(card)
+    elif stack_obj.effects:
+        # Triggered or activated ability resolving — execute the effect
+        game_state = _apply_triggered_effect(game_state, stack_obj)
     else:
         # Unknown type — put in graveyard as a fallback
         player = get_player(game_state, stack_obj.controller)
         player.graveyard.append(card)
         logger.warning("Unknown card type for %r; placed in graveyard", card.name)
+
+    return game_state
+
+
+def _apply_triggered_effect(game_state: GameState, stack_obj: StackObject) -> GameState:
+    """
+    Apply the effect text of a resolved triggered or activated ability. CR 608.2.
+    Handles common patterns; unknown effects are logged and skipped.
+    """
+    for effect_text in stack_obj.effects:
+        effect_lower = effect_text.lower()
+
+        # "return [card_name] to its owner's hand"
+        if "return" in effect_lower and "hand" in effect_lower:
+            card_name = stack_obj.source_card.name
+            controller = stack_obj.controller
+            player = get_player(game_state, controller)
+            # Search graveyard for the card
+            target_card = next((c for c in player.graveyard if c.name == card_name), None)
+            if target_card:
+                player.graveyard[:] = [c for c in player.graveyard if c.id != target_card.id]
+                player.hand.append(target_card)
+                logger.info("Triggered effect: returned %s to %s's hand", card_name, controller)
+            continue
+
+        # Damage effects (e.g. "deals 1 damage to target creature")
+        dmg_match = re.search(r"deals?\s+(\d+)\s+damage", effect_lower)
+        if dmg_match and stack_obj.targets:
+            damage = int(dmg_match.group(1))
+            for target_id in stack_obj.targets:
+                game_state = _deal_damage(game_state, target_id, damage, stack_obj.source_card)
+            continue
+
+        logger.debug("Triggered effect not implemented: %r", effect_text)
 
     return game_state
 

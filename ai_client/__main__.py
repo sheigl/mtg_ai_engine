@@ -6,6 +6,7 @@ from .ai_player import AIPlayer
 from .client import EngineClient
 from .game_loop import GameLoop
 from .models import GameConfig, PlayerConfig
+from .observer import ObserverAI
 from .prompts import DEFAULT_COMMANDER_DECK, DEFAULT_DECK
 
 
@@ -96,7 +97,22 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=200,
         dest="max_turns",
-        help="Maximum turns before forcibly ending the game (default: 200)",
+        help="Maximum turns before forcibly ending the game (default: 200). Use 0 for no limit.",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=False,
+        help="Enable debug panel: forward AI prompts/responses to the engine and activate observer AI commentary",
+    )
+    parser.add_argument(
+        "--observer",
+        metavar="URL,MODEL",
+        default=None,
+        help=(
+            "LLM endpoint and model for the observer AI (default: same as first --player). "
+            "Format: url,model  e.g. http://localhost:8080/v1,devstral-2:24b"
+        ),
     )
     return parser
 
@@ -153,9 +169,34 @@ def main() -> None:
         commander2=commander2,
     )
 
+    # Parse --observer flag
+    observer_base_url: str | None = None
+    observer_model: str | None = None
+    if args.observer:
+        obs_parts = args.observer.split(",", 1)
+        if len(obs_parts) != 2:
+            print(
+                "Error: --observer must be in format 'URL,MODEL', "
+                "e.g. http://localhost:8080/v1,devstral-2:24b",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        observer_base_url, observer_model = obs_parts
+    elif args.debug and players:
+        # Default observer to the first player's LLM endpoint
+        observer_base_url = players[0].base_url
+        observer_model = players[0].model
+
     with EngineClient(config.engine_url) as engine:
         ai_players = [AIPlayer(pc) for pc in config.players]
-        loop = GameLoop(config, engine, ai_players)
+
+        observer: ObserverAI | None = None
+        if args.debug:
+            if observer_base_url and observer_model:
+                observer = ObserverAI(observer_base_url, observer_model)
+            print(f"[DEBUG] Observer AI debug mode enabled. Observer model: {observer_model}")
+
+        loop = GameLoop(config, engine, ai_players, debug=args.debug, observer=observer)
         loop.run()
 
 
