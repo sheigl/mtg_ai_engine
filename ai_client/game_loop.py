@@ -1,19 +1,56 @@
 """Game loop: drives AI players through a complete MTG game."""
 import logging
+import re
 import sys
+import time
 
 from .ai_player import AIPlayer
 from .client import EngineClient, EngineError
+from .debug_forwarder import DebugForwarder
 from .models import GameConfig, GameSummary, TurnRecord
+from .observer import ObserverAI
 from .prompts import build_game_state_prompt
 
 logger = logging.getLogger(__name__)
 
 _SEPARATOR = "─" * 41
 _DOUBLE_SEPARATOR = "═" * 40
+_MANA_ADD_RE = re.compile(r'Add\s+\{')
 
 
-def _map_action_to_request(action: dict) -> tuple[str, dict]:
+def _parse_mana_cost_to_payment(mana_cost: str, mana_pool: dict) -> dict:
+    """
+    Convert a mana cost string like "{1}{G}" into a payment dict like {"G": 1, "W": 1}.
+    Colored symbols are paid with their matching color; generic is paid with whatever is left.
+    """
+    payment: dict[str, int] = {}
+    pool = dict(mana_pool)
+    generic = 0
+
+    for sym in re.findall(r'\{([^}]+)\}', mana_cost):
+        if sym in ('W', 'U', 'B', 'R', 'G', 'C'):
+            payment[sym] = payment.get(sym, 0) + 1
+            pool[sym] = pool.get(sym, 0) - 1
+        elif sym.isdigit():
+            generic += int(sym)
+        elif sym == 'X':
+            pass  # treat X as 0 for now
+
+    # Pay generic with any available mana (prefer colorless first, then colors)
+    for color in ('C', 'W', 'U', 'B', 'R', 'G'):
+        if generic <= 0:
+            break
+        available = max(0, pool.get(color, 0))
+        take = min(generic, available)
+        if take > 0:
+            payment[color] = payment.get(color, 0) + take
+            pool[color] = pool.get(color, 0) - take
+            generic -= take
+
+    return payment
+
+
+def _map_action_to_request(action: dict, mana_pool: dict | None = None) -> tuple[str, dict]:
     """
     Map a legal-action dict to (action_type, request_payload).
 
@@ -30,7 +67,8 @@ def _map_action_to_request(action: dict) -> tuple[str, dict]:
 
     if action_type == "cast":
         mana_options = action.get("mana_options", [{}])
-        mana_payment = mana_options[0].get("mana_cost", "") if mana_options else ""
+        mana_cost_str = mana_options[0].get("mana_cost", "") if mana_options else ""
+        mana_payment = _parse_mana_cost_to_payment(mana_cost_str, mana_pool or {})
         return "cast", {
             "card_id": action.get("card_id", ""),
             "targets": action.get("valid_targets", []),
@@ -46,7 +84,14 @@ def _map_action_to_request(action: dict) -> tuple[str, dict]:
         }
 
     if action_type == "declare_attackers":
-        return "declare_attackers", {"attack_declarations": []}
+        attacker_ids = action.get("valid_targets", [])
+        defending_player = action.get("card_name", "")
+        return "declare_attackers", {
+            "attack_declarations": [
+                {"attacker_id": aid, "defending_id": defending_player}
+                for aid in attacker_ids
+            ]
+        }
 
     if action_type == "declare_blockers":
         return "declare_blockers", {"block_declarations": []}
@@ -108,6 +153,23 @@ def print_game_summary(summary: GameSummary) -> None:
     print(_DOUBLE_SEPARATOR)
 
 
+def _format_gs_summary(gs: dict) -> str:
+    """Format a concise game-state summary for the observer AI prompt."""
+    lines = []
+    for p in gs.get("players", []):
+        hand_count = len(p.get("hand", []))
+        bf = [
+            perm.get("card", {}).get("name", "?")
+            for perm in gs.get("battlefield", [])
+            if perm.get("controller") == p.get("name")
+        ]
+        lines.append(
+            f"{p.get('name')}: life={p.get('life', '?')}, hand={hand_count} cards, "
+            f"battlefield=[{', '.join(bf) if bf else 'empty'}]"
+        )
+    return "\n".join(lines)
+
+
 class GameLoop:
     """Drives two AI players through a complete MTG game."""
 
@@ -116,10 +178,15 @@ class GameLoop:
         config: GameConfig,
         engine: EngineClient,
         players: list[AIPlayer],
+        debug: bool = False,
+        observer: "ObserverAI | None" = None,
     ) -> None:
         self._config = config
         self._engine = engine
         self._players = players
+        self._debug = debug
+        self._observer = observer
+        self._forwarder: DebugForwarder | None = None
         # Map player name → AIPlayer
         self._player_map: dict[str, AIPlayer] = {
             config.players[i].name: players[i] for i in range(len(players))
@@ -142,6 +209,10 @@ class GameLoop:
             except EngineError:
                 pass  # non-fatal
 
+        # Create the DebugForwarder now that we have a real game_id
+        if self._debug:
+            self._forwarder = DebugForwarder(self._config.engine_url, game_id)
+
         turn_count = 0
         decision_count = 0
         termination_reason = "game_over"
@@ -161,8 +232,8 @@ class GameLoop:
         print()
 
         while True:
-            # Safety: max turns
-            if turn_count >= self._config.max_turns:
+            # Safety: max turns (0 = unlimited)
+            if self._config.max_turns > 0 and turn_count >= self._config.max_turns:
                 termination_reason = "max_turns_reached"
                 break
 
@@ -174,7 +245,30 @@ class GameLoop:
                 termination_reason = "engine_error"
                 break
 
+            # Hold while paused (UI pause button)
+            if legal_data.get("is_paused"):
+                print("[PAUSED] Game paused — resume from the debug panel to continue.")
+                while True:
+                    time.sleep(2.0)
+                    try:
+                        legal_data = self._engine.get_legal_actions(game_id)
+                    except EngineError:
+                        break
+                    if not legal_data.get("is_paused"):
+                        print("[RESUMED] Game resuming.")
+                        break
+                continue
+
             # Check game over
+            if legal_data.get("is_game_over"):
+                termination_reason = "game_over"
+                winner = legal_data.get("winner")
+                break
+
+            # Auto-tap all available mana sources so the AI sees full mana pool
+            # and castable spells — the AI should never need to manually tap lands.
+            legal_data = self._auto_tap_mana(game_id, legal_data)
+
             if legal_data.get("is_game_over"):
                 termination_reason = "game_over"
                 winner = legal_data.get("winner")
@@ -216,6 +310,36 @@ class GameLoop:
                 {**gs, "priority_player": priority_player, "phase": phase, "step": step},
                 legal_actions,
             )
+
+            # Debug: POST initial entry and wire streaming callback
+            _debug_entry_id: str | None = None
+            if self._forwarder:
+                _debug_entry_id = self._forwarder.new_entry_id()
+                self._forwarder.post_entry({
+                    "entry_id": _debug_entry_id,
+                    "entry_type": "prompt_response",
+                    "source": priority_player,
+                    "turn": turn_number,
+                    "phase": phase,
+                    "step": step,
+                    "timestamp": time.time(),
+                    "prompt": prompt,
+                    "response": "",
+                    "is_complete": False,
+                })
+                _eid = _debug_entry_id
+                _fwd = self._forwarder
+
+                def _debug_cb(event: str, text: str, _: str) -> None:
+                    if event == "response_chunk":
+                        _fwd.patch_entry(_eid, text, False)
+                    elif event == "response_done":
+                        _fwd.patch_entry(_eid, "", True)
+
+                ai_player._debug_callback = _debug_cb
+            else:
+                ai_player._debug_callback = None
+
             chosen_index, reasoning = ai_player.decide(prompt)
             fallback_used = reasoning == "(AI endpoint unreachable)"
 
@@ -247,7 +371,11 @@ class GameLoop:
                 self._print_verbose_state(gs)
 
             # Submit the chosen action
-            action_type, payload = _map_action_to_request(chosen_action)
+            priority_pool = next(
+                (p.get("mana_pool", {}) for p in gs.get("players", []) if p.get("name") == priority_player),
+                {},
+            )
+            action_type, payload = _map_action_to_request(chosen_action, priority_pool)
             try:
                 self._engine.submit_action(game_id, action_type, payload)
             except EngineError as exc:
@@ -257,6 +385,36 @@ class GameLoop:
 
             decision_count += 1
             turn_count += 1
+
+            # Observer AI: analyze non-pass actions and post commentary
+            if self._observer and self._forwarder and chosen_action.get("action_type") != "pass":
+                gs_summary = _format_gs_summary(gs)
+                commentary = self._observer.analyze(
+                    player_name=priority_player,
+                    turn=turn_number,
+                    phase=phase,
+                    step=step,
+                    chosen_action_desc=action_desc,
+                    legal_actions=legal_actions,
+                    game_state_summary=gs_summary,
+                )
+                obs_entry_id = self._forwarder.new_entry_id()
+                obs_entry = {
+                    "entry_id": obs_entry_id,
+                    "entry_type": "commentary",
+                    "source": "Observer AI",
+                    "turn": turn_number,
+                    "phase": phase,
+                    "step": step,
+                    "timestamp": time.time(),
+                    "prompt": "",
+                    "response": commentary.get("explanation", ""),
+                    "is_complete": True,
+                    "rating": commentary.get("rating"),
+                    "explanation": commentary.get("explanation"),
+                    "alternative": commentary.get("alternative"),
+                }
+                self._forwarder.post_entry(obs_entry)
 
             # Re-check game state after action
             try:
@@ -287,6 +445,44 @@ class GameLoop:
         )
         print_game_summary(summary)
         return summary
+
+    def _auto_tap_mana(self, game_id: str, legal_data: dict) -> dict:
+        """
+        Silently activate all available mana-producing abilities before the AI decides.
+        Returns updated legal_data (with refreshed legal_actions reflecting the full mana pool).
+        Mana abilities are detected by "Add {" in their description.
+        """
+        while True:
+            legal_actions = legal_data.get("legal_actions", [])
+            mana_acts = [
+                a for a in legal_actions
+                if a.get("action_type") == "activate"
+                and _MANA_ADD_RE.search(a.get("description", ""))
+            ]
+            if not mana_acts:
+                break
+            # Execute the first available mana activation
+            action = mana_acts[0]
+            try:
+                self._engine.submit_action(
+                    game_id,
+                    "activate",
+                    {
+                        "permanent_id": action.get("permanent_id", ""),
+                        "ability_index": action.get("ability_index", 0),
+                        "targets": [],
+                        "mana_payment": {},
+                    },
+                )
+            except EngineError:
+                break
+            try:
+                legal_data = self._engine.get_legal_actions(game_id)
+            except EngineError:
+                break
+            if legal_data.get("is_game_over") or legal_data.get("is_paused"):
+                break
+        return legal_data
 
     def _print_verbose_state(self, gs: dict) -> None:
         """Print abbreviated board state when verbose mode is on."""

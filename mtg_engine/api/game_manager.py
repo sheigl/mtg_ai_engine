@@ -8,6 +8,7 @@ import random
 import uuid
 from typing import Optional
 from mtg_engine.models.game import GameState, PlayerState, Phase, Step, Card
+from mtg_engine.export.store import get_export_store
 from mtg_engine.export.transcript import TranscriptRecorder
 from mtg_engine.engine.verbose_log import VerboseLogger, ensure_zone_listener_registered
 
@@ -17,6 +18,16 @@ class GameManager:
         self._games: dict[str, GameState] = {}
         self._recorders: dict[str, TranscriptRecorder] = {}
         self._verbose_loggers: dict[str, VerboseLogger] = {}
+        self._paused: set[str] = set()
+
+    def pause(self, game_id: str) -> None:
+        self._paused.add(game_id)
+
+    def resume(self, game_id: str) -> None:
+        self._paused.discard(game_id)
+
+    def is_paused(self, game_id: str) -> bool:
+        return game_id in self._paused
 
     def create_game(
         self,
@@ -80,8 +91,9 @@ class GameManager:
         gs.refresh_hash()
         self._games[game_id] = gs
 
-        # Create per-game recorder and verbose logger
-        recorder = TranscriptRecorder(game_id)
+        # Use the export store's transcript so GET /export/{id}/transcript sees all events
+        store = get_export_store(game_id)
+        recorder = store.transcript
         vlogger = VerboseLogger(game_id, enabled=verbose)
         recorder.register_listener(vlogger.on_event)
         self._recorders[game_id] = recorder

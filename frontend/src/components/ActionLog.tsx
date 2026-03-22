@@ -30,6 +30,17 @@ export function ActionLog({ gameId }: ActionLogProps) {
 
   const filtered = entries.filter(e => VISIBLE_EVENTS.has(e.event_type))
 
+  // Group entries by turn number
+  const byTurn: { turn: number; entries: typeof filtered }[] = []
+  for (const entry of filtered) {
+    const last = byTurn[byTurn.length - 1]
+    if (last && last.turn === entry.turn) {
+      last.entries.push(entry)
+    } else {
+      byTurn.push({ turn: entry.turn, entries: [entry] })
+    }
+  }
+
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
@@ -67,19 +78,35 @@ export function ActionLog({ gameId }: ActionLogProps) {
             Waiting for game actions...
           </div>
         )}
-        {filtered.map((entry) => (
-          <div
-            key={entry.seq}
-            style={{
-              padding: '0.25rem 0.5rem',
-              fontSize: '0.75rem',
-              lineHeight: 1.4,
-              borderLeft: `2px solid ${EVENT_COLORS[entry.event_type] || 'var(--border-muted)'}`,
+        {byTurn.map(({ turn, entries: turnEntries }) => (
+          <div key={turn}>
+            <div style={{
+              fontSize: '0.65rem',
+              fontWeight: 700,
+              textTransform: 'uppercase',
+              letterSpacing: '0.06em',
+              color: 'var(--text-muted)',
+              padding: '0.4rem 0.25rem 0.2rem',
+              borderBottom: '1px solid var(--border-muted)',
               marginBottom: '0.25rem',
-              color: 'var(--text-primary)',
-            }}
-          >
-            {entry.description}
+            }}>
+              Turn {turn}
+            </div>
+            {turnEntries.map((entry) => (
+              <div
+                key={entry.seq}
+                style={{
+                  padding: '0.25rem 0.5rem',
+                  fontSize: '0.75rem',
+                  lineHeight: 1.4,
+                  borderLeft: `2px solid ${EVENT_COLORS[entry.event_type] || 'var(--border-muted)'}`,
+                  marginBottom: '0.25rem',
+                  color: 'var(--text-primary)',
+                }}
+              >
+                {entry.description}
+              </div>
+            ))}
           </div>
         ))}
       </div>

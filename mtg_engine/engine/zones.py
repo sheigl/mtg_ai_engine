@@ -177,9 +177,27 @@ def move_permanent_to_zone(
         if player.commander_name is not None and card.name == player.commander_name:
             return move_card_to_command_zone(game_state, card, controller)
 
+    # Clean up attachment references: if this permanent was attached to something,
+    # remove it from that permanent's attachments list
+    if permanent.attached_to:
+        host = next((p for p in game_state.battlefield if p.id == permanent.attached_to), None)
+        if host and permanent.id in host.attachments:
+            host.attachments[:] = [a for a in host.attachments if a != permanent.id]
+
     # Move card to destination zone (REQ-G08: preserve library order)
     if to_zone in ("hand", "library", "graveyard", "exile"):
         player = get_player(game_state, controller)
+
+        # Check for "return to owner's hand" replacement effect (e.g. Rancor)
+        # Pattern: "when [this] is put into a graveyard from the battlefield, return [this] to..."
+        oracle_lower = (card.oracle_text or "").lower()
+        if (to_zone == "graveyard"
+                and "return" in oracle_lower
+                and "hand" in oracle_lower
+                and ("graveyard" in oracle_lower or "put into" in oracle_lower)):
+            player.hand.append(card)
+            return game_state
+
         dest = _get_player_zone(player, to_zone)
         if to_zone == "library":
             if position == "top":
@@ -199,6 +217,7 @@ def put_permanent_onto_battlefield(
     tapped: bool = False,
     is_token: bool = False,
     turn_entered: int | None = None,
+    from_zone: str = "unknown",
 ) -> tuple[GameState, Permanent]:
     """Create a Permanent from a Card and add it to the battlefield."""
     perm = Permanent(
@@ -216,7 +235,7 @@ def put_permanent_onto_battlefield(
     event: ZoneChangeEvent = {
         "card_id": perm.id,
         "card_name": card.name,
-        "from_zone": "unknown",
+        "from_zone": from_zone,
         "to_zone": "battlefield",
         "player": controller,
         "is_token": is_token,
