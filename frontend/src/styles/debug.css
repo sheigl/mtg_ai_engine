@@ -1,0 +1,329 @@
+/* Debug Panel — feature 011-observer-ai-commentary */
+
+/* ── Container & toggle ─────────────────────────────────────────────────── */
+
+.debug-panel-container {
+  position: relative;
+}
+
+.debug-panel-toggle-btn {
+  position: fixed;
+  top: 0.75rem;
+  right: 1rem;
+  z-index: 200;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  border: 1px solid var(--border-default, #444);
+  border-radius: 6px;
+  background: var(--bg-secondary, #1a1a2e);
+  color: var(--text-secondary, #aaa);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.debug-panel-toggle-btn:hover {
+  background: var(--bg-elevated, #252540);
+  color: var(--text-primary, #eee);
+}
+
+/* When the panel is open, shift the toggle button to sit just left of the panel */
+.debug-panel-open .debug-panel-toggle-btn {
+  right: 425px;
+}
+
+.debug-panel-toggle-active {
+  border-color: #ffc107;
+  color: #ffc107;
+}
+
+/* ── Side panel ─────────────────────────────────────────────────────────── */
+
+.debug-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 420px;
+  max-width: 90vw;
+  height: 100vh;
+  z-index: 150;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-secondary, #12122a);
+  border-left: 1px solid var(--border-default, #333);
+  box-shadow: -4px 0 24px rgba(0, 0, 0, 0.5);
+  animation: debug-slide-in 0.2s ease;
+}
+
+@keyframes debug-slide-in {
+  from { transform: translateX(100%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+.debug-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 0.75rem;
+  font-weight: 700;
+  font-size: 0.85rem;
+  border-bottom: 1px solid var(--border-muted, #2a2a44);
+  background: var(--bg-elevated, #1a1a35);
+  flex-shrink: 0;
+}
+
+.debug-panel-header-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.debug-panel-pause-btn {
+  background: transparent;
+  border: 1px solid var(--border-default, #444);
+  color: var(--text-secondary, #aaa);
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.2rem 0.55rem;
+  border-radius: 4px;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.debug-panel-pause-btn:hover {
+  background: var(--border-muted, #2a2a44);
+  color: var(--text-primary, #eee);
+}
+
+.debug-panel-paused {
+  border-color: #4caf50;
+  color: #4caf50;
+}
+
+.debug-show-all-btn {
+  background: transparent;
+  border: 1px solid var(--border-muted, #2a2a44);
+  color: var(--text-muted, #666);
+  cursor: pointer;
+  font-size: 0.72rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  width: 100%;
+  text-align: center;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s;
+}
+
+.debug-show-all-btn:hover {
+  background: var(--bg-elevated, #1a1a35);
+  color: var(--text-secondary, #aaa);
+}
+
+.debug-panel-close-btn,
+.debug-panel-disable-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary, #aaa);
+  cursor: pointer;
+  font-size: 0.8rem;
+  padding: 0.2rem 0.4rem;
+  border-radius: 4px;
+}
+
+.debug-panel-close-btn:hover,
+.debug-panel-disable-btn:hover {
+  background: var(--border-muted, #2a2a44);
+  color: var(--text-primary, #eee);
+}
+
+.debug-panel-body {
+  flex: 1;
+  min-height: 0;        /* critical: lets flex item shrink and enables scrolling */
+  overflow-y: auto;
+  padding: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+/* ── Empty state ────────────────────────────────────────────────────────── */
+
+.debug-empty-state {
+  color: var(--text-muted, #666);
+  font-size: 0.82rem;
+  text-align: center;
+  padding: 2rem 1rem;
+  line-height: 1.6;
+}
+
+.debug-empty-state code {
+  background: var(--bg-elevated, #1a1a35);
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+  font-family: monospace;
+  font-size: 0.78rem;
+}
+
+/* ── Debug block (shared) ───────────────────────────────────────────────── */
+
+.debug-block {
+  flex-shrink: 0;       /* prevent blocks from being squished when panel overflows */
+  border-left: 3px solid #4a9eff;
+  border-radius: 0 6px 6px 0;
+  background: var(--bg-elevated, #1a1a35);
+  font-size: 0.75rem;
+  overflow: hidden;
+}
+
+.debug-block-observer {
+  border-left-color: #e6a820;  /* amber for observer */
+}
+
+.debug-block-header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.5rem;
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px solid var(--border-muted, #2a2a44);
+  background: rgba(255, 255, 255, 0.03);
+  flex-wrap: wrap;
+}
+
+.debug-block-header:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.debug-block-chevron {
+  font-size: 0.6rem;
+  color: var(--text-muted, #666);
+  flex-shrink: 0;
+}
+
+.debug-block-source {
+  font-weight: 700;
+  color: var(--text-primary, #eee);
+}
+
+.debug-block-badge {
+  font-size: 0.68rem;
+  color: var(--text-muted, #666);
+  background: var(--bg-secondary, #12122a);
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+}
+
+.debug-block-type {
+  font-size: 0.68rem;
+  color: var(--text-muted, #666);
+  margin-left: auto;
+}
+
+.debug-block-streaming {
+  font-size: 0.68rem;
+  color: #ffc107;
+  animation: debug-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes debug-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+.debug-rating-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  margin-left: auto;
+}
+
+/* ── Block body ─────────────────────────────────────────────────────────── */
+
+.debug-block-body {
+  padding: 0.4rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.debug-block-section-label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted, #666);
+  margin-top: 0.25rem;
+}
+
+.debug-block-pre {
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.7rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg-secondary, #12122a);
+  border: 1px solid var(--border-muted, #2a2a44);
+  border-radius: 4px;
+  padding: 0.35rem 0.5rem;
+  color: var(--text-primary, #ddd);
+  line-height: 1.45;
+}
+
+.debug-block-prompt {
+  max-height: 180px;
+  overflow-y: auto;
+  color: var(--text-secondary, #aaa);
+}
+
+.debug-block-response {
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.debug-cursor {
+  display: inline-block;
+  animation: debug-blink 0.8s step-end infinite;
+  color: #4a9eff;
+}
+
+@keyframes debug-blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+
+.debug-muted {
+  color: var(--text-muted, #555);
+  font-style: italic;
+}
+
+/* ── Commentary body ────────────────────────────────────────────────────── */
+
+.debug-block-commentary {
+  font-size: 0.75rem;
+  color: var(--text-primary, #ddd);
+  line-height: 1.5;
+  padding: 0.25rem 0;
+}
+
+.debug-better-play {
+  display: flex;
+  gap: 0.4rem;
+  align-items: flex-start;
+  border: 1px dashed var(--border-default, #444);
+  border-radius: 5px;
+  padding: 0.4rem 0.5rem;
+  background: rgba(255, 193, 7, 0.05);
+  margin-top: 0.25rem;
+}
+
+.debug-better-play-label {
+  font-weight: 700;
+  font-size: 0.72rem;
+  color: #ffc107;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.debug-better-play-text {
+  font-size: 0.72rem;
+  color: var(--text-secondary, #bbb);
+  line-height: 1.45;
+}

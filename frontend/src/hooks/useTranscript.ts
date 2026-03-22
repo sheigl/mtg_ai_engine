@@ -11,8 +11,8 @@ export function useTranscript(gameId: string | undefined) {
     queryFn: async () => {
       const res = await fetch(`/export/${gameId}/transcript`)
       if (!res.ok) throw new Error('FETCH_ERROR')
-      const json: TranscriptEntry[] = await res.json()
-      return json
+      const json: { data: TranscriptEntry[] } = await res.json()
+      return json.data
     },
     enabled: !!gameId,
     refetchInterval: 2000,

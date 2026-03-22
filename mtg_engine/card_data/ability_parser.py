@@ -105,6 +105,10 @@ def parse_oracle_text(oracle_text: str, type_line: str = "") -> list[Ability]:
 
 def _parse_segment(text: str) -> list[Ability]:
     """Parse a single oracle text segment into one or more abilities."""
+    # Strip surrounding parentheses (e.g. basic land mana abilities: "({T}: Add {W}.)")
+    if text.startswith("(") and text.endswith(")"):
+        text = text[1:-1].strip()
+
     # Check for comma-separated keywords first (e.g. "Flying, vigilance")
     keyword_results = _try_parse_keywords(text)
     if keyword_results:

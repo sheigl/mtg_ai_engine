@@ -4,6 +4,7 @@ import '../styles/card.css'
 interface CardViewProps {
   card: Card
   permanent?: Permanent
+  attachedAuras?: string[]
 }
 
 function getColorAttr(card: Card): string {
@@ -21,7 +22,7 @@ function formatManaCost(cost: string | null): string {
   return cost.replace(/\{|\}/g, '')
 }
 
-export function CardView({ card, permanent }: CardViewProps) {
+export function CardView({ card, permanent, attachedAuras }: CardViewProps) {
   const isTapped = permanent?.tapped ?? false
   const isSummoningSick = permanent?.summoning_sick ?? false
   const isCreature = card.type_line.toLowerCase().includes('creature')
@@ -65,6 +66,16 @@ export function CardView({ card, permanent }: CardViewProps) {
 
       {permanent?.is_token && (
         <span className="card-token-badge">TOKEN</span>
+      )}
+
+      {attachedAuras && attachedAuras.length > 0 && (
+        <div className="card-auras">
+          {attachedAuras.map(name => (
+            <span key={name} className="card-aura-badge" title={`Enchanted by ${name}`}>
+              ✦ {name}
+            </span>
+          ))}
+        </div>
       )}
     </div>
   )

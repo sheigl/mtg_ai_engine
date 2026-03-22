@@ -6,6 +6,7 @@ import { StackView } from './StackView'
 import { PhaseTracker } from './PhaseTracker'
 import { ConnectionStatus } from './ConnectionStatus'
 import { ActionLog } from './ActionLog'
+import { DebugPanel } from './DebugPanel'
 import type { GameState } from '../types/game'
 import '../styles/board.css'
 
@@ -114,6 +115,9 @@ export function GameBoard() {
 
       {/* Game over overlay */}
       <GameOverOverlay gs={gs} />
+
+      {/* Debug Panel */}
+      <DebugPanel gameId={gs.game_id} isGameOver={gs.is_game_over} />
     </div>
   )
 }

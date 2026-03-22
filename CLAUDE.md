@@ -1,6 +1,6 @@
 # mtg_ai_engine Development Guidelines
 
-Auto-generated from all feature plans. Last updated: 2026-03-21
+Auto-generated from all feature plans. Last updated: 2026-03-22
 
 ## Active Technologies
 - Python 3.11 (matches existing codebase) + `httpx` (HTTP to engine API), `openai` (OpenAI-compatible LLM client), `argparse` (stdlib CLI parsing) (008-ai-cli-client)
@@ -9,6 +9,8 @@ Auto-generated from all feature plans. Last updated: 2026-03-21
 - In-memory game state (existing); SQLite Scryfall cache extended with `color_identity` (009-commander-format)
 - Python 3.11 (backend, matches existing) + TypeScript 5.x (frontend) (010-game-observer-ui)
 - N/A (reads from existing in-memory game state) (010-game-observer-ui)
+- Python 3.11 (backend + AI client), TypeScript 5.x (frontend) + FastAPI, Pydantic v2, httpx, openai (OpenAI-compatible client), React 18, TanStack Query v5 (011-observer-ai-commentary)
+- In-process memory (DebugLogRecorder added alongside existing TranscriptRecorder/SnapshotRecorder) (011-observer-ai-commentary)
 
 - Python 3.11 + FastAPI, Pydantic v2, standard `logging` module (007-play-by-play-log)
 
@@ -28,9 +30,9 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.11: Follow standard conventions
 
 ## Recent Changes
+- 011-observer-ai-commentary: Added Python 3.11 (backend + AI client), TypeScript 5.x (frontend) + FastAPI, Pydantic v2, httpx, openai (OpenAI-compatible client), React 18, TanStack Query v5
 - 010-game-observer-ui: Added Python 3.11 (backend, matches existing) + TypeScript 5.x (frontend)
 - 009-commander-format: Added Python 3.11 (matches existing codebase) + FastAPI, Pydantic v2, httpx, openai (all existing)
-- 008-ai-cli-client: Added Python 3.11 (matches existing codebase) + `httpx` (HTTP to engine API), `openai` (OpenAI-compatible LLM client), `argparse` (stdlib CLI parsing)
 
 
 <!-- MANUAL ADDITIONS START -->

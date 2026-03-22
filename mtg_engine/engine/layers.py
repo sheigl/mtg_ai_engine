@@ -146,6 +146,65 @@ def collect_continuous_effects(game_state: GameState) -> list[ContinuousEffect]:
                 apply_fn=_make_pt_setter(pw, pt, perm.id),
             ))
 
+        # Aura continuous effects — only apply if this enchantment is attached to something
+        if perm.attached_to and "enchant" in oracle:
+            attached_id = perm.attached_to
+
+            # Layer 7c: "enchanted creature gets +X/+Y"
+            boost = _re.search(r"enchanted creature gets? \+(\d+)/\+(\d+)", oracle)
+            if boost:
+                dp, dt = int(boost.group(1)), int(boost.group(2))
+                def _make_aura_boost(dp: int, dt: int):
+                    def _apply(gs: GameState, target: Permanent) -> None:
+                        try:
+                            p = int(target.card.power or "0") + dp
+                            t = int(target.card.toughness or "0") + dt
+                            target.card = target.card.model_copy(update={"power": str(p), "toughness": str(t)})
+                        except (ValueError, TypeError):
+                            pass
+                    return _apply
+                effects.append(ContinuousEffect(
+                    source_id=perm.id,
+                    layer=EffectLayer.PT,
+                    sublayer=PTSublayer.C,
+                    timestamp=perm.timestamp,
+                    is_cda=False,
+                    description=f"{card.name}: +{dp}/+{dt} to enchanted creature",
+                    apply_fn=_make_aura_boost(dp, dt),
+                    affected_ids=[attached_id],
+                ))
+
+            # Layer 6: "enchanted creature has/gets/gains [keyword(s)]"
+            _KEYWORDS = (
+                "trample", "flying", "first strike", "double strike", "deathtouch",
+                "lifelink", "vigilance", "reach", "haste", "indestructible",
+                "hexproof", "menace", "ward", "prowess", "flash",
+            )
+            kw_section = _re.search(
+                r"enchanted creature (?:has|gets?|gains?)\s+(.+?)(?:\.|$)", oracle
+            )
+            if kw_section:
+                kw_text = kw_section.group(1)
+                for kw in _KEYWORDS:
+                    if kw in kw_text:
+                        def _make_kw_grant(keyword: str):
+                            def _apply(gs: GameState, target: Permanent) -> None:
+                                if keyword not in target.card.keywords:
+                                    target.card = target.card.model_copy(
+                                        update={"keywords": list(target.card.keywords) + [keyword]}
+                                    )
+                            return _apply
+                        effects.append(ContinuousEffect(
+                            source_id=perm.id,
+                            layer=EffectLayer.ABILITY,
+                            sublayer=None,
+                            timestamp=perm.timestamp,
+                            is_cda=False,
+                            description=f"{card.name}: grants {kw} to enchanted creature",
+                            apply_fn=_make_kw_grant(kw),
+                            affected_ids=[attached_id],
+                        ))
+
         # Layer 7c: Counter modifications (+1/+1, -1/-1) — applied as modifications
         # The P/T modification from counters is applied here in layer 7c
         plus_counters = perm.counters.get("+1/+1", 0)

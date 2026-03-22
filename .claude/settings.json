@@ -4,7 +4,22 @@
       "Bash(python -c \":*)",
       "Bash(.specify/scripts/bash/create-new-feature.sh \"I would like to create a very visually appealing web ui front end to observe the currently running games that AI are playing. It doesn''t need to 3d effects, but I would like to see cards etc move around the board\" --json --short-name \"game-observer-ui\" \"Game Observer Web UI\")",
       "Bash(DESC=\"I would like to create a very visually appealing web ui front end to observe the currently running games that AI are playing. It does not need 3d effects, but I would like to see cards etc move around the board\")",
-      "Bash(.specify/scripts/bash/create-new-feature.sh \"$DESC\" --json --short-name \"game-observer-ui\" \"Game Observer Web UI\")"
+      "Bash(.specify/scripts/bash/create-new-feature.sh \"$DESC\" --json --short-name \"game-observer-ui\" \"Game Observer Web UI\")",
+      "Bash(curl -s http://localhost:8000/health)",
+      "Bash(curl -s http://localhost:8000/game)",
+      "Bash(python3 -c \":*)",
+      "Bash(python -m ai_client --player \"Llama,http://localhost:8080/v1,devstral-2:24b\" --player \"Llama2,http://localhost:8080/v1,devstral-2:24b\" --engine http://localhost:8999)",
+      "Bash(wc -l /home/sheigl/code/mtg_ai_engine/tests/rules/*.py /home/sheigl/code/mtg_ai_engine/tests/api/*.py)",
+      "Bash(grep -h \"^def test_\" /home/sheigl/code/mtg_ai_engine/tests/rules/*.py /home/sheigl/code/mtg_ai_engine/tests/api/*.py)",
+      "Bash(grep -n \"def test_.*planeswalker\\\\|def test_.*enchantment\\\\|def test_.*artifact\\\\|def test_.*sorcery\\\\|def test_.*instant\" /home/sheigl/code/mtg_ai_engine/tests/rules/*.py -i)",
+      "Bash(ls /home/sheigl/code/mtg_ai_engine/*.md)",
+      "Bash(curl -s http://localhost:8999/health)",
+      "Bash(curl -s http://localhost:8080/v1/models)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(m[''''id'''']\\) for m in d.get\\(''''data'''',[]\\)]\")",
+      "Bash(python -m ai_client --player \"Llama,http://localhost:8080/v1,devstral-2:24b\" --player \"Llama2,http://localhost:8080/v1,devstral-2:24b\" --engine http://localhost:8999 --max-turns 60)",
+      "Bash(python -m ai_client --player \"Llama,http://localhost:8080/v1,devstral-2:24b\" --player \"Llama2,http://localhost:8080/v1,devstral-2:24b\" --engine http://localhost:8999 --max-turns 80)",
+      "Bash(python -m ai_client --player \"Llama,http://localhost:8080/v1,devstral-2:24b\" --player \"Llama2,http://localhost:8080/v1,devstral-2:24b\" --engine http://localhost:8999 --max-turns 200)",
+      "Bash(.specify/scripts/bash/create-new-feature.sh \"add observer ai to analyze each AIs current state and potential plays, when a play is made it outputs it to a debug panel in the UI and adds commentary if it were good or bad play, or what they could have done differently or better\" --json --short-name \"observer-ai-commentary\")"
     ]
   }
 }
