@@ -42,10 +42,21 @@ class ReplacementEffect(BaseModel):
 def _get_replacement_effects(game_state: GameState) -> list[ReplacementEffect]:
     """
     Collect all active replacement effects from permanents.
-    Currently handles: shield counters, regeneration shields,
-    damage prevention (simplified).
+    Handles: shield counters, regeneration shields, DamagePreventionEffect entries.
     """
     effects: list[ReplacementEffect] = []
+
+    # US4: Active DamagePreventionEffect entries from GameState
+    for prev in game_state.prevention_effects:
+        if prev.remaining is None or prev.remaining > 0:
+            effects.append(ReplacementEffect(
+                effect_id=f"prevention_{prev.effect_id}",
+                source_permanent_id=prev.source_permanent_id or "",
+                controller="",
+                description=f"Damage prevention ({prev.remaining} remaining)",
+                event_types=["damage"],
+                is_self_replacement=False,
+            ))
 
     for perm in game_state.battlefield:
         oracle = (perm.card.oracle_text or "").lower()
@@ -111,7 +122,29 @@ def apply_replacement(
         (p for p in game_state.battlefield if p.id == event.target_id), None
     )
 
-    if effect.effect_id.startswith("shield_") and target_perm:
+    if effect.effect_id.startswith("prevention_") and target_perm:
+        # US4: DamagePreventionEffect — reduce damage amount
+        prev_id = effect.effect_id[len("prevention_"):]
+        prev_effect = next((p for p in game_state.prevention_effects if p.effect_id == prev_id), None)
+        if prev_effect is not None:
+            damage = event.modified_amount if event.modified_amount is not None else event.amount
+            if prev_effect.remaining is None:
+                prevented = damage
+            else:
+                prevented = min(damage, prev_effect.remaining)
+                prev_effect.remaining -= prevented
+                if prev_effect.remaining <= 0:
+                    game_state.prevention_effects[:] = [
+                        p for p in game_state.prevention_effects if p.effect_id != prev_id
+                    ]
+            new_damage = damage - prevented
+            if new_damage <= 0:
+                event.cancelled = True
+            else:
+                event.modified_amount = new_damage
+            logger.info("Prevention effect reduced damage by %d on %s", prevented, target_perm.card.name)
+
+    elif effect.effect_id.startswith("shield_") and target_perm:
         # Remove shield counter instead of being destroyed (CR 614.1a)
         target_perm.counters["shield"] = max(0, target_perm.counters.get("shield", 0) - 1)
         if target_perm.counters["shield"] == 0:
@@ -178,6 +211,25 @@ def apply_damage_event(
     """
     if damage <= 0:
         return game_state
+
+    # US4: Protection from color — prevents damage from matching-color sources
+    target_perm_check = next((p for p in game_state.battlefield if p.id == target_id), None)
+    if target_perm_check:
+        for kw in target_perm_check.card.keywords:
+            kw_lower = kw.lower()
+            if kw_lower.startswith("protection from "):
+                protected_color = kw_lower[len("protection from "):]
+                color_map = {
+                    "white": "W", "blue": "U", "black": "B",
+                    "red": "R", "green": "G",
+                }
+                prot_abbrev = color_map.get(protected_color)
+                if prot_abbrev and prot_abbrev in source_keywords:
+                    logger.info(
+                        "Protection from %s on %s prevents damage from %s",
+                        protected_color, target_perm_check.card.name, source_card_name,
+                    )
+                    return game_state
 
     event = GameEvent(
         event_type="damage",

@@ -174,3 +174,50 @@ def test_reach_can_block_flyer():
     gs.step = Step.DECLARE_BLOCKERS
     gs = declare_blockers(gs, [BlockDeclaration(blocker_id=blocker.id, attacker_id=attacker.id)])
     assert len(gs.combat.attackers[0].blocker_ids) == 1
+
+
+def test_combat_damage_trigger_queued():
+    """US2: 'whenever this deals combat damage to a player' trigger fires after unblocked attack."""
+    from mtg_engine.engine.triggers import check_damage_triggers
+    gs = _make_combat_game()
+    oracle = "Whenever this creature deals combat damage to a player, you may draw a card."
+    card = Card(
+        name="Ophidian",
+        type_line="Creature — Snake",
+        power="1", toughness="1",
+        oracle_text=oracle,
+    )
+    from mtg_engine.engine.zones import put_permanent_onto_battlefield
+    gs, attacker = put_permanent_onto_battlefield(gs, card, "p1")
+    attacker.summoning_sick = False
+
+    gs = declare_attackers(gs, [AttackDeclaration(attacker_id=attacker.id, defending_id="p2")])
+    gs.step = Step.COMBAT_DAMAGE
+    gs = assign_combat_damage(gs)
+
+    # Should have a combat_damage trigger queued
+    damage_triggers = [t for t in gs.pending_triggers if t.trigger_type == "combat_damage"]
+    assert len(damage_triggers) == 1
+    assert damage_triggers[0].source_permanent_id == attacker.id
+
+
+def test_combat_damage_trigger_not_queued_for_zero_damage():
+    """US2: trigger does NOT fire when creature deals 0 damage (blocked by equal toughness blocker, no trample)."""
+    gs = _make_combat_game()
+    oracle = "Whenever this creature deals combat damage to a player, draw a card."
+    card = Card(
+        name="Ophidian", type_line="Creature — Snake", power="1", toughness="1",
+        oracle_text=oracle,
+    )
+    gs, attacker = put_permanent_onto_battlefield(gs, card, "p1")
+    attacker.summoning_sick = False
+    gs, blocker = _add_creature(gs, "Wall", 0, 3, "p2")
+
+    gs = declare_attackers(gs, [AttackDeclaration(attacker_id=attacker.id, defending_id="p2")])
+    gs.step = Step.DECLARE_BLOCKERS
+    gs = declare_blockers(gs, [BlockDeclaration(blocker_id=blocker.id, attacker_id=attacker.id)])
+    gs.step = Step.COMBAT_DAMAGE
+    gs = assign_combat_damage(gs)
+
+    damage_triggers = [t for t in gs.pending_triggers if t.trigger_type == "combat_damage"]
+    assert len(damage_triggers) == 0  # blocked, player took no damage

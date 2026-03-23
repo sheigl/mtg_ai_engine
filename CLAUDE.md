@@ -1,6 +1,6 @@
 # mtg_ai_engine Development Guidelines
 
-Auto-generated from all feature plans. Last updated: 2026-03-22
+Auto-generated from all feature plans. Last updated: 2026-03-23
 
 ## Active Technologies
 - Python 3.11 (matches existing codebase) + `httpx` (HTTP to engine API), `openai` (OpenAI-compatible LLM client), `argparse` (stdlib CLI parsing) (008-ai-cli-client)
@@ -13,6 +13,8 @@ Auto-generated from all feature plans. Last updated: 2026-03-22
 - In-process memory (DebugLogRecorder added alongside existing TranscriptRecorder/SnapshotRecorder) (011-observer-ai-commentary)
 - Python 3.11 + None new — stdlib only for heuristic logic; existing `openai`, `httpx`, `argparse` unchanged (012-heuristic-ai-player)
 - N/A — stateless, same as existing AI client (012-heuristic-ai-player)
+- Python 3.11 + FastAPI, Pydantic v2, pytest (all existing — no new dependencies) (014-rules-engine-completeness)
+- In-memory GameState (Pydantic models); no persistence changes (014-rules-engine-completeness)
 
 - Python 3.11 + FastAPI, Pydantic v2, standard `logging` module (007-play-by-play-log)
 
@@ -32,9 +34,9 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.11: Follow standard conventions
 
 ## Recent Changes
+- 014-rules-engine-completeness: Added Python 3.11 + FastAPI, Pydantic v2, pytest (all existing — no new dependencies)
 - 012-heuristic-ai-player: Added Python 3.11 + None new — stdlib only for heuristic logic; existing `openai`, `httpx`, `argparse` unchanged
 - 011-observer-ai-commentary: Added Python 3.11 (backend + AI client), TypeScript 5.x (frontend) + FastAPI, Pydantic v2, httpx, openai (OpenAI-compatible client), React 18, TanStack Query v5
-- 010-game-observer-ui: Added Python 3.11 (backend, matches existing) + TypeScript 5.x (frontend)
 
 
 <!-- MANUAL ADDITIONS START -->

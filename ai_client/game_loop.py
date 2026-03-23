@@ -199,7 +199,7 @@ class GameLoop:
         Returns a GameSummary.
         """
         try:
-            game_id = self._engine.create_game(self._config)
+            game_id = self._engine.create_game(self._config, debug=self._debug)
         except EngineError as exc:
             print(f"[ERROR] Failed to create game: {exc}")
             sys.exit(1)

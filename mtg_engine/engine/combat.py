@@ -128,6 +128,15 @@ def declare_blockers(
         if blocker.tapped:
             raise ValueError(f"{blocker.card.name} is tapped and cannot block")
 
+        # US6: Check BlockConstraint (cannot_block)
+        for con in game_state.block_constraints:
+            if con.constraint_type == "cannot_block" and con.affected_id in (blocker.id, "all"):
+                raise ValueError(f"{blocker.card.name} cannot block due to an active restriction")
+
+        # US6: Goaded creatures cannot block (CR 702.117b)
+        if any(k.startswith("goad_by_") for k in blocker.counters):
+            raise ValueError(f"{blocker.card.name} is goaded and cannot block")
+
         # Find the attacker info
         attacker_info = next(
             (a for a in game_state.combat.attackers if a.permanent_id == decl.attacker_id),
@@ -312,6 +321,13 @@ def assign_combat_damage(
     if game_state.combat is None:
         return game_state
 
+    # US4: Fog-style prevention — prevent all combat damage this turn
+    if game_state.prevent_all_combat_damage:
+        game_state.combat.damage_assigned = True
+        game_state.prevent_all_combat_damage = False
+        logger.info("All combat damage prevented (Fog effect active)")
+        return game_state
+
     # Auto-assign if not provided or empty (engine handles CR 510.1 automatically)
     if not assignments:
         assignments = _auto_assign_damage(game_state)
@@ -327,6 +343,10 @@ def assign_combat_damage(
     all_assignments = assignments + blocker_assignments
 
     # CR 510.2: all damage dealt simultaneously
+    # Check combat damage triggers (US2: "whenever this deals combat damage to a player")
+    from mtg_engine.engine.triggers import check_damage_triggers
+    game_state = check_damage_triggers(game_state, all_assignments)
+
     for assign in all_assignments:
         try:
             source = _get_perm(game_state, assign.source_id)
