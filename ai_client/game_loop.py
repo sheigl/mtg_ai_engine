@@ -394,6 +394,14 @@ class GameLoop:
                     pass
 
             action_type, payload = _map_action_to_request(chosen_action, priority_pool)
+            if action_type == "declare_attackers" and isinstance(ai_player, HeuristicPlayer):
+                gs_with_priority = {**gs, "priority_player": priority_player}
+                selected_ids = ai_player.select_attackers(chosen_action, gs_with_priority, priority_player)
+                defending_player = chosen_action.get("card_name", "")
+                payload["attack_declarations"] = [
+                    {"attacker_id": aid, "defending_id": defending_player}
+                    for aid in selected_ids
+                ]
             if action_type == "declare_blockers":
                 gs_with_priority = {**gs, "priority_player": priority_player, "phase": phase, "step": step}
                 payload["block_declarations"] = compute_block_declarations(chosen_action, gs_with_priority)

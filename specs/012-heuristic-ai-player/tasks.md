@@ -128,6 +128,19 @@
 - [X] T041 Life-pressure clock scaling in `_score_declare_attackers` in `ai_client/heuristic_player.py` — add pressure bonus `(10 - opp_life) × 4` when `opp_life ≤ 10`; at `opp_life ≤ 5` accept small unfavourable trades (`score > -30 → floor to 10`); near-lethal evasion swing detection; `×1.2` race multiplier when our life is lower than opponent's
 - [X] T042 Gang block tier in `compute_block_declarations` in `ai_client/heuristic_player.py` — after single-blocker check fails, try 2-blocker combinations: if `combined_power >= att_toughness` and `att_cmc >= blk1_cmc + blk2_cmc` (or lethal incoming), assign both blockers to the attacker; mirrors Forge `makeGangBlocks` tier
 
+## Phase 9: Forge Parity — Full Heuristic Improvements
+
+**Gap analysis of Forge AI source identified additional missing combat math and spell categorisation.**
+
+- [X] T043 Fix `_score_declare_blockers` evasion filter — add `_can_block(blk, att)` check to `my_creatures` loop so non-fliers are never considered as trades against flying attackers; also add deathtouch awareness: `_card_has_kw(blk.card, "deathtouch")` makes any blocker a killing blocker, `att_has_dt` means any attacker kills any blocker
+- [X] T044 Deathtouch in `_simulate_combat` — for the killing-blocker search: if blocker has deathtouch, treat as killing (power ≥ 1 suffices); if our attacker has deathtouch, treat as killing any blocker regardless of power vs toughness check
+- [X] T045 Trample bleed in `_simulate_combat` — when attacker has trample and opponent chumps, add `max(0, att_power - blk_toughness) × 6` excess damage to net score (unblocked damage to player)
+- [X] T046 First-strike awareness in `_simulate_combat` — if blocker has first/double strike and attacker does not, set `attacker_kills_blocker = False` (blocker kills attacker before retaliation); if attacker has first/double strike, it kills blocker before taking damage (use normal power check)
+- [X] T047 Selective attacking via `HeuristicPlayer.select_attackers(action, game_state, my_name) -> list[str]` — greedy subset selection: score full group, if positive send all; otherwise remove lowest-marginal-contribution attacker iteratively until score ≥ 0; fallback to unblocked evasion attackers only; wire into `ai_client/game_loop.py` to override `attack_declarations` for `HeuristicPlayer`
+- [X] T048 Removal/burn detection in `_score_cast` — add `_DESTROY_RE` and `_DAMAGE_TO_TARGET_RE` regexes; for "destroy/exile target" instants, score = `min(best_target_cmc × 12, 80)`; for damage spells, score based on kills a creature (`best_kill_cmc × 10 + 20`) or face burn `(dmg / opp_life) × 40`
+- [X] T049 Aura scoring in `_score_cast` — detect "enchant creature" + `_AURA_BOOST_RE` for stat grants; score `p_boost × 8 + t_boost × 4` plus 10 per keyword granted; return -20 if no friendly creatures available to enchant
+- [X] T050 Planeswalker scoring in `_score_cast` — detect "planeswalker" type line; base 40 + `loyalty × 8` to reflect sustained card advantage
+
 ---
 
 ## Dependencies & Execution Order

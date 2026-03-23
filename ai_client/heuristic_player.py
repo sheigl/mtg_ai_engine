@@ -7,6 +7,9 @@ from .models import PlayerConfig
 _MANA_ADD_RE = re.compile(r'Add\s+\{')
 _PUMP_RE = re.compile(r'target creature gets \+\d+/\+\d+', re.IGNORECASE)
 _COMBAT_STEPS = {"declare_attackers", "declare_blockers", "first_strike_damage", "combat_damage", "end_of_combat"}
+_DESTROY_RE = re.compile(r'destroy target|exile target', re.IGNORECASE)
+_DAMAGE_TO_TARGET_RE = re.compile(r'deals?\s+(\d+)\s+damage\s+to\s+(?:any\s+target|target\s+creature|target\s+player\s+or\s+planeswalker)', re.IGNORECASE)
+_AURA_BOOST_RE = re.compile(r'enchanted creature gets \+(\d+)/\+(\d+)', re.IGNORECASE)
 
 
 def _perm_power(perm: dict) -> int:
@@ -440,6 +443,75 @@ class HeuristicPlayer:
                 elif self._has_keyword(card, "shroud"):
                     score += 15.0
 
+            # ── Planeswalker ──────────────────────────────────────────────
+            elif "planeswalker" in type_line:
+                try:
+                    loyalty = int(card.get("loyalty") or 0)
+                except (ValueError, TypeError):
+                    loyalty = 0
+                score += 40.0 + loyalty * 8.0  # planeswalkers generate sustained card advantage
+
+            # ── Aura (enchant creature) ───────────────────────────────────
+            elif "enchantment" in type_line:
+                oracle = card.get("oracle_text") or ""
+                if "enchant creature" in oracle.lower():
+                    if not self._has_any_creatures(game_state, my_name):
+                        return -20.0  # no target, can't cast meaningfully
+                    boost_m = _AURA_BOOST_RE.search(oracle)
+                    if boost_m:
+                        p_boost = int(boost_m.group(1))
+                        t_boost = int(boost_m.group(2))
+                        score += p_boost * 8.0 + t_boost * 4.0
+                    # Keyword grants on the aura
+                    for kw in ("flying", "trample", "deathtouch", "lifelink", "haste"):
+                        if kw in oracle.lower():
+                            score += 10.0
+
+            # ── Instant/Sorcery: removal and burn ────────────────────────
+            elif "instant" in type_line or "sorcery" in type_line:
+                oracle = card.get("oracle_text") or ""
+                all_perms = game_state.get("battlefield", [])
+                opp_name_local = next(
+                    (p.get("name") for p in game_state.get("players", []) if p.get("name") != my_name), ""
+                )
+                opp_creatures = [
+                    p for p in all_perms
+                    if p.get("controller") == opp_name_local
+                    and "creature" in (p.get("card", {}).get("type_line") or "").lower()
+                ]
+
+                if _DESTROY_RE.search(oracle):
+                    # Removal: value = best target's CMC, capped
+                    best_target_cmc = max(
+                        (_cmc_str(p.get("card", {}).get("mana_cost") or "") for p in opp_creatures),
+                        default=0,
+                    )
+                    if best_target_cmc > 0:
+                        score += min(best_target_cmc * 12.0, 80.0)
+                    else:
+                        score -= 20.0  # no valid target, don't cast now
+
+                damage_m = _DAMAGE_TO_TARGET_RE.search(oracle)
+                if damage_m:
+                    dmg = int(damage_m.group(1))
+                    # Burn: value = kills a creature OR deals meaningful face damage
+                    kills_creature = any(
+                        _perm_toughness(p) <= dmg for p in opp_creatures
+                    )
+                    if kills_creature:
+                        best_kill_cmc = max(
+                            (_cmc_str(p.get("card", {}).get("mana_cost") or "")
+                             for p in opp_creatures if _perm_toughness(p) <= dmg),
+                            default=0,
+                        )
+                        score += best_kill_cmc * 10.0 + 20.0
+                    else:
+                        # Face burn: value proportional to damage relative to opponent life
+                        opp_life_local = next(
+                            (p.get("life", 20) for p in game_state.get("players", []) if p.get("name") != my_name), 20
+                        )
+                        score += (dmg / max(opp_life_local, 1)) * 40.0
+
         # Aggression multiplier when opponent life is low
         opp_life = next(
             (p.get("life", 20) for p in game_state.get("players", []) if p.get("name") != my_name),
@@ -489,14 +561,35 @@ class HeuristicPlayer:
             att_power = self._perm_power(att)
             att_toughness = self._perm_toughness(att)
             att_cmc = self._cmc(att.get("card", {}).get("mana_cost") or "")
+            att_card = att.get("card", {})
+            att_has_dt = _card_has_kw(att_card, "deathtouch")
+            att_has_trample = _card_has_kw(att_card, "trample")
+            att_has_fs = _card_has_kw(att_card, "first strike") or _card_has_kw(att_card, "double strike")
 
             # Only consider blockers that can legally block this attacker (evasion check)
             eligible = [blk for blk in remaining_blockers if _can_block(blk, att)]
 
-            # Find cheapest blocker that can KILL our attacker (blk_power >= att_toughness)
+            # Find cheapest blocker that can KILL our attacker.
+            # With deathtouch on the blocker, 1 damage = lethal → any blocker with power≥1 kills us.
+            # With first strike on the blocker (and no first strike on attacker), blocker kills us first
+            # if its power ≥ our toughness.
             killing_blocker = None
             for blk in sorted(eligible, key=lambda p: self._cmc(p.get("card", {}).get("mana_cost") or "")):
-                if self._perm_power(blk) >= att_toughness:
+                blk_power = self._perm_power(blk)
+                blk_card = blk.get("card", {})
+                blk_has_dt = _card_has_kw(blk_card, "deathtouch")
+                blk_has_fs = _card_has_kw(blk_card, "first strike") or _card_has_kw(blk_card, "double strike")
+
+                # Blocker kills our attacker if:
+                # - Normal: blk_power >= att_toughness
+                # - Deathtouch blocker: any non-zero damage kills us
+                # - First-strike blocker vs no-first-strike attacker: kills us if power >= toughness
+                #   (same formula, but the attacker can't deal damage back before dying)
+                blocker_kills_attacker = (
+                    (blk_has_dt and blk_power > 0)
+                    or blk_power >= att_toughness
+                )
+                if blocker_kills_attacker:
                     killing_blocker = blk
                     break
 
@@ -504,26 +597,45 @@ class HeuristicPlayer:
                 blk_power = self._perm_power(killing_blocker)
                 blk_toughness = self._perm_toughness(killing_blocker)
                 blk_cmc = self._cmc(killing_blocker.get("card", {}).get("mana_cost") or "")
+                blk_has_dt = _card_has_kw(killing_blocker.get("card", {}), "deathtouch")
+                blk_has_fs = _card_has_kw(killing_blocker.get("card", {}), "first strike") or \
+                             _card_has_kw(killing_blocker.get("card", {}), "double strike")
 
-                if att_power >= blk_toughness:
-                    # Mutual trade — net value = our gain minus our loss
+                # Does our attacker also kill the blocker?
+                # Deathtouch attacker: kills any blocker with 1 damage
+                # First-strike attacker vs no-first-strike blocker: kills if power ≥ toughness
+                #   (blocker can't deal damage back before dying)
+                attacker_kills_blocker = (
+                    (att_has_dt and att_power > 0)
+                    or att_power >= blk_toughness
+                )
+                # If blocker has first strike and attacker doesn't, attacker can't deal damage back
+                if blk_has_fs and not att_has_fs:
+                    attacker_kills_blocker = False  # blocker kills us before we can retaliate
+
+                if attacker_kills_blocker:
+                    # Mutual trade
                     net_score += (att_cmc - blk_cmc) * 8.0
                 else:
-                    # Our attacker dies, their blocker survives — bad for us
+                    # Our attacker dies, their blocker survives
                     net_score -= att_cmc * 8.0
 
                 remaining_blockers.remove(killing_blocker)
             else:
-                # No killing blocker — check if opponent can chump block (using eligible only)
+                # No killing blocker — check if opponent can chump block
                 chump = next(
                     (blk for blk in sorted(eligible, key=lambda p: self._cmc(p.get("card", {}).get("mana_cost") or ""))
-                     if self._perm_toughness(blk) <= att_power),
+                     if self._perm_toughness(blk) <= att_power or att_has_dt),
                     None,
                 )
                 if chump:
-                    # Opponent chumps — we kill their creature, attacker survives
+                    blk_toughness = self._perm_toughness(chump)
                     blk_cmc = self._cmc(chump.get("card", {}).get("mana_cost") or "")
                     net_score += blk_cmc * 8.0
+                    # Trample: excess damage bleeds through even if blocked
+                    if att_has_trample:
+                        excess = max(0, att_power - blk_toughness)
+                        net_score += excess * 6.0
                     remaining_blockers.remove(chump)
                 else:
                     # Truly unblocked — chip damage
@@ -534,6 +646,72 @@ class HeuristicPlayer:
             net_score += 5.0
 
         return net_score
+
+    # ------------------------------------------------------------------
+    # Selective attacker subset (Forge: shouldAttack per-creature filtering)
+    # ------------------------------------------------------------------
+
+    def select_attackers(self, action: dict, game_state: dict, my_name: str) -> list[str]:
+        """
+        Return the optimal subset of valid_targets to actually attack with.
+        Strategy:
+          1. Score the full group — if positive, send everyone.
+          2. Otherwise, greedily drop the attacker with the worst individual
+             contribution (marginal score) until the group score turns positive
+             or only one attacker remains (try it anyway if unblocked/evasion).
+        """
+        all_ids = action.get("valid_targets", [])
+        if not all_ids:
+            return []
+
+        all_perms = game_state.get("battlefield", [])
+        opp_name = next(
+            (p.get("name") for p in game_state.get("players", []) if p.get("name") != my_name), ""
+        )
+        blocker_perms = [
+            p for p in all_perms
+            if p.get("controller") == opp_name
+            and not p.get("tapped")
+            and "creature" in (p.get("card", {}).get("type_line") or "").lower()
+        ]
+        opp_life = next(
+            (p.get("life", 20) for p in game_state.get("players", []) if p.get("name") == opp_name), 20
+        )
+        all_perm_map = {p.get("id"): p for p in all_perms}
+        candidates = [all_perm_map[aid] for aid in all_ids if aid in all_perm_map]
+
+        # Full group score
+        if self._simulate_combat(candidates, blocker_perms, opp_life) >= 0:
+            return all_ids  # all attack
+
+        # Greedy pruning: remove the worst individual contributor
+        remaining = list(candidates)
+        while len(remaining) > 1:
+            # Marginal contribution of each creature = score(all) - score(all minus this one)
+            base = self._simulate_combat(remaining, blocker_perms, opp_life)
+            worst = min(
+                remaining,
+                key=lambda p: base - self._simulate_combat(
+                    [x for x in remaining if x is not p], blocker_perms, opp_life
+                ),
+            )
+            remaining.remove(worst)
+            if self._simulate_combat(remaining, blocker_perms, opp_life) >= 0:
+                break
+
+        # Check if reduced group is worth attacking with
+        if self._simulate_combat(remaining, blocker_perms, opp_life) >= 0:
+            return [p.get("id") for p in remaining]
+
+        # Last resort: any evasion attacker that has no eligible blocker
+        unblocked = [
+            p for p in candidates
+            if not any(_can_block(blk, p) for blk in blocker_perms)
+        ]
+        if unblocked:
+            return [p.get("id") for p in unblocked]
+
+        return []  # don't attack
 
     # ------------------------------------------------------------------
     # Attacker scoring (T019, T020)
@@ -641,19 +819,31 @@ class HeuristicPlayer:
         for att in incoming_attackers:
             att_toughness = self._perm_toughness(att)
             att_cmc = self._cmc(att.get("card", {}).get("mana_cost") or "")
+            att_has_dt = _card_has_kw(att.get("card", {}), "deathtouch")
 
             best_trade = -999.0
             for blk in my_creatures:
+                if not _can_block(blk, att):
+                    continue
                 blk_power = self._perm_power(blk)
                 blk_cmc = self._cmc(blk.get("card", {}).get("mana_cost") or "")
-                if blk_power >= att_toughness:
-                    # Our blocker can kill the attacker
+                blk_has_dt = _card_has_kw(blk.get("card", {}), "deathtouch")
+
+                # Deathtouch: 1 damage is lethal, so any non-zero power kills
+                can_kill_attacker = (blk_power >= att_toughness) or (blk_has_dt and blk_power > 0)
+                # Attacker kills our blocker if it has enough power or deathtouch
+                blk_toughness = self._perm_toughness(blk)
+                attacker_kills_blocker = (self._perm_power(att) >= blk_toughness) or (att_has_dt and self._perm_power(att) > 0)
+
+                if can_kill_attacker:
                     trade_value = att_cmc - blk_cmc
+                    # Bonus if we survive the trade (our blocker lives)
+                    if not attacker_kills_blocker:
+                        trade_value += blk_cmc * 0.5
                     if trade_value > best_trade:
                         best_trade = trade_value
 
             if best_trade >= 0:
-                # Neutral or favourable trade — block
                 net_score += best_trade * 10.0 + 15.0
 
         return net_score
