@@ -52,6 +52,7 @@ class CreateGameRequest(BaseModel):
     deck2: list[str]
     seed: int | None = None
     verbose: bool = False
+    debug: bool = False
     format: str = "standard"
     commander1: str | None = None
     commander2: str | None = None
@@ -198,6 +199,7 @@ def create_game(req: CreateGameRequest) -> dict:
             deck1_cards, deck2_cards,
             seed=req.seed,
             verbose=req.verbose,
+            debug=req.debug,
             format="commander",
             commander1_card=commander1_card,
             commander2_card=commander2_card,
@@ -213,6 +215,7 @@ def create_game(req: CreateGameRequest) -> dict:
             deck1_cards, deck2_cards,
             seed=req.seed,
             verbose=req.verbose,
+            debug=req.debug,
         )
     return _ok(gs)
 
@@ -749,6 +752,34 @@ def resume_game(game_id: str) -> dict:
     return {"data": {"is_paused": False}}
 
 
+@router.post("/{game_id}/copy-spell")
+def copy_spell(game_id: str, req) -> dict:
+    """POST /game/{game_id}/copy-spell — Copy a spell on the stack. US7 (014)."""
+    from mtg_engine.models.actions import CopySpellRequest
+    from mtg_engine.engine.stack import copy_spell_on_stack
+    if not isinstance(req, dict):
+        req = req.model_dump() if hasattr(req, "model_dump") else {}
+    # Accept dict body directly for simplicity
+    try:
+        player_name = req.get("player_name", "")
+        target_stack_id = req.get("target_stack_id", "")
+        new_targets = req.get("new_targets", [])
+    except Exception:
+        raise _err("Invalid request body", "INVALID_REQUEST")
+    gs = _get_gs(game_id)
+    if gs.priority_holder != player_name:
+        raise _err(f"{player_name} does not have priority", "PRIORITY_VIOLATION")
+    if not any(o.id == target_stack_id for o in gs.stack):
+        raise _err(f"Stack object {target_stack_id!r} not found", "STACK_OBJECT_NOT_FOUND")
+    try:
+        gs = copy_spell_on_stack(gs, target_stack_id, new_targets or None)
+    except ValueError as e:
+        raise _err(str(e), "COPY_SPELL_ERROR")
+    mgr = get_manager()
+    mgr.save(game_id, gs)
+    return _ok(gs)
+
+
 def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
     """Compute all legal actions for the priority holder."""
     from mtg_engine.card_data.ability_parser import parse_oracle_text, ActivatedAbility
@@ -909,14 +940,38 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
 
     # Declare attackers (active player, declare attackers step)
     if is_active and gs.step == Step.DECLARE_ATTACKERS:
-        attackers = [
-            p for p in gs.battlefield
-            if p.controller == player_name
-            and "creature" in p.card.type_line.lower()
-            and not p.tapped
-            and (not p.summoning_sick or "haste" in p.card.keywords)
-            and "defender" not in p.card.keywords
-        ]
+        # US6: Derive and enforce attack constraints
+        from mtg_engine.engine.constraints import derive_combat_constraints
+        from mtg_engine.engine.mana import can_pay_cost as _can_pay_attack
+        atk_constraints, blk_constraints = derive_combat_constraints(gs)
+        gs.attack_constraints = atk_constraints
+        gs.block_constraints = blk_constraints
+
+        attackers = []
+        for p in gs.battlefield:
+            if not (
+                p.controller == player_name
+                and "creature" in p.card.type_line.lower()
+                and not p.tapped
+                and (not p.summoning_sick or "haste" in p.card.keywords)
+                and "defender" not in p.card.keywords
+            ):
+                continue
+            # Check attack constraints
+            can_attack = True
+            for con in atk_constraints:
+                if con.affected_id not in (p.id, "all"):
+                    continue
+                if con.constraint_type == "cannot_attack":
+                    can_attack = False
+                    break
+                if con.constraint_type == "cost_to_attack" and con.cost:
+                    if not _can_pay_attack(player.mana_pool, con.cost):
+                        can_attack = False
+                        break
+            if can_attack:
+                attackers.append(p)
+
         if attackers:
             opponent = next((p.name for p in gs.players if p.name != player_name), "")
             attacker_names = ", ".join(p.card.name for p in attackers)
@@ -930,12 +985,24 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
     # Declare blockers (non-active/defending player, declare blockers step, only once per step)
     if (not is_active and gs.step == Step.DECLARE_BLOCKERS and gs.combat
             and gs.combat.attackers and not gs.combat.blockers_declared):
+        # US6: Filter out creatures with cannot-block constraints
+        cannot_block_ids = {
+            con.affected_id for con in gs.block_constraints
+            if con.constraint_type == "cannot_block"
+        }
+        # Goaded creatures can't block (CR 702.117b)
+        goaded_ids = {
+            p.id for p in gs.battlefield
+            if any(k.startswith("goad_by_") for k in p.counters)
+        }
         potential_blockers = [
             p for p in gs.battlefield
             if p.controller == player_name
             and "creature" in p.card.type_line.lower()
             and not p.tapped
             and not p.summoning_sick
+            and p.id not in cannot_block_ids
+            and p.id not in goaded_ids
         ]
         attacker_names = ", ".join(
             next((p.card.name for p in gs.battlefield if p.id == a.permanent_id), a.permanent_id)

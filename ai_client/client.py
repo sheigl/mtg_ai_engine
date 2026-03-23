@@ -28,7 +28,7 @@ class EngineClient:
             raise EngineError(f"Engine returned {resp.status_code}: {body}")
         return resp.json()
 
-    def create_game(self, config: GameConfig) -> str:
+    def create_game(self, config: GameConfig, debug: bool = False) -> str:
         """POST /game — returns the game_id string."""
         body = {
             "player1_name": config.players[0].name,
@@ -36,6 +36,7 @@ class EngineClient:
             "deck1": config.deck1,
             "deck2": config.deck2,
             "verbose": config.verbose,
+            "debug": debug,
             "format": config.format,
         }
         if config.format == "commander":

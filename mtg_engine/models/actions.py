@@ -107,6 +107,13 @@ class LegalAction(BaseModel):
     description: Optional[str] = None
 
 
+class CopySpellRequest(BaseModel):
+    """Request to copy a spell currently on the stack. US7 (014)."""
+    player_name: str
+    target_stack_id: str   # ID of the stack object to copy
+    new_targets: list[str] = Field(default_factory=list)
+
+
 class LegalActionsResponse(BaseModel):
     priority_player: str
     phase: str

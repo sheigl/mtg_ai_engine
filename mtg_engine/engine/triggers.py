@@ -147,6 +147,55 @@ def _matches_phase_trigger(
     return False
 
 
+def check_damage_triggers(
+    game_state: GameState,
+    assignments: list,
+) -> GameState:
+    """
+    Check for "whenever this deals combat damage" triggers after damage assignment.
+    CR 603.2: triggered abilities use a triggering event.
+    Scans permanents for combat-damage trigger patterns and queues PendingTriggers.
+    """
+    import re as _re
+    from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    # Build set of permanent IDs that dealt damage to a player this assignment
+    player_names = {p.name for p in game_state.players}
+    damaging_perm_ids: set[str] = set()
+    for assign in assignments:
+        if assign.target_id in player_names and assign.damage > 0:
+            damaging_perm_ids.add(assign.source_id)
+
+    if not damaging_perm_ids:
+        return game_state
+
+    _COMBAT_DAMAGE_TRIGGER_RE = _re.compile(
+        r"whenever (?:this|~|this creature) deals? (?:combat )?damage(?: to a player)?",
+        _re.IGNORECASE,
+    )
+
+    for perm in game_state.battlefield:
+        if perm.id not in damaging_perm_ids:
+            continue
+        oracle = perm.card.oracle_text or ""
+        if _COMBAT_DAMAGE_TRIGGER_RE.search(oracle):
+            trigger = PendingTrigger(
+                id=str(uuid.uuid4()),
+                source_permanent_id=perm.id,
+                controller=perm.controller,
+                trigger_type="combat_damage",
+                effect_description=oracle,
+                source_card_name=perm.card.name,
+            )
+            game_state.pending_triggers.append(trigger)
+            logger.debug(
+                "Combat damage trigger queued from %s (controller: %s)",
+                perm.card.name, perm.controller,
+            )
+
+    return game_state
+
+
 def get_pending_triggers_for_player(
     game_state: GameState, player_name: str
 ) -> list[PendingTrigger]:

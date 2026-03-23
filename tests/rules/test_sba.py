@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from mtg_engine.models.game import GameState, Phase, Step, PlayerState, Card, Permanent
 from mtg_engine.engine.sba import check_and_apply_sbas
-from mtg_engine.engine.zones import put_permanent_onto_battlefield
+from mtg_engine.engine.zones import put_permanent_onto_battlefield, draw_card
 
 
 def _make_game() -> GameState:
@@ -174,3 +174,30 @@ def test_game_over_when_player_loses():
     gs, events = check_and_apply_sbas(gs)
     assert gs.is_game_over
     assert gs.winner == "p2"
+
+
+def test_deck_out_loss():
+    """CR 704.5b: player who draws from empty library loses."""
+    gs = _make_game()
+    # p1 has empty library
+    gs.players[0].library = []
+    gs, card = draw_card(gs, "p1")
+    assert card is None
+    assert gs.players[0].has_lost
+    # SBA check should mark game over
+    gs, events = check_and_apply_sbas(gs)
+    assert gs.is_game_over
+    assert gs.winner == "p2"
+
+
+def test_draw_with_cards_does_not_lose():
+    """Drawing from a non-empty library should not trigger loss."""
+    from mtg_engine.models.game import Card as GameCard
+    gs = _make_game()
+    card = GameCard(name="Plains", type_line="Basic Land — Plains")
+    gs.players[0].library = [card]
+    gs, drawn = draw_card(gs, "p1")
+    assert drawn is not None
+    assert not gs.players[0].has_lost
+    gs, events = check_and_apply_sbas(gs)
+    assert not gs.is_game_over

@@ -81,6 +81,7 @@ class Permanent(BaseModel):
     summoning_sick: bool = True
     is_face_down: bool = False
     timestamp: float = 0.0  # for layer system ordering (CR 613.7)
+    copy_of_permanent_id: Optional[str] = None  # layer 1 copy effects (014)
 
 
 class StackObject(BaseModel):
@@ -122,6 +123,33 @@ class PendingTrigger(BaseModel):
     source_card_name: str
 
 
+class DamagePreventionEffect(BaseModel):
+    """An active damage prevention shield. CR 614.1."""
+    effect_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    source_permanent_id: Optional[str] = None
+    target_id: Optional[str] = None   # None = global (all combat)
+    remaining: Optional[int] = None   # None = unlimited (until end of turn)
+    combat_only: bool = False
+    color_restriction: Optional[str] = None  # prevents damage only from this color source
+
+
+class AttackConstraint(BaseModel):
+    """A constraint on declaring attackers (Propaganda, goad, must-attack). CR 508."""
+    source_id: str
+    affected_id: str   # permanent ID or "all"
+    constraint_type: str  # "must_attack" | "cannot_attack" | "cost_to_attack" | "goad"
+    cost: Optional[str] = None          # mana cost string for cost_to_attack
+    goad_controller: Optional[str] = None  # for goad: player whose creatures must be attacked
+
+
+class BlockConstraint(BaseModel):
+    """A constraint on declaring blockers (can't block, evasion). CR 509."""
+    source_id: str
+    affected_id: str   # permanent ID or "all"
+    constraint_type: str  # "cannot_block" | "can_only_block_flyers" | "min_power_to_block"
+    restriction: Optional[str] = None
+
+
 class AttackerInfo(BaseModel):
     permanent_id: str
     defending_id: str   # player name or planeswalker permanent ID
@@ -158,6 +186,13 @@ class GameState(BaseModel):
     # Commander format
     format: str = "standard"
     commander_damage: dict[str, dict[str, int]] = Field(default_factory=dict)
+    # Rules engine completeness (014)
+    prevention_effects: list[DamagePreventionEffect] = Field(default_factory=list)
+    attack_constraints: list[AttackConstraint] = Field(default_factory=list)
+    block_constraints: list[BlockConstraint] = Field(default_factory=list)
+    prevent_all_combat_damage: bool = False
+    phase_skip_flags: dict[str, bool] = Field(default_factory=dict)
+    debug_enabled: bool = False
 
     def compute_hash(self) -> str:
         """Compute deterministic hash of state, excluding state_hash itself. REQ-API05"""

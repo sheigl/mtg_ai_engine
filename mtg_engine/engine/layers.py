@@ -95,16 +95,162 @@ def collect_continuous_effects(game_state: GameState) -> list[ContinuousEffect]:
     """
     Gather all active continuous effects from permanents on the battlefield.
     Each permanent with a static ability generates a ContinuousEffect for the relevant layer(s).
+    CR 613: layers 1–7 in order.
     """
     import re as _re
 
     effects: list[ContinuousEffect] = []
 
+    # ── Layer 1: Copy effects ──────────────────────────────────────────────────
+    # US5: When a permanent has copy_of_permanent_id set, copy copiable values from source.
+    for perm in game_state.battlefield:
+        if perm.copy_of_permanent_id is not None:
+            source = next(
+                (p for p in game_state.battlefield if p.id == perm.copy_of_permanent_id), None
+            )
+            if source is not None:
+                def _make_copy_fn(src: Permanent):
+                    def _apply_copy(gs: GameState, target: Permanent) -> None:
+                        # Copiable values: name, mana_cost, type_line, oracle_text,
+                        # power, toughness, colors, keywords (CR 706.2)
+                        target.card = target.card.model_copy(update={
+                            "name": src.card.name,
+                            "mana_cost": src.card.mana_cost,
+                            "type_line": src.card.type_line,
+                            "oracle_text": src.card.oracle_text,
+                            "power": src.card.power,
+                            "toughness": src.card.toughness,
+                            "colors": list(src.card.colors),
+                            "keywords": list(src.card.keywords),
+                        })
+                    return _apply_copy
+                effects.append(ContinuousEffect(
+                    source_id=perm.id,
+                    layer=EffectLayer.COPY,
+                    sublayer=None,
+                    timestamp=perm.timestamp,
+                    is_cda=False,
+                    description=f"{perm.card.name}: copy of {source.card.name}",
+                    apply_fn=_make_copy_fn(source),
+                    affected_ids=[perm.id],
+                ))
+
+    # ── Layer 3: Text-change effects ───────────────────────────────────────────
+    # Scaffold only — text-change effects (e.g. Magical Hack) are not pattern-matched here.
+    # The layer is applied in apply_continuous_effects layer order.
+
     for perm in game_state.battlefield:
         card = perm.card
         oracle = (card.oracle_text or "").lower()
 
-        # Layer 6: Ability removal — Humility pattern
+        # ── Layer 2: Control-change effects ───────────────────────────────────
+        # US5: Aura with "you control enchanted creature" (e.g. Control Magic)
+        if perm.attached_to and (
+            "you control enchanted creature" in oracle
+            or "gain control of enchanted" in oracle
+        ):
+            attached_id = perm.attached_to
+            def _make_control_fn(new_controller: str):
+                def _change_control(gs: GameState, target: Permanent) -> None:
+                    target.controller = new_controller
+                return _change_control
+            effects.append(ContinuousEffect(
+                source_id=perm.id,
+                layer=EffectLayer.CONTROL,
+                sublayer=None,
+                timestamp=perm.timestamp,
+                is_cda=False,
+                description=f"{card.name}: control of enchanted creature → {perm.controller}",
+                apply_fn=_make_control_fn(perm.controller),
+                affected_ids=[attached_id],
+            ))
+
+        # ── Layer 4: Type-change effects ───────────────────────────────────────
+        # US5: "is [a/an] X in addition to", "becomes a [type]", "is all types"
+        type_addition = _re.search(
+            r"is (?:a|an) (\w+) in addition to",
+            oracle,
+        )
+        if type_addition:
+            added_type = type_addition.group(1).capitalize()
+            def _make_type_adder(new_type: str):
+                def _add_type(gs: GameState, target: Permanent) -> None:
+                    if new_type.lower() not in target.card.type_line.lower():
+                        target.card = target.card.model_copy(
+                            update={"type_line": target.card.type_line + f" — {new_type}"}
+                            if "—" in target.card.type_line
+                            else {"type_line": target.card.type_line + f" {new_type}"}
+                        )
+                return _add_type
+            effects.append(ContinuousEffect(
+                source_id=perm.id,
+                layer=EffectLayer.TYPE,
+                sublayer=None,
+                timestamp=perm.timestamp,
+                is_cda=False,
+                description=f"{card.name}: is {added_type} in addition",
+                apply_fn=_make_type_adder(added_type),
+            ))
+
+        # ── Layer 5: Color-change effects ──────────────────────────────────────
+        # US5: "is [color]", "is all colors", "is colorless"
+        if "is all colors" in oracle:
+            def _make_all_colors():
+                def _set_all_colors(gs: GameState, target: Permanent) -> None:
+                    target.card = target.card.model_copy(
+                        update={"colors": ["W", "U", "B", "R", "G"]}
+                    )
+                return _set_all_colors
+            effects.append(ContinuousEffect(
+                source_id=perm.id,
+                layer=EffectLayer.COLOR,
+                sublayer=None,
+                timestamp=perm.timestamp,
+                is_cda=False,
+                description=f"{card.name}: is all colors",
+                apply_fn=_make_all_colors(),
+            ))
+        elif "is colorless" in oracle:
+            def _make_colorless():
+                def _set_colorless(gs: GameState, target: Permanent) -> None:
+                    target.card = target.card.model_copy(update={"colors": []})
+                return _set_colorless
+            effects.append(ContinuousEffect(
+                source_id=perm.id,
+                layer=EffectLayer.COLOR,
+                sublayer=None,
+                timestamp=perm.timestamp,
+                is_cda=False,
+                description=f"{card.name}: is colorless",
+                apply_fn=_make_colorless(),
+            ))
+        else:
+            # Single color override (e.g. "enchanted creature is red")
+            _COLOR_SET_RE = _re.search(
+                r"(?:enchanted creature|it) is (white|blue|black|red|green)",
+                oracle,
+            )
+            if _COLOR_SET_RE:
+                _color_name_map = {
+                    "white": "W", "blue": "U", "black": "B", "red": "R", "green": "G"
+                }
+                color_abbrev = _color_name_map[_COLOR_SET_RE.group(1)]
+                def _make_color_setter(color: str, src_id: str):
+                    def _set_color(gs: GameState, target: Permanent) -> None:
+                        target.card = target.card.model_copy(update={"colors": [color]})
+                    return _set_color
+                effects.append(ContinuousEffect(
+                    source_id=perm.id,
+                    layer=EffectLayer.COLOR,
+                    sublayer=None,
+                    timestamp=perm.timestamp,
+                    is_cda=False,
+                    description=f"{card.name}: enchanted creature is {_COLOR_SET_RE.group(1)}",
+                    apply_fn=_make_color_setter(color_abbrev, perm.id),
+                    affected_ids=[perm.attached_to] if perm.attached_to else None,
+                ))
+
+        # ── Layer 6: Ability removal — Humility pattern ─────────────────────
         # "creatures lose all abilities" or "creatures lose all abilities and are 1/1"
         if "lose all abilities" in oracle or "loses all abilities" in oracle:
             # This removes abilities from all creatures (layer 6)

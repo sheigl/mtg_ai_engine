@@ -11,11 +11,6 @@ if TYPE_CHECKING:
 
 _verbose_logger = logging.getLogger("mtg_engine.verbose")
 _verbose_logger.setLevel(logging.INFO)
-if not _verbose_logger.handlers:
-    _handler = logging.StreamHandler()
-    _handler.setFormatter(logging.Formatter("%(message)s"))
-    _verbose_logger.addHandler(_handler)
-    _verbose_logger.propagate = False
 
 # ── Global zone-change listener (registered once at first game creation) ───────
 _listener_registered: bool = False

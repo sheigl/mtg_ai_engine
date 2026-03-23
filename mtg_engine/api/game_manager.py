@@ -37,6 +37,7 @@ class GameManager:
         deck2: list[Card],
         seed: int | None = None,
         verbose: bool = False,
+        debug: bool = False,
         format: str = "standard",
         commander1_card: Optional[Card] = None,
         commander2_card: Optional[Card] = None,
@@ -87,6 +88,7 @@ class GameManager:
             step=Step.UNTAP,
             players=[p1, p2],
             format=format,
+            debug_enabled=debug,
         )
         gs.refresh_hash()
         self._games[game_id] = gs
