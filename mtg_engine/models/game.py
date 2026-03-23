@@ -134,7 +134,9 @@ class CombatState(BaseModel):
     attackers: list[AttackerInfo] = Field(default_factory=list)
     # Map blocker_id → attacker_id it is blocking
     blocker_assignments: dict[str, str] = Field(default_factory=dict)
-    first_strike_done: bool = False  # True after first-strike damage step
+    first_strike_done: bool = False   # True after first-strike damage step
+    damage_assigned: bool = False     # True once assign_combat_damage called this step; reset on step change
+    blockers_declared: bool = False   # True once declare_blockers called; reset on step change
 
 
 class GameState(BaseModel):

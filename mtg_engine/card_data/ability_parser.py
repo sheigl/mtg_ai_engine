@@ -140,8 +140,8 @@ def _parse_segment(text: str) -> list[Ability]:
             raw_text=text,
         )]
 
-    # Single keyword
-    lower = text.rstrip(".").lower().strip()
+    # Single keyword (possibly with inline reminder text)
+    lower = _strip_reminder(text).rstrip(".").lower().strip()
     if lower in KEYWORDS:
         return [KeywordAbility(name=lower)]
 
@@ -150,12 +150,19 @@ def _parse_segment(text: str) -> list[Ability]:
     return [UnparsedAbility(raw_text=text)]
 
 
+def _strip_reminder(text: str) -> str:
+    """Strip trailing inline reminder text in parentheses, e.g. 'Trample (This creature...)'."""
+    return re.sub(r"\s*\([^)]*\)\s*$", "", text).strip()
+
+
 def _try_parse_keywords(text: str) -> list[KeywordAbility] | None:
     """Try to parse text as a comma-separated keyword list."""
     # Handle keyword abilities that may have a parameter, e.g. "Protection from red"
     parts = [p.strip().rstrip(".") for p in text.split(",")]
     results: list[KeywordAbility] = []
     for part in parts:
+        # Strip inline reminder text: "Trample (This creature can deal...)" → "Trample"
+        part = _strip_reminder(part).rstrip(".")
         lower = part.lower()
         # Exact match
         if lower in KEYWORDS:

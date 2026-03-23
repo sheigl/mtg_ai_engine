@@ -11,6 +11,8 @@ Auto-generated from all feature plans. Last updated: 2026-03-22
 - N/A (reads from existing in-memory game state) (010-game-observer-ui)
 - Python 3.11 (backend + AI client), TypeScript 5.x (frontend) + FastAPI, Pydantic v2, httpx, openai (OpenAI-compatible client), React 18, TanStack Query v5 (011-observer-ai-commentary)
 - In-process memory (DebugLogRecorder added alongside existing TranscriptRecorder/SnapshotRecorder) (011-observer-ai-commentary)
+- Python 3.11 + None new — stdlib only for heuristic logic; existing `openai`, `httpx`, `argparse` unchanged (012-heuristic-ai-player)
+- N/A — stateless, same as existing AI client (012-heuristic-ai-player)
 
 - Python 3.11 + FastAPI, Pydantic v2, standard `logging` module (007-play-by-play-log)
 
@@ -30,9 +32,9 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.11: Follow standard conventions
 
 ## Recent Changes
+- 012-heuristic-ai-player: Added Python 3.11 + None new — stdlib only for heuristic logic; existing `openai`, `httpx`, `argparse` unchanged
 - 011-observer-ai-commentary: Added Python 3.11 (backend + AI client), TypeScript 5.x (frontend) + FastAPI, Pydantic v2, httpx, openai (OpenAI-compatible client), React 18, TanStack Query v5
 - 010-game-observer-ui: Added Python 3.11 (backend, matches existing) + TypeScript 5.x (frontend)
-- 009-commander-format: Added Python 3.11 (matches existing codebase) + FastAPI, Pydantic v2, httpx, openai (all existing)
 
 
 <!-- MANUAL ADDITIONS START -->

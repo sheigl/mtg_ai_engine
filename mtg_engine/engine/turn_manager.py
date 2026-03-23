@@ -97,6 +97,10 @@ def advance_step(game_state: GameState) -> GameState:
         next_phase, next_step = TURN_SEQUENCE[idx + 1]
         game_state.phase = next_phase
         game_state.step = next_step
+        # Reset per-step flags when advancing steps
+        if game_state.combat is not None:
+            game_state.combat.damage_assigned = False
+            game_state.combat.blockers_declared = False
     else:
         # End of turn — advance to next player's turn
         game_state = _advance_turn(game_state)

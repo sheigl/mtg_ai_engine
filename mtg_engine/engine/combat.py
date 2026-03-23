@@ -146,6 +146,7 @@ def declare_blockers(
         attacker_info.blocker_ids.append(blocker.id)
         game_state.combat.blocker_assignments[blocker.id] = decl.attacker_id
 
+    game_state.combat.blockers_declared = True
     return game_state
 
 
@@ -311,11 +312,14 @@ def assign_combat_damage(
     if game_state.combat is None:
         return game_state
 
-    # Auto-assign if not provided
-    if assignments is None:
+    # Auto-assign if not provided or empty (engine handles CR 510.1 automatically)
+    if not assignments:
         assignments = _auto_assign_damage(game_state)
     else:
         _validate_damage_assignments(game_state, assignments)
+
+    # Mark damage as assigned for this step so the action isn't re-offered
+    game_state.combat.damage_assigned = True
 
     # Also generate blocker assignments (blockers deal damage back to attackers)
     blocker_assignments = _generate_blocker_damage(game_state)

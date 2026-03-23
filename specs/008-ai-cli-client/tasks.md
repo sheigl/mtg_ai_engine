@@ -103,6 +103,15 @@
 
 ---
 
+## Phase 7: Bug Fixes (Post-Launch)
+
+**Issues discovered during gameplay testing.**
+
+- [X] T027 Fix mana-tapping behaviour in `ai_client/game_loop.py` — remove blanket `_auto_tap_mana()` call before AI decision (was tapping all lands even when AI would pass); instead call `_auto_tap_mana()` only after AI commits to a `cast` or `cast_commander` action, then re-fetch the mana pool so `_parse_mana_cost_to_payment` has the correct values
+- [X] T028 Fix engine `_compute_legal_actions` in `mtg_engine/api/routers/game.py` — show `cast` actions when spell is payable with current pool **or** with `_total_available_pool()` (pool after tapping all available lands); hoist the mana-helper closures (`_MANA_ADD_RE`, `_mana_add_symbol`, `_pool_after_add`, `_castable_count`, `_total_available_pool`) above the cast section so they are defined before use — AI now sees its full range of spells without pre-tapping
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies

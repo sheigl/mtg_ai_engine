@@ -34,7 +34,12 @@ class AIPlayer:
         # event_type: "prompt_start" | "response_chunk" | "response_done"
         self._debug_callback = debug_callback
 
-    def decide(self, prompt: str) -> tuple[int, str]:
+    def decide(
+        self,
+        prompt: str,
+        legal_actions: list[dict] | None = None,  # noqa: ARG002 — ignored by AIPlayer
+        game_state: dict | None = None,            # noqa: ARG002 — ignored by AIPlayer
+    ) -> tuple[int, str]:
         """
         Send the prompt to the LLM and return (chosen_index, reasoning).
 
