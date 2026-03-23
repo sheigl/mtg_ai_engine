@@ -130,3 +130,65 @@ def test_pay_generic_with_any_color():
 def test_cannot_pay_generic_with_too_little():
     pool = ManaPool(G=1)
     assert can_pay_cost(pool, "{2}") is False
+
+
+# ─── US3: Hybrid and Phyrexian mana validation ────────────────────────────────
+
+def test_hybrid_gw_castable_with_green():
+    pool = ManaPool(G=1)
+    assert can_pay_cost(pool, "{G/W}") is True
+
+
+def test_hybrid_gw_castable_with_white():
+    pool = ManaPool(W=1)
+    assert can_pay_cost(pool, "{G/W}") is True
+
+
+def test_hybrid_gw_not_castable_with_only_blue():
+    pool = ManaPool(U=3)
+    assert can_pay_cost(pool, "{G/W}") is False
+
+
+def test_hybrid_2b_castable_with_black():
+    """2/B hybrid: 1 black mana suffices."""
+    pool = ManaPool(B=1)
+    assert can_pay_cost(pool, "{2/B}") is True
+
+
+def test_hybrid_2b_castable_with_two_generic():
+    """2/B hybrid: 2 any mana also suffices."""
+    pool = ManaPool(G=2)
+    assert can_pay_cost(pool, "{2/B}") is True
+
+
+def test_hybrid_2b_not_castable_with_one_generic():
+    pool = ManaPool(G=1)
+    assert can_pay_cost(pool, "{2/B}") is False
+
+
+def test_phyrexian_bp_castable_with_black():
+    pool = ManaPool(B=1)
+    assert can_pay_cost(pool, "{B/P}") is True
+
+
+def test_phyrexian_bp_castable_with_life():
+    """Phyrexian: pay 2 life instead of colored mana."""
+    pool = ManaPool()
+    assert can_pay_cost(pool, "{B/P}", player_life=4) is True
+
+
+def test_phyrexian_bp_not_castable_with_no_mana_and_low_life():
+    pool = ManaPool()
+    assert can_pay_cost(pool, "{B/P}", player_life=1) is False
+
+
+def test_multiple_hybrid_pips():
+    """Two hybrid pips: {G/W}{G/W} — needs 2 of either color."""
+    pool = ManaPool(G=1, W=1)
+    assert can_pay_cost(pool, "{G/W}{G/W}") is True
+
+
+def test_hybrid_with_generic():
+    """{1}{G/W}: 1 generic + 1 hybrid."""
+    pool = ManaPool(G=2)  # G pays both generic and hybrid
+    assert can_pay_cost(pool, "{1}{G/W}") is True

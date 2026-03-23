@@ -70,6 +70,12 @@ def begin_step(game_state: GameState) -> GameState:
         # Clear mana pools at cleanup
         for p in game_state.players:
             p.mana_pool = ManaPool()
+        # US4: Clear damage prevention effects and Fog flag at end of turn
+        game_state.prevention_effects.clear()
+        game_state.prevent_all_combat_damage = False
+        # US6: Clear per-turn combat constraints at end of turn
+        game_state.attack_constraints.clear()
+        game_state.block_constraints.clear()
         return game_state
 
     # Clear mana pools at end of each step (mana floating rule)
@@ -95,8 +101,32 @@ def advance_step(game_state: GameState) -> GameState:
 
     if idx + 1 < len(TURN_SEQUENCE):
         next_phase, next_step = TURN_SEQUENCE[idx + 1]
+        # US7: Phase skip — skip entire phase if phase_skip_flags[phase_name] is True
+        if game_state.phase_skip_flags.get(next_phase.value, False):
+            # Clear the skip flag and skip all steps in this phase
+            game_state.phase_skip_flags.pop(next_phase.value, None)
+            # Find the last step of this phase and advance past it
+            last_phase_idx = idx + 1
+            while (
+                last_phase_idx + 1 < len(TURN_SEQUENCE)
+                and TURN_SEQUENCE[last_phase_idx + 1][0] == next_phase
+            ):
+                last_phase_idx += 1
+            if last_phase_idx + 1 < len(TURN_SEQUENCE):
+                next_phase, next_step = TURN_SEQUENCE[last_phase_idx + 1]
+            else:
+                game_state = _advance_turn(game_state)
+                game_state = begin_step(game_state)
+                if game_state.step != Step.UNTAP:
+                    game_state.priority_holder = game_state.active_player
+                return game_state
+            logger.info("Phase %s skipped via phase_skip_flags", next_phase.value)
         game_state.phase = next_phase
         game_state.step = next_step
+        # Reset per-step flags when advancing steps
+        if game_state.combat is not None:
+            game_state.combat.damage_assigned = False
+            game_state.combat.blockers_declared = False
     else:
         # End of turn — advance to next player's turn
         game_state = _advance_turn(game_state)
@@ -118,6 +148,8 @@ def _advance_turn(game_state: GameState) -> GameState:
     game_state.turn += 1
     game_state.phase = Phase.BEGINNING
     game_state.step = Step.UNTAP
+    # US7: Clear phase skip flags at end of turn
+    game_state.phase_skip_flags.clear()
     logger.info("Turn %d begins; active player: %s", game_state.turn, game_state.active_player)
     return game_state
 

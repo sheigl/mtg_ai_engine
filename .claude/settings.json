@@ -19,7 +19,23 @@
       "Bash(python -m ai_client --player \"Llama,http://localhost:8080/v1,devstral-2:24b\" --player \"Llama2,http://localhost:8080/v1,devstral-2:24b\" --engine http://localhost:8999 --max-turns 60)",
       "Bash(python -m ai_client --player \"Llama,http://localhost:8080/v1,devstral-2:24b\" --player \"Llama2,http://localhost:8080/v1,devstral-2:24b\" --engine http://localhost:8999 --max-turns 80)",
       "Bash(python -m ai_client --player \"Llama,http://localhost:8080/v1,devstral-2:24b\" --player \"Llama2,http://localhost:8080/v1,devstral-2:24b\" --engine http://localhost:8999 --max-turns 200)",
-      "Bash(.specify/scripts/bash/create-new-feature.sh \"add observer ai to analyze each AIs current state and potential plays, when a play is made it outputs it to a debug panel in the UI and adds commentary if it were good or bad play, or what they could have done differently or better\" --json --short-name \"observer-ai-commentary\")"
+      "Bash(.specify/scripts/bash/create-new-feature.sh \"add observer ai to analyze each AIs current state and potential plays, when a play is made it outputs it to a debug panel in the UI and adds commentary if it were good or bad play, or what they could have done differently or better\" --json --short-name \"observer-ai-commentary\")",
+      "Bash(.specify/scripts/bash/create-new-feature.sh \"I would like to create the option of playing an AI opponent that is based on heuristics rather than an LLM. I would like to be able to choose it to play an LLM opponent, or 2 heuristics AI can play each other etc etc\" --json --short-name \"heuristic-ai-player\")",
+      "Bash(python -c \"from ai_client.heuristic_player import HeuristicPlayer; from ai_client.__main__ import _make_player; from ai_client.models import PlayerConfig; p = _make_player\\(PlayerConfig\\(''Bot'','''','''',''heuristic''\\)\\); print\\(type\\(p\\), p._config.name\\)\")",
+      "Bash(netstat -tlnp)",
+      "Bash(python -c \"from mtg_engine.api.routers.game import _compute_legal_actions; print\\(''OK''\\)\")",
+      "Bash(python -c \"from ai_client.heuristic_player import HeuristicPlayer; print\\(''OK''\\)\")",
+      "Bash(python -c \"from ai_client.game_loop import GameLoop; print\\(''OK''\\)\")",
+      "Bash(python -c \"from ai_client.game_loop import GameLoop; from ai_client.heuristic_player import compute_block_declarations; print\\(''OK''\\)\")",
+      "Bash(python -c \"from mtg_engine.api.routers.game import router; print\\(''OK''\\)\")",
+      "Bash(python -m ai_client --player \"Bot1,,\" --player \"Bot2,,\" --player1-type heuristic --player2-type heuristic --engine http://localhost:8999 --verbose)",
+      "Bash(python -m ai_client --player \"Bot1,,\" --player \"Bot2,,\" --player1-type heuristic --player2-type heuristic --engine http://localhost:8999)",
+      "Bash(python -c \"from mtg_engine.api.routers.game import router; from mtg_engine.engine.combat import assign_combat_damage; print\\(''OK''\\)\")",
+      "Bash(python -m ai_client --player Bot1,, --player Bot2,, --player1-type heuristic --player2-type heuristic --engine http://localhost:8999 2)",
+      "Read(//tmp/**)",
+      "Bash(gh api:*)",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }

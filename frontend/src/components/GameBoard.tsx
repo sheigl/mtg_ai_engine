@@ -117,7 +117,7 @@ export function GameBoard() {
       <GameOverOverlay gs={gs} />
 
       {/* Debug Panel */}
-      <DebugPanel gameId={gs.game_id} isGameOver={gs.is_game_over} />
+      <DebugPanel gameId={gs.game_id} isGameOver={gs.is_game_over} debugEnabled={gs.debug_enabled} />
     </div>
   )
 }

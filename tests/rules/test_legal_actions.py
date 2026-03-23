@@ -974,3 +974,67 @@ class TestManaTapTiming:
         gs.battlefield.append(_make_permanent(forest, "p1", tapped=False, summoning_sick=False))
         gs.players[0].hand.append(bear)
         assert "activate" not in _action_types(gs)
+
+
+# ─── US6: Attack/block constraint enforcement ─────────────────────────────────
+
+def test_propaganda_removes_attackers_when_no_mana():
+    """Propaganda-style effect: creatures can't attack unless controller pays {2}. No mana → no attacker action."""
+    propaganda = _make_card(
+        "Propaganda", type_line="Enchantment",
+        oracle_text="Creatures can't attack unless their controller pays {2}.",
+    )
+    bear = _make_card("Bear", type_line="Creature — Bear", mana_cost="{1}{G}")
+    gs = _make_game(phase=Phase.COMBAT, step=Step.DECLARE_ATTACKERS)
+    gs.battlefield.append(_make_permanent(propaganda, "p2", tapped=False, summoning_sick=False))
+    gs.battlefield.append(_make_permanent(bear, "p1", tapped=False, summoning_sick=False))
+    gs.players[0].mana_pool = ManaPool()  # no mana
+    # No declare_attackers action should appear
+    assert "declare_attackers" not in _action_types(gs)
+
+
+def test_propaganda_allows_attack_when_mana_available():
+    """Propaganda-style: with {2} available, attacker action IS offered."""
+    propaganda = _make_card(
+        "Propaganda", type_line="Enchantment",
+        oracle_text="Creatures can't attack unless their controller pays {2}.",
+    )
+    bear = _make_card("Bear", type_line="Creature — Bear", mana_cost="{1}{G}")
+    gs = _make_game(phase=Phase.COMBAT, step=Step.DECLARE_ATTACKERS)
+    gs.battlefield.append(_make_permanent(propaganda, "p2", tapped=False, summoning_sick=False))
+    gs.battlefield.append(_make_permanent(bear, "p1", tapped=False, summoning_sick=False))
+    gs.players[0].mana_pool = ManaPool(G=2)  # 2 mana available
+    assert "declare_attackers" in _action_types(gs)
+
+
+def test_cant_block_creature_excluded_from_blockers():
+    """'can't block' oracle text on a creature removes it from legal blocker targets."""
+    cant_block_card = _make_card(
+        "Fog Elemental", type_line="Creature — Elemental",
+        oracle_text="Flying. When Fog Elemental attacks, sacrifice it at end of combat. Fog Elemental can't block.",
+    )
+    from mtg_engine.models.game import CombatState, AttackerInfo
+    gs = _make_game(phase=Phase.COMBAT, step=Step.DECLARE_BLOCKERS)
+    gs.priority_holder = "p2"
+    gs.active_player = "p1"
+    cant_block_perm = _make_permanent(cant_block_card, "p2", tapped=False, summoning_sick=False)
+    gs.battlefield.append(cant_block_perm)
+    # Set up an attacker for p1
+    attacker_card = _make_card("Attacker", type_line="Creature — Beast")
+    attacker_perm = _make_permanent(attacker_card, "p1", tapped=True, summoning_sick=False)
+    gs.battlefield.append(attacker_perm)
+    gs.combat = CombatState(attackers=[
+        AttackerInfo(permanent_id=attacker_perm.id, defending_id="p2")
+    ])
+
+    # Re-derive constraints by calling compute_legal_actions
+    from mtg_engine.engine.constraints import derive_combat_constraints
+    atk_constraints, blk_constraints = derive_combat_constraints(gs)
+    gs.block_constraints = blk_constraints
+
+    actions = _compute_legal_actions(gs)
+    blocker_actions = [a for a in actions if a.action_type == "declare_blockers"]
+    assert blocker_actions, "Should have a declare_blockers action"
+    # The cant-block creature should NOT appear in valid_targets
+    if blocker_actions[0].valid_targets:
+        assert cant_block_perm.id not in blocker_actions[0].valid_targets

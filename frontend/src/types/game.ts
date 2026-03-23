@@ -133,6 +133,7 @@ export interface GameState {
   combat: CombatState | null
   format: string
   commander_damage: Record<string, Record<string, number>>
+  debug_enabled: boolean
 }
 
 export interface GameSummary {

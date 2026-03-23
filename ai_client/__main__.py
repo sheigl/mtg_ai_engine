@@ -5,6 +5,7 @@ import sys
 from .ai_player import AIPlayer
 from .client import EngineClient
 from .game_loop import GameLoop
+from .heuristic_player import HeuristicPlayer
 from .models import GameConfig, PlayerConfig
 from .observer import ObserverAI
 from .prompts import DEFAULT_COMMANDER_DECK, DEFAULT_DECK
@@ -13,6 +14,7 @@ from .prompts import DEFAULT_COMMANDER_DECK, DEFAULT_DECK
 def parse_player_flag(value: str) -> PlayerConfig:
     """
     Parse a --player flag value of the form 'name,url,model'.
+    url and model may be empty when player_type is 'heuristic'.
     Raises argparse.ArgumentTypeError on invalid input.
     """
     parts = value.split(",", 2)
@@ -23,15 +25,30 @@ def parse_player_flag(value: str) -> PlayerConfig:
     name, url, model = (p.strip() for p in parts)
     if not name:
         raise argparse.ArgumentTypeError(f"Player name cannot be empty in: {value!r}")
-    if not url:
-        raise argparse.ArgumentTypeError(f"Player URL cannot be empty in: {value!r}")
-    if not model:
-        raise argparse.ArgumentTypeError(f"Player model cannot be empty in: {value!r}")
-    if not (url.startswith("http://") or url.startswith("https://")):
-        raise argparse.ArgumentTypeError(
-            f"Player URL must start with http:// or https://, got: {url!r}"
-        )
+    # url/model validation deferred to _make_player where player_type is known
     return PlayerConfig(name=name, base_url=url, model=model)
+
+
+def _make_player(config: PlayerConfig) -> "AIPlayer | HeuristicPlayer":
+    """Factory: return the correct player implementation based on player_type."""
+    if config.player_type == "heuristic":
+        return HeuristicPlayer(config)
+    # LLM player — validate that url and model are present
+    if not config.base_url or not (
+        config.base_url.startswith("http://") or config.base_url.startswith("https://")
+    ):
+        print(
+            f"Error: player '{config.name}' has player_type=llm but missing or invalid URL: {config.base_url!r}",
+            file=__import__("sys").stderr,
+        )
+        __import__("sys").exit(1)
+    if not config.model:
+        print(
+            f"Error: player '{config.name}' has player_type=llm but no model specified.",
+            file=__import__("sys").stderr,
+        )
+        __import__("sys").exit(1)
+    return AIPlayer(config)
 
 
 def parse_deck_flag(value: str) -> list[str]:
@@ -110,8 +127,30 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="URL,MODEL",
         default=None,
         help=(
-            "LLM endpoint and model for the observer AI (default: same as first --player). "
-            "Format: url,model  e.g. http://localhost:8080/v1,devstral-2:24b"
+            "LLM endpoint and model for the observer AI. "
+            "Format: url,model  e.g. http://localhost:8080/v1,devstral. "
+            "Can be used independently of --debug. "
+            "Required when --debug is used with heuristic players (no LLM endpoint to default to)."
+        ),
+    )
+    parser.add_argument(
+        "--player1-type",
+        choices=["llm", "heuristic"],
+        default="llm",
+        dest="player1_type",
+        help=(
+            "Decision engine for player 1: 'llm' calls an LLM endpoint (default), "
+            "'heuristic' uses a local score-based engine with no API calls."
+        ),
+    )
+    parser.add_argument(
+        "--player2-type",
+        choices=["llm", "heuristic"],
+        default="llm",
+        dest="player2_type",
+        help=(
+            "Decision engine for player 2: 'llm' calls an LLM endpoint (default), "
+            "'heuristic' uses a local score-based engine with no API calls."
         ),
     )
     return parser
@@ -123,6 +162,12 @@ def main() -> None:
 
     # Validate: at least two players required
     players: list[PlayerConfig] = args.players or []
+    # Assign player types from --player1-type / --player2-type flags
+    player_types = [args.player1_type, args.player2_type]
+    for i, pc in enumerate(players):
+        if i < len(player_types):
+            pc.player_type = player_types[i]
+
     if len(players) < 2:
         print(
             "Error: at least two --player flags are required.\n"
@@ -182,19 +227,28 @@ def main() -> None:
             )
             sys.exit(1)
         observer_base_url, observer_model = obs_parts
-    elif args.debug and players:
-        # Default observer to the first player's LLM endpoint
-        observer_base_url = players[0].base_url
-        observer_model = players[0].model
+    elif args.debug:
+        # Default observer to the first LLM player's endpoint (if any)
+        llm_player = next((p for p in players if p.player_type == "llm"), None)
+        if llm_player:
+            observer_base_url = llm_player.base_url
+            observer_model = llm_player.model
+        else:
+            print(
+                "[DEBUG] Warning: all players are heuristic — no LLM endpoint to use as observer. "
+                "Pass --observer URL,MODEL to enable commentary.",
+                file=sys.stderr,
+            )
 
     with EngineClient(config.engine_url) as engine:
-        ai_players = [AIPlayer(pc) for pc in config.players]
+        ai_players = [_make_player(pc) for pc in config.players]
 
         observer: ObserverAI | None = None
+        if observer_base_url and observer_model:
+            observer = ObserverAI(observer_base_url, observer_model)
+            print(f"[Observer] Commentary enabled. Model: {observer_model}")
         if args.debug:
-            if observer_base_url and observer_model:
-                observer = ObserverAI(observer_base_url, observer_model)
-            print(f"[DEBUG] Observer AI debug mode enabled. Observer model: {observer_model}")
+            print("[DEBUG] Debug panel enabled.")
 
         loop = GameLoop(config, engine, ai_players, debug=args.debug, observer=observer)
         loop.run()

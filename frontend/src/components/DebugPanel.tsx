@@ -11,14 +11,16 @@ const PAGE_SIZE = 10
 interface Props {
   gameId: string
   isGameOver: boolean
+  debugEnabled?: boolean
 }
 
 async function postPause(gameId: string, paused: boolean) {
   await fetch(`/game/${gameId}/${paused ? 'pause' : 'resume'}`, { method: 'POST' })
 }
 
-export function DebugPanel({ gameId, isGameOver }: Props) {
+export function DebugPanel({ gameId, isGameOver, debugEnabled }: Props) {
   const [enabled, setEnabled] = useState<boolean>(() => {
+    if (debugEnabled) return true
     try { return localStorage.getItem(LS_KEY) === 'true' } catch { return false }
   })
   const [open, setOpen] = useState(enabled)

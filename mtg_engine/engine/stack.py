@@ -122,6 +122,33 @@ def cast_spell(
     return game_state
 
 
+def copy_spell_on_stack(
+    game_state: GameState,
+    source_stack_id: str,
+    new_targets: list[str] | None = None,
+) -> GameState:
+    """
+    Create a copy of a spell on the stack. US7 (014).
+    CR 706.10: copies of spells on the stack cease to exist when they leave the stack.
+    Returns updated game_state with the copy appended to the stack.
+    """
+    source_obj = next((o for o in game_state.stack if o.id == source_stack_id), None)
+    if source_obj is None:
+        raise ValueError(f"Stack object {source_stack_id!r} not found on stack")
+
+    copy = source_obj.model_copy(update={
+        "id": str(uuid.uuid4()),
+        "is_copy": True,
+        "targets": new_targets if new_targets is not None else list(source_obj.targets),
+    })
+    game_state.stack.append(copy)
+    logger.info(
+        "Copied %s on stack (copy id: %s, new targets: %s)",
+        source_obj.source_card.name, copy.id, copy.targets,
+    )
+    return game_state
+
+
 def resolve_top(game_state: GameState) -> GameState:
     """
     Resolve the top object on the stack. CR 608.
@@ -151,18 +178,21 @@ def resolve_top(game_state: GameState) -> GameState:
                 if perm.id not in target_perm.attachments:
                     target_perm.attachments.append(perm.id)
     elif "instant" in type_lower or "sorcery" in type_lower:
-        # Non-permanent spell → resolve effect, move to graveyard
+        # Non-permanent spell → resolve effect
         game_state = _apply_spell_effect(game_state, stack_obj)
-        player = get_player(game_state, stack_obj.controller)
-        player.graveyard.append(card)
+        # CR 706.10: copies of spells cease to exist (don't go to graveyard)
+        if not stack_obj.is_copy:
+            player = get_player(game_state, stack_obj.controller)
+            player.graveyard.append(card)
     elif stack_obj.effects:
         # Triggered or activated ability resolving — execute the effect
         game_state = _apply_triggered_effect(game_state, stack_obj)
     else:
-        # Unknown type — put in graveyard as a fallback
-        player = get_player(game_state, stack_obj.controller)
-        player.graveyard.append(card)
-        logger.warning("Unknown card type for %r; placed in graveyard", card.name)
+        # Unknown type — put in graveyard as a fallback (unless copy)
+        if not stack_obj.is_copy:
+            player = get_player(game_state, stack_obj.controller)
+            player.graveyard.append(card)
+            logger.warning("Unknown card type for %r; placed in graveyard", card.name)
 
     return game_state
 

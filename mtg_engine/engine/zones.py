@@ -254,7 +254,10 @@ def draw_card(game_state: GameState, player_name: str) -> tuple[GameState, Card 
     """
     player = get_player(game_state, player_name)
     if not player.library:
-        return game_state, None  # SBA will handle the loss condition
+        # CR 704.5b: player who cannot draw loses the game
+        player.has_lost = True
+        logger.warning("[SBA 704.5b] %s attempted to draw from empty library — player loses", player_name)
+        return game_state, None
     card = player.library.pop(0)
     player.hand.append(card)
     # Emit draw event (card_name intentionally omitted — private information)

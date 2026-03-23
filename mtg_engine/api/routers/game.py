@@ -52,6 +52,7 @@ class CreateGameRequest(BaseModel):
     deck2: list[str]
     seed: int | None = None
     verbose: bool = False
+    debug: bool = False
     format: str = "standard"
     commander1: str | None = None
     commander2: str | None = None
@@ -198,6 +199,7 @@ def create_game(req: CreateGameRequest) -> dict:
             deck1_cards, deck2_cards,
             seed=req.seed,
             verbose=req.verbose,
+            debug=req.debug,
             format="commander",
             commander1_card=commander1_card,
             commander2_card=commander2_card,
@@ -213,6 +215,7 @@ def create_game(req: CreateGameRequest) -> dict:
             deck1_cards, deck2_cards,
             seed=req.seed,
             verbose=req.verbose,
+            debug=req.debug,
         )
     return _ok(gs)
 
@@ -749,6 +752,34 @@ def resume_game(game_id: str) -> dict:
     return {"data": {"is_paused": False}}
 
 
+@router.post("/{game_id}/copy-spell")
+def copy_spell(game_id: str, req) -> dict:
+    """POST /game/{game_id}/copy-spell — Copy a spell on the stack. US7 (014)."""
+    from mtg_engine.models.actions import CopySpellRequest
+    from mtg_engine.engine.stack import copy_spell_on_stack
+    if not isinstance(req, dict):
+        req = req.model_dump() if hasattr(req, "model_dump") else {}
+    # Accept dict body directly for simplicity
+    try:
+        player_name = req.get("player_name", "")
+        target_stack_id = req.get("target_stack_id", "")
+        new_targets = req.get("new_targets", [])
+    except Exception:
+        raise _err("Invalid request body", "INVALID_REQUEST")
+    gs = _get_gs(game_id)
+    if gs.priority_holder != player_name:
+        raise _err(f"{player_name} does not have priority", "PRIORITY_VIOLATION")
+    if not any(o.id == target_stack_id for o in gs.stack):
+        raise _err(f"Stack object {target_stack_id!r} not found", "STACK_OBJECT_NOT_FOUND")
+    try:
+        gs = copy_spell_on_stack(gs, target_stack_id, new_targets or None)
+    except ValueError as e:
+        raise _err(str(e), "COPY_SPELL_ERROR")
+    mgr = get_manager()
+    mgr.save(game_id, gs)
+    return _ok(gs)
+
+
 def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
     """Compute all legal actions for the priority holder."""
     from mtg_engine.card_data.ability_parser import parse_oracle_text, ActivatedAbility
@@ -787,54 +818,11 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
     import re as _re_spell
     from mtg_engine.engine.stack import _is_sorcery_speed, _can_cast_at_sorcery_speed, _has_split_second
 
-    # Precompute available targets for "target creature" spells.
-    _any_creature_on_bf = any(
-        "creature" in p.card.type_line.lower() for p in gs.battlefield
-    )
-    _any_creature_target = _any_creature_on_bf  # simplified: any creature is a valid target
-
-    def _has_required_targets(card: "Card") -> bool:
-        """Return False if the spell requires a target that doesn't exist yet."""
-        oracle = (card.oracle_text or "").lower()
-        type_lower = card.type_line.lower()
-        # Auras need an enchant target — check "enchant creature" in oracle or type
-        if "enchantment" in type_lower and "enchant creature" in oracle:
-            return _any_creature_on_bf
-        # Spells with "target creature" in oracle need a creature on the battlefield
-        if _re_spell.search(r"\btarget creature\b", oracle):
-            return _any_creature_on_bf
-        return True
-
-    if not _has_split_second(gs):
-        for card in player.hand:
-            if "land" in card.type_line.lower():
-                continue
-            sorcery_speed = _is_sorcery_speed(card)
-            if sorcery_speed and not _can_cast_at_sorcery_speed(gs, player_name):
-                continue
-            # Skip if the spell requires a target that doesn't exist
-            if not _has_required_targets(card):
-                continue
-            # Check if player can pay the mana cost
-            mana_cost = card.mana_cost or ""
-            if can_pay_cost(player.mana_pool, mana_cost):
-                actions.append(LegalAction(
-                    action_type="cast",
-                    card_id=card.id,
-                    card_name=card.name,
-                    valid_targets=[],  # simplified: populate targets in full impl
-                    mana_options=[{k: v for k, v in {"mana_cost": mana_cost}.items()}],
-                    description=f"Cast {card.name}",
-                ))
-
-    # Activate abilities
-    # Pre-compute: what mana symbols could still be produced by untapped mana sources?
-    # Used to skip pure-mana activations that can't enable any spell in hand.
-    _re = _re_spell  # reuse the re module already imported above
+    # Pre-compute mana helpers (used by both cast section and activate section below).
+    _re = _re_spell
     _MANA_ADD_RE = _re.compile(r"add\s+\{([WUBRGC])\}", _re.IGNORECASE)
 
     def _mana_add_symbol(effect: str) -> str | None:
-        """Return the mana symbol produced by a 'Add {X}' effect, or None."""
         m = _MANA_ADD_RE.search(effect)
         return m.group(1).upper() if m else None
 
@@ -843,7 +831,6 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
         return add_mana(pool, symbol)
 
     def _castable_count(pool: "ManaPool") -> int:
-        """Count non-land cards in hand payable with pool and legal to cast right now."""
         return sum(
             1 for card in player.hand
             if "land" not in card.type_line.lower()
@@ -852,9 +839,7 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
         )
 
     def _total_available_pool() -> "ManaPool":
-        """Current pool plus mana producible from every untapped mana source.
-        Respects summoning sickness: creature tap abilities are excluded when
-        the creature just entered (CR 302.6)."""
+        """Current pool plus mana producible from every untapped mana source."""
         from mtg_engine.engine.mana import add_mana
         pool = player.mana_pool.model_copy()
         for p in gs.battlefield:
@@ -871,6 +856,44 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                         pool = add_mana(pool, sym)
         return pool
 
+    # Precompute available targets for "target creature" spells.
+    _any_creature_on_bf = any(
+        "creature" in p.card.type_line.lower() for p in gs.battlefield
+    )
+
+    def _has_required_targets(card: "Card") -> bool:
+        """Return False if the spell requires a target that doesn't exist yet."""
+        oracle = (card.oracle_text or "").lower()
+        type_lower = card.type_line.lower()
+        if "enchantment" in type_lower and "enchant creature" in oracle:
+            return _any_creature_on_bf
+        if _re_spell.search(r"\btarget creature\b", oracle):
+            return _any_creature_on_bf
+        return True
+
+    if not _has_split_second(gs):
+        for card in player.hand:
+            if "land" in card.type_line.lower():
+                continue
+            sorcery_speed = _is_sorcery_speed(card)
+            if sorcery_speed and not _can_cast_at_sorcery_speed(gs, player_name):
+                continue
+            if not _has_required_targets(card):
+                continue
+            # Show spell if payable with current pool OR after tapping available lands.
+            # Mana is tapped just-in-time by the game loop when the AI commits to casting.
+            mana_cost = card.mana_cost or ""
+            if can_pay_cost(player.mana_pool, mana_cost) or can_pay_cost(_total_available_pool(), mana_cost):
+                actions.append(LegalAction(
+                    action_type="cast",
+                    card_id=card.id,
+                    card_name=card.name,
+                    valid_targets=[],
+                    mana_options=[{k: v for k, v in {"mana_cost": mana_cost}.items()}],
+                    description=f"Cast {card.name}",
+                ))
+
+    # Activate abilities
     _current_castable = _castable_count(player.mana_pool)
     _total_castable = _castable_count(_total_available_pool())
 
@@ -917,14 +940,38 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
 
     # Declare attackers (active player, declare attackers step)
     if is_active and gs.step == Step.DECLARE_ATTACKERS:
-        attackers = [
-            p for p in gs.battlefield
-            if p.controller == player_name
-            and "creature" in p.card.type_line.lower()
-            and not p.tapped
-            and (not p.summoning_sick or "haste" in p.card.keywords)
-            and "defender" not in p.card.keywords
-        ]
+        # US6: Derive and enforce attack constraints
+        from mtg_engine.engine.constraints import derive_combat_constraints
+        from mtg_engine.engine.mana import can_pay_cost as _can_pay_attack
+        atk_constraints, blk_constraints = derive_combat_constraints(gs)
+        gs.attack_constraints = atk_constraints
+        gs.block_constraints = blk_constraints
+
+        attackers = []
+        for p in gs.battlefield:
+            if not (
+                p.controller == player_name
+                and "creature" in p.card.type_line.lower()
+                and not p.tapped
+                and (not p.summoning_sick or "haste" in p.card.keywords)
+                and "defender" not in p.card.keywords
+            ):
+                continue
+            # Check attack constraints
+            can_attack = True
+            for con in atk_constraints:
+                if con.affected_id not in (p.id, "all"):
+                    continue
+                if con.constraint_type == "cannot_attack":
+                    can_attack = False
+                    break
+                if con.constraint_type == "cost_to_attack" and con.cost:
+                    if not _can_pay_attack(player.mana_pool, con.cost):
+                        can_attack = False
+                        break
+            if can_attack:
+                attackers.append(p)
+
         if attackers:
             opponent = next((p.name for p in gs.players if p.name != player_name), "")
             attacker_names = ", ".join(p.card.name for p in attackers)
@@ -933,6 +980,65 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                 valid_targets=[p.id for p in attackers],  # attacker permanent IDs
                 card_name=opponent,                        # defending player
                 description=f"Attack with: {attacker_names}",
+            ))
+
+    # Declare blockers (non-active/defending player, declare blockers step, only once per step)
+    if (not is_active and gs.step == Step.DECLARE_BLOCKERS and gs.combat
+            and gs.combat.attackers and not gs.combat.blockers_declared):
+        # US6: Filter out creatures with cannot-block constraints
+        cannot_block_ids = {
+            con.affected_id for con in gs.block_constraints
+            if con.constraint_type == "cannot_block"
+        }
+        # Goaded creatures can't block (CR 702.117b)
+        goaded_ids = {
+            p.id for p in gs.battlefield
+            if any(k.startswith("goad_by_") for k in p.counters)
+        }
+        potential_blockers = [
+            p for p in gs.battlefield
+            if p.controller == player_name
+            and "creature" in p.card.type_line.lower()
+            and not p.tapped
+            and not p.summoning_sick
+            and p.id not in cannot_block_ids
+            and p.id not in goaded_ids
+        ]
+        attacker_names = ", ".join(
+            next((p.card.name for p in gs.battlefield if p.id == a.permanent_id), a.permanent_id)
+            for a in gs.combat.attackers
+        )
+        blocker_desc = (
+            f"{len(potential_blockers)} creature(s) available to block"
+            if potential_blockers else "no creatures available to block"
+        )
+        actions.append(LegalAction(
+            action_type="declare_blockers",
+            valid_targets=[p.id for p in potential_blockers],
+            description=f"Declare blockers vs [{attacker_names}] — {blocker_desc}",
+        ))
+
+    # Assign combat damage (active player, combat damage steps).
+    # Only offered once per step (damage_assigned flag prevents re-offering after execution).
+    # In FIRST_STRIKE_DAMAGE, only offered when first/double strike combatants are present.
+    if (
+        is_active
+        and gs.step in (Step.COMBAT_DAMAGE, Step.FIRST_STRIKE_DAMAGE)
+        and gs.combat
+        and gs.combat.attackers
+        and not gs.combat.damage_assigned
+    ):
+        from mtg_engine.engine.combat import has_first_strike_combatants
+        if gs.step == Step.FIRST_STRIKE_DAMAGE and not has_first_strike_combatants(gs):
+            pass  # No first/double strike creatures — skip this step automatically
+        else:
+            attacker_names = ", ".join(
+                next((p.card.name for p in gs.battlefield if p.id == a.permanent_id), a.permanent_id)
+                for a in gs.combat.attackers
+            )
+            actions.append(LegalAction(
+                action_type="assign_combat_damage",
+                description=f"Assign combat damage from [{attacker_names}]",
             ))
 
     # Put pending triggers on stack

@@ -56,22 +56,28 @@ def pool_total(pool: ManaPool) -> int:
     return pool.W + pool.U + pool.B + pool.R + pool.G + pool.C
 
 
-def can_pay_cost(pool: ManaPool, mana_cost: str, payment: dict[str, int] | None = None) -> bool:
+def can_pay_cost(
+    pool: ManaPool,
+    mana_cost: str,
+    payment: dict[str, int] | None = None,
+    player_life: int = 999,
+) -> bool:
     """
     Check if the pool can pay the mana cost.
     If payment is provided, validate that specific payment dict against pool and cost.
     Otherwise perform a simplified sufficiency check.
+    player_life is used for Phyrexian mana validation ({B/P} etc.).
     """
     cost = parse_mana_cost(mana_cost)
     if payment is not None:
         return _validate_payment(pool, cost, payment)
-    return _can_pay_simple(pool, cost)
+    return _can_pay_simple(pool, cost, player_life)
 
 
-def _can_pay_simple(pool: ManaPool, cost: dict[str, int]) -> bool:
+def _can_pay_simple(pool: ManaPool, cost: dict[str, int], player_life: int = 999) -> bool:
     """
-    Simplified sufficiency check: enough colored mana exists + enough total for generic.
-    Does not validate hybrid costs exhaustively (greedy approach).
+    Sufficiency check: handles colored, colorless, generic, hybrid, and Phyrexian pips.
+    CR 107.4b (hybrid), CR 702.99b (Phyrexian).
     """
     temp = {
         "W": pool.W,
@@ -81,8 +87,55 @@ def _can_pay_simple(pool: ManaPool, cost: dict[str, int]) -> bool:
         "G": pool.G,
         "C": pool.C,
     }
+    life_used = 0
 
-    # Pay each required colored mana symbol first
+    # Handle hybrid and Phyrexian symbols first (keys containing "/")
+    for sym, count in cost.items():
+        if "/" not in sym:
+            continue
+        parts = sym.split("/")
+        for _ in range(count):
+            if parts[1].upper() == "P":
+                # Phyrexian mana: pay the color OR pay 2 life
+                color = parts[0].upper()
+                if color in temp and temp[color] > 0:
+                    temp[color] -= 1
+                elif (player_life - life_used) >= 2:
+                    life_used += 2
+                else:
+                    return False
+            else:
+                # Hybrid mana: pay either option
+                opt_a = parts[0].upper()
+                opt_b = parts[1].upper()
+                # Numeric hybrid (e.g. "2/B"): pay 2 generic OR 1 of the color
+                if opt_a.isdigit():
+                    generic_cost = int(opt_a)
+                    if opt_b in temp and temp[opt_b] > 0:
+                        temp[opt_b] -= 1
+                    elif sum(temp.values()) >= generic_cost:
+                        # Deduct cheapest available mana for generic payment
+                        remaining_generic = generic_cost
+                        for c in ("W", "U", "B", "R", "G", "C"):
+                            take = min(temp[c], remaining_generic)
+                            temp[c] -= take
+                            remaining_generic -= take
+                            if remaining_generic == 0:
+                                break
+                        if remaining_generic > 0:
+                            return False
+                    else:
+                        return False
+                else:
+                    # Color/color hybrid (e.g. "G/W"): pay either color
+                    if opt_a in temp and temp[opt_a] > 0:
+                        temp[opt_a] -= 1
+                    elif opt_b in temp and temp[opt_b] > 0:
+                        temp[opt_b] -= 1
+                    else:
+                        return False
+
+    # Pay each required colored mana symbol
     for color in ("W", "U", "B", "R", "G"):
         needed = cost.get(color, 0)
         if temp[color] < needed:

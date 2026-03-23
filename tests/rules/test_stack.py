@@ -152,3 +152,89 @@ def test_permanent_spell_enters_battlefield():
     assert len(gs.battlefield) == 1
     assert gs.battlefield[0].card.name == "Grizzly Bears"
     assert len(gs.players[0].hand) == 0
+
+
+# ─── US7: Copy spells on the stack ────────────────────────────────────────────
+
+def _make_bolt_game():
+    bolt = Card(
+        name="Lightning Bolt",
+        type_line="Instant",
+        oracle_text="Lightning Bolt deals 3 damage to any target.",
+        mana_cost="{R}",
+    )
+    p1 = PlayerState(name="p1", life=20, hand=[bolt], mana_pool=ManaPool(R=1))
+    p2 = PlayerState(name="p2", life=20)
+    return GameState(
+        game_id="copy_test", seed=1, active_player="p1", priority_holder="p1",
+        phase=Phase.PRECOMBAT_MAIN, step=Step.MAIN,
+        players=[p1, p2],
+    )
+
+
+def test_copy_spell_creates_stack_object_with_is_copy():
+    """US7: copy_spell_on_stack creates a new StackObject with is_copy=True."""
+    from mtg_engine.engine.stack import copy_spell_on_stack
+    gs = _make_bolt_game()
+    bolt_card = gs.players[0].hand[0]
+    gs = cast_spell(gs, "p1", bolt_card.id, targets=["p2"], mana_payment={"R": 1})
+    original_id = gs.stack[0].id
+    initial_len = len(gs.stack)
+
+    gs = copy_spell_on_stack(gs, original_id, new_targets=["p2"])
+
+    assert len(gs.stack) == initial_len + 1
+    copy_obj = gs.stack[-1]
+    assert copy_obj.is_copy is True
+    assert copy_obj.id != original_id
+    assert copy_obj.targets == ["p2"]
+
+
+def test_copy_resolves_without_graveyard_placement():
+    """US7: resolving a copy of an instant does NOT place it in graveyard (CR 706.10)."""
+    from mtg_engine.engine.stack import copy_spell_on_stack
+    gs = _make_bolt_game()
+    bolt_card = gs.players[0].hand[0]
+    gs = cast_spell(gs, "p1", bolt_card.id, targets=["p2"], mana_payment={"R": 1})
+    original_id = gs.stack[0].id
+
+    gs = copy_spell_on_stack(gs, original_id, new_targets=["p2"])
+    # Resolve the copy (top of stack)
+    pre_graveyard_len = len(gs.players[0].graveyard)
+    gs = resolve_top(gs)
+
+    # Graveyard should NOT have grown (copy ceases to exist)
+    assert len(gs.players[0].graveyard) == pre_graveyard_len
+
+
+def test_original_spell_goes_to_graveyard():
+    """US7: the original non-copy spell still goes to graveyard when it resolves."""
+    gs = _make_bolt_game()
+    bolt_card = gs.players[0].hand[0]
+    gs = cast_spell(gs, "p1", bolt_card.id, targets=["p2"], mana_payment={"R": 1})
+
+    pre_graveyard_len = len(gs.players[0].graveyard)
+    gs = resolve_top(gs)
+
+    assert len(gs.players[0].graveyard) == pre_graveyard_len + 1
+
+
+def test_phase_skip_flag_skips_combat():
+    """US7: phase_skip_flags["combat"] causes advance_step to skip the entire combat phase."""
+    from mtg_engine.engine.turn_manager import advance_step
+    from mtg_engine.models.game import Phase as P, Step as S
+    p1 = PlayerState(name="p1")
+    p2 = PlayerState(name="p2")
+    gs = GameState(
+        game_id="skip_test", seed=1, active_player="p1", priority_holder="p1",
+        phase=P.PRECOMBAT_MAIN, step=S.MAIN,
+        players=[p1, p2],
+    )
+    # Set skip flag before advancing from precombat main
+    gs.phase_skip_flags["combat"] = True
+    gs = advance_step(gs)
+
+    # Should have skipped all COMBAT steps and moved to POSTCOMBAT_MAIN
+    assert gs.phase == P.POSTCOMBAT_MAIN, f"Expected postcombat_main, got {gs.phase}"
+    assert gs.step == S.MAIN
+    assert "combat" not in gs.phase_skip_flags  # flag was consumed
