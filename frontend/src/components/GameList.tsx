@@ -1,6 +1,8 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useGameList } from '../hooks/useGameList'
 import { ConnectionStatus } from './ConnectionStatus'
+import { CreateGameForm } from './CreateGameForm'
 import '../styles/board.css'
 
 const PHASE_LABELS: Record<string, string> = {
@@ -13,6 +15,7 @@ const PHASE_LABELS: Record<string, string> = {
 
 export function GameList() {
   const { data: games, isLoading, isError } = useGameList()
+  const [showCreateForm, setShowCreateForm] = useState(false)
 
   return (
     <div style={{
@@ -22,10 +25,30 @@ export function GameList() {
     }}>
       <ConnectionStatus isError={isError} isLoading={isLoading && !games} />
 
-      <h1 style={{ marginBottom: '0.5rem' }}>MTG Game Observer</h1>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+        <h1 style={{ margin: 0 }}>MTG Game Observer</h1>
+        <button
+          onClick={() => setShowCreateForm(true)}
+          style={{
+            background: 'var(--active-glow)',
+            border: 'none',
+            color: '#000',
+            borderRadius: '6px',
+            padding: '0.5rem 1.1rem',
+            fontSize: '0.85rem',
+            fontWeight: 700,
+            cursor: 'pointer',
+            flexShrink: 0,
+          }}
+        >
+          + New AI Game
+        </button>
+      </div>
       <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem', fontSize: '0.9rem' }}>
         Watch AI vs AI games in real time
       </p>
+
+      {showCreateForm && <CreateGameForm onClose={() => setShowCreateForm(false)} />}
 
       {isLoading && !games && (
         <div style={{ color: 'var(--text-muted)', padding: '2rem', textAlign: 'center' }}>
@@ -43,7 +66,7 @@ export function GameList() {
           border: '1px solid var(--border-default)',
         }}>
           <div style={{ fontSize: '1.2rem', marginBottom: '0.5rem' }}>No active games</div>
-          <div style={{ fontSize: '0.85rem' }}>Start a game via the API to begin observing</div>
+          <div style={{ fontSize: '0.85rem' }}>Click "+ New AI Game" to start one</div>
         </div>
       )}
 

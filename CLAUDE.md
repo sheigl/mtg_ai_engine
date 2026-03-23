@@ -15,6 +15,8 @@ Auto-generated from all feature plans. Last updated: 2026-03-23
 - N/A — stateless, same as existing AI client (012-heuristic-ai-player)
 - Python 3.11 + FastAPI, Pydantic v2, pytest (all existing — no new dependencies) (014-rules-engine-completeness)
 - In-memory GameState (Pydantic models); no persistence changes (014-rules-engine-completeness)
+- Python 3.11 (backend) + TypeScript 5.x (frontend) + FastAPI, Pydantic v2, httpx, openai (all existing); React 18, TanStack Query v5 (all existing) — no new dependencies (015-ui-game-creator)
+- In-memory game state (existing); no persistence changes (015-ui-game-creator)
 
 - Python 3.11 + FastAPI, Pydantic v2, standard `logging` module (007-play-by-play-log)
 
@@ -34,9 +36,9 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.11: Follow standard conventions
 
 ## Recent Changes
+- 015-ui-game-creator: Added Python 3.11 (backend) + TypeScript 5.x (frontend) + FastAPI, Pydantic v2, httpx, openai (all existing); React 18, TanStack Query v5 (all existing) — no new dependencies
 - 014-rules-engine-completeness: Added Python 3.11 + FastAPI, Pydantic v2, pytest (all existing — no new dependencies)
 - 012-heuristic-ai-player: Added Python 3.11 + None new — stdlib only for heuristic logic; existing `openai`, `httpx`, `argparse` unchanged
-- 011-observer-ai-commentary: Added Python 3.11 (backend + AI client), TypeScript 5.x (frontend) + FastAPI, Pydantic v2, httpx, openai (OpenAI-compatible client), React 18, TanStack Query v5
 
 
 <!-- MANUAL ADDITIONS START -->

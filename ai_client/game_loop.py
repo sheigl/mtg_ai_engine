@@ -181,12 +181,14 @@ class GameLoop:
         players: "list[AIPlayer | HeuristicPlayer]",
         debug: bool = False,
         observer: "ObserverAI | None" = None,
+        game_id: str | None = None,
     ) -> None:
         self._config = config
         self._engine = engine
         self._players = players
         self._debug = debug
         self._observer = observer
+        self._game_id = game_id  # pre-created game ID; skip create_game() when set
         self._forwarder: DebugForwarder | None = None
         # Map player name → AIPlayer
         self._player_map: dict[str, AIPlayer] = {
@@ -195,14 +197,17 @@ class GameLoop:
 
     def run(self) -> GameSummary:
         """
-        Create a game and loop until game_over or max_turns.
+        Create a game (or use pre-created game_id) and loop until game_over or max_turns.
         Returns a GameSummary.
         """
-        try:
-            game_id = self._engine.create_game(self._config, debug=self._debug)
-        except EngineError as exc:
-            print(f"[ERROR] Failed to create game: {exc}")
-            sys.exit(1)
+        if self._game_id is not None:
+            game_id = self._game_id
+        else:
+            try:
+                game_id = self._engine.create_game(self._config, debug=self._debug)
+            except EngineError as exc:
+                print(f"[ERROR] Failed to create game: {exc}")
+                sys.exit(1)
 
         if self._config.verbose:
             try:
