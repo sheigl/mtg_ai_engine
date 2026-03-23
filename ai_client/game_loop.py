@@ -6,6 +6,7 @@ import time
 
 from .ai_player import AIPlayer
 from .client import EngineClient, EngineError
+from .heuristic_player import HeuristicPlayer, compute_block_declarations
 from .debug_forwarder import DebugForwarder
 from .models import GameConfig, GameSummary, TurnRecord
 from .observer import ObserverAI
@@ -177,7 +178,7 @@ class GameLoop:
         self,
         config: GameConfig,
         engine: EngineClient,
-        players: list[AIPlayer],
+        players: "list[AIPlayer | HeuristicPlayer]",
         debug: bool = False,
         observer: "ObserverAI | None" = None,
     ) -> None:
@@ -209,8 +210,8 @@ class GameLoop:
             except EngineError:
                 pass  # non-fatal
 
-        # Create the DebugForwarder now that we have a real game_id
-        if self._debug:
+        # Create the DebugForwarder when debug panel or observer commentary is active
+        if self._debug or self._observer:
             self._forwarder = DebugForwarder(self._config.engine_url, game_id)
 
         turn_count = 0
@@ -225,7 +226,10 @@ class GameLoop:
         print(f"Engine  : {self._config.engine_url}")
         for i, pc in enumerate(self._config.players):
             label = "Players :" if i == 0 else "          "
-            print(f"{label} {pc.name} ({pc.model} @ {pc.base_url})")
+            if pc.player_type == "heuristic":
+                print(f"{label} {pc.name} [heuristic — no LLM]")
+            else:
+                print(f"{label} {pc.name} ({pc.model} @ {pc.base_url}) [LLM]")
         if is_commander:
             print(f"Commanders: {self._config.commander1} vs {self._config.commander2}")
         print(f"Game ID : {game_id}")
@@ -260,15 +264,6 @@ class GameLoop:
                 continue
 
             # Check game over
-            if legal_data.get("is_game_over"):
-                termination_reason = "game_over"
-                winner = legal_data.get("winner")
-                break
-
-            # Auto-tap all available mana sources so the AI sees full mana pool
-            # and castable spells — the AI should never need to manually tap lands.
-            legal_data = self._auto_tap_mana(game_id, legal_data)
-
             if legal_data.get("is_game_over"):
                 termination_reason = "game_over"
                 winner = legal_data.get("winner")
@@ -311,9 +306,10 @@ class GameLoop:
                 legal_actions,
             )
 
-            # Debug: POST initial entry and wire streaming callback
+            # Debug: POST initial entry and wire streaming callback.
+            # Heuristic players have no LLM prompt/response — skip debug entry for them.
             _debug_entry_id: str | None = None
-            if self._forwarder:
+            if self._forwarder and not isinstance(ai_player, HeuristicPlayer):
                 _debug_entry_id = self._forwarder.new_entry_id()
                 self._forwarder.post_entry({
                     "entry_id": _debug_entry_id,
@@ -340,7 +336,11 @@ class GameLoop:
             else:
                 ai_player._debug_callback = None
 
-            chosen_index, reasoning = ai_player.decide(prompt)
+            chosen_index, reasoning = ai_player.decide(
+                prompt,
+                legal_actions=legal_actions,
+                game_state={**gs, "priority_player": priority_player, "phase": phase, "step": step},
+            )
             fallback_used = reasoning == "(AI endpoint unreachable)"
 
             # Clamp chosen index to valid range
@@ -375,7 +375,36 @@ class GameLoop:
                 (p.get("mana_pool", {}) for p in gs.get("players", []) if p.get("name") == priority_player),
                 {},
             )
+            # Just-in-time mana tapping: only tap when the AI has decided to cast.
+            # This avoids wasted taps when the AI would pass anyway.
+            if chosen_action.get("action_type") in ("cast", "cast_commander"):
+                legal_data = self._auto_tap_mana(game_id, legal_data)
+                # Re-fetch mana pool after tapping
+                priority_pool = next(
+                    (p.get("mana_pool", {}) for p in gs.get("players", []) if p.get("name") == priority_player),
+                    {},
+                )
+                try:
+                    gs_tapped = self._engine.get_game_state(game_id)
+                    priority_pool = next(
+                        (p.get("mana_pool", {}) for p in gs_tapped.get("players", []) if p.get("name") == priority_player),
+                        priority_pool,
+                    )
+                except EngineError:
+                    pass
+
             action_type, payload = _map_action_to_request(chosen_action, priority_pool)
+            if action_type == "declare_attackers" and isinstance(ai_player, HeuristicPlayer):
+                gs_with_priority = {**gs, "priority_player": priority_player}
+                selected_ids = ai_player.select_attackers(chosen_action, gs_with_priority, priority_player)
+                defending_player = chosen_action.get("card_name", "")
+                payload["attack_declarations"] = [
+                    {"attacker_id": aid, "defending_id": defending_player}
+                    for aid in selected_ids
+                ]
+            if action_type == "declare_blockers":
+                gs_with_priority = {**gs, "priority_player": priority_player, "phase": phase, "step": step}
+                payload["block_declarations"] = compute_block_declarations(chosen_action, gs_with_priority)
             try:
                 self._engine.submit_action(game_id, action_type, payload)
             except EngineError as exc:
@@ -386,7 +415,7 @@ class GameLoop:
             decision_count += 1
             turn_count += 1
 
-            # Observer AI: analyze non-pass actions and post commentary
+            # Observer AI: analyze all non-pass actions — heuristic and LLM alike
             if self._observer and self._forwarder and chosen_action.get("action_type") != "pass":
                 gs_summary = _format_gs_summary(gs)
                 commentary = self._observer.analyze(

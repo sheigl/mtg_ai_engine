@@ -6,8 +6,9 @@ from dataclasses import dataclass, field
 class PlayerConfig:
     """One AI player, parsed from a --player CLI flag."""
     name: str
-    base_url: str
-    model: str
+    base_url: str = ""
+    model: str = ""
+    player_type: str = "llm"  # "llm" | "heuristic"
 
 
 @dataclass
