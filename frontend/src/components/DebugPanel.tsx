@@ -28,6 +28,16 @@ export function DebugPanel({ gameId, isGameOver, debugEnabled }: Props) {
   const [paused, setPaused] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
 
+  // If the server says debug is enabled (e.g. game was started with --debug or via the UI
+  // debug checkbox), force the panel on even if the useState initializer ran before the
+  // prop arrived (stale cache) or the prop changes on a later refetch.
+  useEffect(() => {
+    if (debugEnabled && !enabled) {
+      setEnabled(true)
+      setOpen(true)
+    }
+  }, [debugEnabled])
+
   const { entries, isLoading } = useDebugLog(gameId, enabled, isGameOver)
 
   const allSources = Array.from(
@@ -118,9 +128,12 @@ export function DebugPanel({ gameId, isGameOver, debugEnabled }: Props) {
               <div className="debug-empty-state">Loading debug data…</div>
             ) : entries.length === 0 ? (
               <div className="debug-empty-state">
-                No debug data for this game.
+                No AI prompts captured yet.
                 <br />
-                <small>Run with <code>--debug</code> to capture AI prompts and commentary.</small>
+                <small>
+                  Heuristic players don't generate LLM entries.
+                  Add an <strong>observer URL</strong> when creating the game to see move commentary.
+                </small>
               </div>
             ) : (
               <>

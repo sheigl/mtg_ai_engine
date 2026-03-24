@@ -230,10 +230,14 @@ def build_game_state_prompt(state: dict, legal_actions: list[dict]) -> str:
 
     game_format = state.get("format", "standard")
     context = _context_hint(priority_player, active_player, phase, step, legal_actions)
-    max_pool = _max_available_mana(my_info, all_perms, legal_actions)
-    castable = _castable_cards(hand_cards, max_pool, step)
+    # Derive castable directly from engine-filtered cast actions — always accurate
+    # (mana is auto-tapped by the game loop, so no manual mana computation needed)
+    castable = [
+        a.get("card_name") or a.get("description", "?")
+        for a in legal_actions if a.get("action_type") == "cast"
+    ]
     non_pass_actions = [a for a in legal_actions if a.get("action_type") != "pass"]
-    activate_only = bool(non_pass_actions) and all(a.get("action_type") == "activate" for a in non_pass_actions)
+    has_non_mana_activates = any(a.get("action_type") == "activate" for a in non_pass_actions)
 
     lines = [
         f"=== MTG Game — Turn {turn} | {phase} / {step} ===",
@@ -268,9 +272,9 @@ def build_game_state_prompt(state: dict, legal_actions: list[dict]) -> str:
 
     # Castable note
     if castable:
-        lines += ["", f"  → Castable this turn if you tap available lands: {', '.join(castable)}"]
-    elif activate_only:
-        lines += ["", "  → You have no spells to cast this turn. Unused mana drains at end of turn."]
+        lines += ["", f"  → Castable this turn (mana will be auto-tapped): {', '.join(castable)}"]
+    elif not has_non_mana_activates and not non_pass_actions:
+        lines += ["", "  → You have no spells to cast this turn. Pass priority."]
 
     # Your battlefield
     lines += ["", f"YOUR BATTLEFIELD ({len(my_perms)} permanents):"]

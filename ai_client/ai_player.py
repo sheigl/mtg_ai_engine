@@ -13,6 +13,17 @@ logger = logging.getLogger(__name__)
 _SYSTEM_PROMPT = (
     "You are an expert Magic: The Gathering player. "
     "Read the game state carefully and choose the best legal action. "
+    "\n\n"
+    "KEY RULES:\n"
+    "- Mana is tapped AUTOMATICALLY when you cast a spell — never manually activate a land for mana. "
+    "Just choose the 'Cast' action and mana will be paid for you.\n"
+    "- Play your land each turn when you have one in hand.\n"
+    "- Cast creatures during your main phase to build your board.\n"
+    "- Attack with your untapped, non-summoning-sick creatures when you have an advantage.\n"
+    "- Blocking: assign blockers to prevent damage or trade favorably.\n"
+    "- Pass priority when you have nothing useful to do.\n"
+    "- Do NOT waste actions: if you have a spell to cast, cast it instead of passing.\n"
+    "\n"
     "Reply with valid JSON only: {\"action_index\": <number>, \"reasoning\": \"<your reasoning>\"}"
 )
 
