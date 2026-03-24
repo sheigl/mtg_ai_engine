@@ -219,8 +219,8 @@ class GameLoop:
         if self._debug or self._observer:
             self._forwarder = DebugForwarder(self._config.engine_url, game_id)
 
-        turn_count = 0
         decision_count = 0
+        turn_number = 1
         termination_reason = "game_over"
         winner = None
 
@@ -241,11 +241,6 @@ class GameLoop:
         print()
 
         while True:
-            # Safety: max turns (0 = unlimited)
-            if self._config.max_turns > 0 and turn_count >= self._config.max_turns:
-                termination_reason = "max_turns_reached"
-                break
-
             # Fetch legal actions
             try:
                 legal_data = self._engine.get_legal_actions(game_id)
@@ -278,9 +273,8 @@ class GameLoop:
             priority_player = legal_data.get("priority_player", "")
             phase = legal_data.get("phase", "?")
             step = legal_data.get("step", "?")
-            turn_number = legal_data.get("turn", turn_count + 1)
 
-            # Get full game state to check is_game_over properly
+            # Get full game state to check is_game_over and actual turn number
             try:
                 gs = self._engine.get_game_state(game_id)
             except EngineError as exc:
@@ -293,7 +287,12 @@ class GameLoop:
                 winner = gs.get("winner")
                 break
 
-            turn_number = gs.get("turn", turn_count + 1)
+            turn_number = gs.get("turn", 1)
+
+            # Safety: max turns is measured in game turns, not individual decisions
+            if self._config.max_turns > 0 and turn_number > self._config.max_turns:
+                termination_reason = "max_turns_reached"
+                break
 
             if not legal_actions:
                 # Nothing to do — shouldn't happen but guard against it
@@ -418,7 +417,6 @@ class GameLoop:
                 break
 
             decision_count += 1
-            turn_count += 1
 
             # Observer AI: analyze all non-pass actions — heuristic and LLM alike
             if self._observer and self._forwarder and chosen_action.get("action_type") != "pass":
@@ -472,7 +470,7 @@ class GameLoop:
         summary = GameSummary(
             game_id=game_id,
             winner=winner,
-            total_turns=turn_count,
+            total_turns=turn_number,
             total_decisions=decision_count,
             termination_reason=termination_reason,
             commander_damage=final_commander_damage,

@@ -128,9 +128,12 @@ export function DebugPanel({ gameId, isGameOver, debugEnabled }: Props) {
               <div className="debug-empty-state">Loading debug data…</div>
             ) : entries.length === 0 ? (
               <div className="debug-empty-state">
-                No debug data for this game.
+                No AI prompts captured yet.
                 <br />
-                <small>Run with <code>--debug</code> to capture AI prompts and commentary.</small>
+                <small>
+                  Heuristic players don't generate LLM entries.
+                  Add an <strong>observer URL</strong> when creating the game to see move commentary.
+                </small>
               </div>
             ) : (
               <>

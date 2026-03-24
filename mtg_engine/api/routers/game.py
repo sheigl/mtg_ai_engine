@@ -894,8 +894,10 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                 ))
 
     # Activate abilities
-    _current_castable = _castable_count(player.mana_pool)
-    _total_castable = _castable_count(_total_available_pool())
+    # Note: mana-producing abilities (e.g. tap a land for mana) are intentionally
+    # excluded here. The game loop's _auto_tap_mana() handles all mana tapping
+    # transparently just before any cast action, so presenting mana taps to the AI
+    # only leads to wasted actions (tapping land then passing without casting).
 
     for perm in gs.battlefield:
         if perm.controller != player_name:
@@ -903,6 +905,9 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
         abilities = parse_oracle_text(perm.card.oracle_text or "", perm.card.type_line)
         activated = [a for a in abilities if isinstance(a, ActivatedAbility)]
         for idx, ab in enumerate(activated):
+            # Skip mana-producing abilities — handled automatically by the game loop
+            if _mana_add_symbol(ab.effect) is not None:
+                continue
             # Check tap cost — CR 302.6: a creature's {T} ability can't be
             # activated while it has summoning sickness (non-creature permanents
             # such as lands are unaffected by this rule).
@@ -912,24 +917,6 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
             mana_part = _re.sub(r"\{T\}", "", ab.cost).strip().strip(",").strip()
             if mana_part and not can_pay_cost(player.mana_pool, mana_part):
                 continue
-            # For pure mana abilities, only offer the tap if it makes progress toward
-            # casting a spell:
-            #   - If current pool already casts everything tapping everything can reach,
-            #     more mana is useless.
-            #   - If tapping this land enables more spells than the current pool, include.
-            #   - If tapping this land alone doesn't help yet (multi-tap needed), include
-            #     only when the full set of available taps would eventually reach a spell.
-            produced = _mana_add_symbol(ab.effect)
-            if produced is not None:
-                if _current_castable >= _total_castable:
-                    # Already at the maximum castable with all mana available — useless tap
-                    continue
-                pool_after = _pool_after_add(player.mana_pool, produced)
-                if _castable_count(pool_after) <= _current_castable:
-                    # This single tap doesn't unlock a new spell by itself; only include
-                    # when tapping everything available would eventually reach one
-                    if _total_castable == 0:
-                        continue
             actions.append(LegalAction(
                 action_type="activate",
                 permanent_id=perm.id,

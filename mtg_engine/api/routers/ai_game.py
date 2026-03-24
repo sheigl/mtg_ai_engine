@@ -9,7 +9,7 @@ import logging
 import sys
 import threading
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, field_validator, model_validator
 
 from mtg_engine.api.game_manager import get_manager
@@ -98,7 +98,7 @@ class AIGameResponse(BaseModel):
 # ── Endpoint ─────────────────────────────────────────────────────────────────
 
 @router.post("/ai-game")
-def create_ai_game(req: AIGameRequest) -> dict:
+def create_ai_game(req: AIGameRequest, request: Request) -> dict:
     """
     Create a game and start the AI loop in a background daemon thread.
     Returns game_id immediately; the game advances autonomously.
@@ -143,10 +143,14 @@ def create_ai_game(req: AIGameRequest) -> dict:
     )
     game_id = gs.game_id
 
+    # Derive the engine URL from the incoming request so the daemon thread
+    # connects to the correct server (avoids hardcoded localhost:8000).
+    engine_url = str(request.base_url).rstrip("/")
+
     # Start AI loop in a daemon thread so we return immediately
     thread = threading.Thread(
         target=_run_ai_loop,
-        args=(req, game_id),
+        args=(req, game_id, engine_url),
         daemon=True,
         name=f"ai-game-{game_id[:8]}",
     )
@@ -156,11 +160,12 @@ def create_ai_game(req: AIGameRequest) -> dict:
     return {"data": {"game_id": game_id}}
 
 
-def _run_ai_loop(req: AIGameRequest, game_id: str) -> None:
+def _run_ai_loop(req: AIGameRequest, game_id: str, engine_url: str) -> None:
     """
     Build the GameLoop from the request and run it.
     Runs in a daemon thread; exceptions are logged but do not crash the server.
     """
+    print(f"[ai-game] Loop thread starting for game {game_id[:8]} (engine: {engine_url})", flush=True)
     try:
         # Import here to avoid circular imports at module load time
         from ai_client.models import GameConfig, PlayerConfig
@@ -186,7 +191,7 @@ def _run_ai_loop(req: AIGameRequest, game_id: str) -> None:
         # Build GameConfig (decks already loaded; pass card names back for config)
         game_config = GameConfig(
             players=[pc1, pc2],
-            engine_url="http://localhost:8000",
+            engine_url=engine_url,
             deck1=req.deck1 or list(DEFAULT_DECK),
             deck2=req.deck2 or list(DEFAULT_DECK),
             verbose=req.verbose,
@@ -218,7 +223,7 @@ def _run_ai_loop(req: AIGameRequest, game_id: str) -> None:
             observer = ObserverAI(obs_url, obs_model)
 
         # The engine self-address for EngineClient (loop uses HTTP to submit actions)
-        with EngineClient("http://localhost:8000") as engine:
+        with EngineClient(engine_url) as engine:
             loop = GameLoop(
                 config=game_config,
                 engine=engine,
@@ -230,4 +235,6 @@ def _run_ai_loop(req: AIGameRequest, game_id: str) -> None:
             loop.run()
 
     except Exception:
+        import traceback
+        traceback.print_exc()
         logger.exception("AI game loop for %s raised an unhandled exception", game_id)

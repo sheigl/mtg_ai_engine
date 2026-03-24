@@ -72,10 +72,10 @@ class ObserverAI:
             content = response.choices[0].message.content or ""
             return self._parse(content)
         except Exception as exc:
-            logger.debug("ObserverAI.analyze failed: %s", exc)
+            logger.warning("ObserverAI.analyze failed: %s", exc)
             return {
                 "rating": None,
-                "explanation": "Analysis unavailable",
+                "explanation": f"Analysis unavailable ({exc})",
                 "alternative": None,
             }
 

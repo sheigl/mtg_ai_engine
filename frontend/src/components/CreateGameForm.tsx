@@ -50,7 +50,7 @@ interface Props {
 const defaultPlayer = (name: string): PlayerFormState => ({
   name,
   playerType: 'heuristic',
-  baseUrl: '',
+  baseUrl: 'http://localhost:8080/v1',
   model: '',
 })
 
@@ -65,7 +65,7 @@ const defaultForm = (): FormState => ({
   verbose: false,
   maxTurns: '200',
   debug: false,
-  observerUrl: '',
+  observerUrl: 'http://localhost:8080/v1',
   observerModel: '',
 })
 
@@ -185,7 +185,7 @@ function PlayerCard({
             <input
               value={state.baseUrl}
               onChange={e => onChange({ baseUrl: e.target.value })}
-              placeholder="http://localhost:11434/v1"
+              placeholder="http://localhost:8080/v1"
             />
             {errors.url && <span className="cg-field-error">{errors.url}</span>}
           </div>
@@ -445,7 +445,7 @@ export function CreateGameForm({ onClose }: Props) {
                     <input
                       value={form.observerUrl}
                       onChange={e => setForm(f => ({ ...f, observerUrl: e.target.value }))}
-                      placeholder="Defaults to first LLM player's endpoint"
+                      placeholder="http://localhost:8080/v1"
                     />
                   </div>
                   <div className="cg-field">

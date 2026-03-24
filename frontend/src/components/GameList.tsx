@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useGameList } from '../hooks/useGameList'
+import { useQueryClient } from '@tanstack/react-query'
 import { ConnectionStatus } from './ConnectionStatus'
 import { CreateGameForm } from './CreateGameForm'
 import '../styles/board.css'
@@ -16,6 +17,14 @@ const PHASE_LABELS: Record<string, string> = {
 export function GameList() {
   const { data: games, isLoading, isError } = useGameList()
   const [showCreateForm, setShowCreateForm] = useState(false)
+  const queryClient = useQueryClient()
+
+  const deleteGame = async (gameId: string, e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    await fetch(`/game/${gameId}`, { method: 'DELETE' })
+    queryClient.invalidateQueries({ queryKey: ['gameList'] })
+  }
 
   return (
     <div style={{
@@ -124,6 +133,24 @@ export function GameList() {
                 {!game.is_game_over && (
                   <span style={{ color: 'var(--active-glow)', fontSize: '0.85rem' }}>→</span>
                 )}
+                <button
+                  onClick={e => deleteGame(game.game_id, e)}
+                  title="Delete game"
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--text-muted)',
+                    cursor: 'pointer',
+                    fontSize: '0.85rem',
+                    padding: '0.2rem 0.4rem',
+                    borderRadius: '4px',
+                    lineHeight: 1,
+                  }}
+                  onMouseEnter={e => (e.currentTarget.style.color = '#e55')}
+                  onMouseLeave={e => (e.currentTarget.style.color = 'var(--text-muted)')}
+                >
+                  ✕
+                </button>
               </div>
             </Link>
           ))}
