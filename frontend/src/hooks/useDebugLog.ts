@@ -21,7 +21,9 @@ export function useDebugLog(
   const [sseDone, setSseDone] = useState(false)
   const esRef = useRef<EventSource | null>(null)
 
-  // Static fetch (for completed games or after SSE closes)
+  // Static fetch (for completed games or after SSE closes).
+  // Polls every 2s while any entry is still streaming (background observer threads
+  // may still be patching after the game ends and SSE closes).
   const staticQuery = useQuery<DebugEntry[]>({
     queryKey: ['debug-log', gameId],
     queryFn: async () => {
@@ -31,7 +33,12 @@ export function useDebugLog(
       return json.data.entries
     },
     enabled: !!gameId && enabled && (isGameOver || sseDone),
-    staleTime: Infinity,
+    staleTime: 0,
+    refetchInterval: (query) => {
+      const data = query.state.data
+      if (!data) return 2000
+      return data.some(e => !e.is_complete) ? 2000 : false
+    },
   })
 
   useEffect(() => {

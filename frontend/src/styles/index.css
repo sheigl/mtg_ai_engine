@@ -61,6 +61,20 @@ body {
   flex-direction: column;
 }
 
+@media (max-width: 768px) {
+  :root {
+    --card-width: 88px;
+    --card-height: 123px;
+  }
+}
+
+@media (max-width: 480px) {
+  :root {
+    --card-width: 72px;
+    --card-height: 100px;
+  }
+}
+
 a {
   color: var(--active-glow);
   text-decoration: none;

@@ -2,6 +2,7 @@
 import logging
 import re
 import sys
+import threading
 import time
 
 from .ai_player import AIPlayer
@@ -11,6 +12,7 @@ from .debug_forwarder import DebugForwarder
 from .models import GameConfig, GameSummary, TurnRecord
 from .observer import ObserverAI
 from .prompts import build_game_state_prompt
+from mtg_engine.export.observer_skip import register as _skip_register, unregister as _skip_unregister
 
 logger = logging.getLogger(__name__)
 
@@ -181,12 +183,14 @@ class GameLoop:
         players: "list[AIPlayer | HeuristicPlayer]",
         debug: bool = False,
         observer: "ObserverAI | None" = None,
+        game_id: str | None = None,
     ) -> None:
         self._config = config
         self._engine = engine
         self._players = players
         self._debug = debug
         self._observer = observer
+        self._game_id = game_id  # pre-created game ID; skip create_game() when set
         self._forwarder: DebugForwarder | None = None
         # Map player name → AIPlayer
         self._player_map: dict[str, AIPlayer] = {
@@ -195,14 +199,17 @@ class GameLoop:
 
     def run(self) -> GameSummary:
         """
-        Create a game and loop until game_over or max_turns.
+        Create a game (or use pre-created game_id) and loop until game_over or max_turns.
         Returns a GameSummary.
         """
-        try:
-            game_id = self._engine.create_game(self._config, debug=self._debug)
-        except EngineError as exc:
-            print(f"[ERROR] Failed to create game: {exc}")
-            sys.exit(1)
+        if self._game_id is not None:
+            game_id = self._game_id
+        else:
+            try:
+                game_id = self._engine.create_game(self._config, debug=self._debug)
+            except EngineError as exc:
+                print(f"[ERROR] Failed to create game: {exc}")
+                sys.exit(1)
 
         if self._config.verbose:
             try:
@@ -214,8 +221,8 @@ class GameLoop:
         if self._debug or self._observer:
             self._forwarder = DebugForwarder(self._config.engine_url, game_id)
 
-        turn_count = 0
         decision_count = 0
+        turn_number = 1
         termination_reason = "game_over"
         winner = None
 
@@ -236,11 +243,6 @@ class GameLoop:
         print()
 
         while True:
-            # Safety: max turns (0 = unlimited)
-            if self._config.max_turns > 0 and turn_count >= self._config.max_turns:
-                termination_reason = "max_turns_reached"
-                break
-
             # Fetch legal actions
             try:
                 legal_data = self._engine.get_legal_actions(game_id)
@@ -273,9 +275,8 @@ class GameLoop:
             priority_player = legal_data.get("priority_player", "")
             phase = legal_data.get("phase", "?")
             step = legal_data.get("step", "?")
-            turn_number = legal_data.get("turn", turn_count + 1)
 
-            # Get full game state to check is_game_over properly
+            # Get full game state to check is_game_over and actual turn number
             try:
                 gs = self._engine.get_game_state(game_id)
             except EngineError as exc:
@@ -288,7 +289,12 @@ class GameLoop:
                 winner = gs.get("winner")
                 break
 
-            turn_number = gs.get("turn", turn_count + 1)
+            turn_number = gs.get("turn", 1)
+
+            # Safety: max turns is measured in game turns, not individual decisions
+            if self._config.max_turns > 0 and turn_number > self._config.max_turns:
+                termination_reason = "max_turns_reached"
+                break
 
             if not legal_actions:
                 # Nothing to do — shouldn't happen but guard against it
@@ -413,22 +419,18 @@ class GameLoop:
                 break
 
             decision_count += 1
-            turn_count += 1
 
-            # Observer AI: analyze all non-pass actions — heuristic and LLM alike
+            # Observer AI: analyze all non-pass actions — heuristic and LLM alike.
+            # Runs in a background thread but the game loop JOINS (waits) for it to
+            # finish before advancing, so commentary is always complete before the
+            # next action. The user can click Skip to cancel the analysis early.
             if self._observer and self._forwarder and chosen_action.get("action_type") != "pass":
                 gs_summary = _format_gs_summary(gs)
-                commentary = self._observer.analyze(
-                    player_name=priority_player,
-                    turn=turn_number,
-                    phase=phase,
-                    step=step,
-                    chosen_action_desc=action_desc,
-                    legal_actions=legal_actions,
-                    game_state_summary=gs_summary,
-                )
                 obs_entry_id = self._forwarder.new_entry_id()
-                obs_entry = {
+                stop_event = _skip_register(obs_entry_id)
+
+                # Post the entry immediately so the UI shows a "streaming" indicator
+                self._forwarder.post_entry({
                     "entry_id": obs_entry_id,
                     "entry_type": "commentary",
                     "source": "Observer AI",
@@ -437,13 +439,63 @@ class GameLoop:
                     "step": step,
                     "timestamp": time.time(),
                     "prompt": "",
-                    "response": commentary.get("explanation", ""),
-                    "is_complete": True,
-                    "rating": commentary.get("rating"),
-                    "explanation": commentary.get("explanation"),
-                    "alternative": commentary.get("alternative"),
-                }
-                self._forwarder.post_entry(obs_entry)
+                    "response": "",
+                    "is_complete": False,
+                    "rating": None,
+                    "explanation": None,
+                    "alternative": None,
+                    "thinking": "",
+                })
+
+                # Brief pause so the initial SSE event reaches the browser and renders
+                # the streaming indicator before the LLM call begins.
+                time.sleep(0.1)
+
+                # Capture loop variables for the background thread closure
+                _fwd = self._forwarder
+                _eid = obs_entry_id
+                _observer = self._observer
+                _stop = stop_event
+                _obs_kwargs = dict(
+                    player_name=priority_player,
+                    turn=turn_number,
+                    phase=phase,
+                    step=step,
+                    chosen_action_desc=action_desc,
+                    legal_actions=list(legal_actions),
+                    game_state_summary=gs_summary,
+                )
+
+                def _run_observer() -> None:
+                    try:
+                        def _content_cb(chunk: str) -> None:
+                            _fwd.patch_entry(_eid, chunk, is_complete=False)
+
+                        def _thinking_cb(chunk: str) -> None:
+                            _fwd.patch_entry(_eid, "", is_complete=False, thinking_chunk=chunk)
+
+                        commentary = _observer.analyze(
+                            **_obs_kwargs,
+                            content_callback=_content_cb,
+                            thinking_callback=_thinking_cb,
+                            stop_check=_stop.is_set,
+                        )
+                        # Only post the final result if not already skipped by the endpoint
+                        if not _stop.is_set():
+                            _fwd.patch_entry(
+                                _eid,
+                                "",
+                                is_complete=True,
+                                rating=commentary.get("rating"),
+                                explanation=commentary.get("explanation"),
+                                alternative=commentary.get("alternative"),
+                            )
+                    finally:
+                        _skip_unregister(_eid)
+
+                obs_thread = threading.Thread(target=_run_observer, daemon=True)
+                obs_thread.start()
+                obs_thread.join()  # Block game loop until observer completes or is skipped
 
             # Re-check game state after action
             try:
@@ -467,7 +519,7 @@ class GameLoop:
         summary = GameSummary(
             game_id=game_id,
             winner=winner,
-            total_turns=turn_count,
+            total_turns=turn_number,
             total_decisions=decision_count,
             termination_reason=termination_reason,
             commander_damage=final_commander_damage,
