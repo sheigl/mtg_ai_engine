@@ -8,6 +8,38 @@
   overflow: hidden;
 }
 
+@media (max-width: 768px) {
+  .game-board {
+    height: auto;
+    min-height: 100vh;
+    overflow-y: auto;
+  }
+
+  .game-board.with-sidebar {
+    grid-template-columns: 1fr;
+  }
+
+  .game-board.with-sidebar > .action-log-container {
+    display: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .player-info {
+    flex-wrap: wrap;
+    gap: var(--gap-sm);
+  }
+
+  .player-name {
+    font-size: 0.85rem;
+  }
+
+  .player-life {
+    font-size: 1.1rem;
+    min-width: 2.5rem;
+  }
+}
+
 .game-board.with-sidebar {
   grid-template-columns: 1fr 300px;
 }

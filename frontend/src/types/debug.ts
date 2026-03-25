@@ -17,6 +17,7 @@ export interface DebugEntry {
   rating?: Rating
   explanation?: string
   alternative?: string
+  thinking?: string     // Extended thinking/reasoning tokens (collapsible)
 }
 
 export interface DebugLog {

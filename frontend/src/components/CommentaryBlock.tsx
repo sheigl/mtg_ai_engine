@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useEffect, useState, useCallback } from 'react'
 import type { DebugEntry, Rating } from '../types/debug'
 
 const RATING_BADGE: Record<Rating, { emoji: string; color: string; label: string }> = {
@@ -9,12 +9,35 @@ const RATING_BADGE: Record<Rating, { emoji: string; color: string; label: string
 
 interface Props {
   entry: DebugEntry
+  gameId: string
 }
 
-export function CommentaryBlock({ entry }: Props) {
+export function CommentaryBlock({ entry, gameId }: Props) {
   const [collapsed, setCollapsed] = useState(false)
+  const [thinkingExpanded, setThinkingExpanded] = useState(false)
+  const [skipping, setSkipping] = useState(false)
+  const thinkingRef = useRef<HTMLDivElement>(null)
   const rating = entry.rating as Rating | undefined
   const badge = rating ? RATING_BADGE[rating] : null
+  const hasThinking = !!(entry.thinking)
+  const displayText = entry.explanation || entry.response
+
+  const handleSkip = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setSkipping(true)
+    try {
+      await fetch(`/game/${gameId}/debug/entry/${entry.entry_id}/skip`, { method: 'POST' })
+    } finally {
+      setSkipping(false)
+    }
+  }, [gameId, entry.entry_id])
+
+  // Auto-scroll thinking box as tokens arrive
+  useEffect(() => {
+    if (thinkingExpanded && thinkingRef.current) {
+      thinkingRef.current.scrollTop = thinkingRef.current.scrollHeight
+    }
+  }, [entry.thinking, thinkingExpanded])
 
   return (
     <div className="debug-block debug-block-observer">
@@ -31,14 +54,50 @@ export function CommentaryBlock({ entry }: Props) {
           </span>
         )}
         {!entry.is_complete && <span className="debug-block-streaming">⟳ streaming</span>}
+        {!entry.is_complete && (
+          <button
+            className="debug-skip-btn"
+            onClick={handleSkip}
+            disabled={skipping}
+            title="Skip observer analysis and continue game"
+          >
+            {skipping ? '…' : 'Skip'}
+          </button>
+        )}
       </div>
 
       {/* Body */}
       {!collapsed && (
         <div className="debug-block-body">
+          {/* Thinking block — collapsible, shown when model has reasoning tokens */}
+          {hasThinking && (
+            <div className="debug-thinking-container">
+              <div
+                className="debug-thinking-header"
+                onClick={() => setThinkingExpanded(e => !e)}
+              >
+                <span>{thinkingExpanded ? '▼' : '▶'}</span>
+                <span className="debug-thinking-label">
+                  {!entry.is_complete && !thinkingExpanded ? '⟳ thinking…' : 'Thinking'}
+                </span>
+              </div>
+              {thinkingExpanded && (
+                <div ref={thinkingRef} className="debug-thinking-body">
+                  {entry.thinking}
+                  {!entry.is_complete && <span className="debug-cursor">▋</span>}
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="debug-block-section-label">Commentary</div>
           <div className="debug-block-commentary">
-            {entry.explanation || entry.response || <span className="debug-muted">No analysis.</span>}
+            {displayText
+              ? <>{displayText}{!entry.is_complete && <span className="debug-cursor">▋</span>}</>
+              : !entry.is_complete
+                ? <span className="debug-muted">thinking…</span>
+                : <span className="debug-muted">No analysis.</span>
+            }
           </div>
 
           {entry.alternative && (

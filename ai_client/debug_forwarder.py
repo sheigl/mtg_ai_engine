@@ -44,15 +44,36 @@ class DebugForwarder:
             logger.debug("DebugForwarder.post_entry failed: %s", exc)
             return entry.get("entry_id", "")
 
-    def patch_entry(self, entry_id: str, chunk: str, is_complete: bool) -> None:
+    def patch_entry(
+        self,
+        entry_id: str,
+        chunk: str,
+        is_complete: bool,
+        rating: str | None = None,
+        explanation: str | None = None,
+        alternative: str | None = None,
+        thinking_chunk: str = "",
+    ) -> None:
         """
         PATCH an in-progress entry with a new response chunk.
+        On the final patch (is_complete=True), optional structured fields
+        (rating, explanation, alternative) can be set for observer commentary entries.
+        thinking_chunk is appended to the thinking field (for reasoning/thinking models).
         Silently swallows errors.
         """
+        body: dict = {"response_chunk": chunk, "is_complete": is_complete}
+        if rating is not None:
+            body["rating"] = rating
+        if explanation is not None:
+            body["explanation"] = explanation
+        if alternative is not None:
+            body["alternative"] = alternative
+        if thinking_chunk:
+            body["thinking_chunk"] = thinking_chunk
         try:
             resp = self._client.patch(
                 f"{self._base}/game/{self._game_id}/debug/entry/{entry_id}",
-                json={"response_chunk": chunk, "is_complete": is_complete},
+                json=body,
                 timeout=5.0,
             )
             resp.raise_for_status()

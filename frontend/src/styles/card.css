@@ -14,6 +14,44 @@
   transition: transform var(--transition-fast), box-shadow var(--transition-fast);
 }
 
+/* Card art image — fills card as background */
+.card-art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center top;
+  border-radius: inherit;
+  z-index: 0;
+}
+
+/* Overlay stat elements above art */
+.card-has-art .card-name,
+.card-has-art .card-type,
+.card-has-art .card-mana-cost,
+.card-has-art .card-pt,
+.card-has-art .card-loyalty,
+.card-has-art .card-counters,
+.card-has-art .card-token-badge,
+.card-has-art .card-auras {
+  position: relative;
+  z-index: 1;
+}
+
+/* Legibility: stronger text shadow over art */
+.card-has-art .card-name {
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+}
+
+/* Semi-transparent type bar at bottom */
+.card-has-art .card-type {
+  background: rgba(0, 0, 0, 0.65);
+  border-top: none;
+  padding: 2px 4px;
+  border-radius: 0 0 4px 4px;
+}
+
 .card:hover {
   box-shadow: 0 0 8px rgba(88, 166, 255, 0.3);
   z-index: 10;
@@ -133,6 +171,61 @@
   gap: 2px;
   margin-top: 2px;
 }
+
+/* ── Hover zoom panel ───────────────────────────────────────────────────── */
+
+.card-zoom-panel {
+  position: fixed;
+  z-index: 1000;
+  pointer-events: none;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.75);
+  animation: card-zoom-in 0.1s ease;
+}
+
+@keyframes card-zoom-in {
+  from { opacity: 0; transform: scale(0.95); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+.card-zoom-panel img {
+  display: block;
+  width: 300px;
+  border-radius: 10px;
+}
+
+.card-zoom-fallback {
+  width: 300px;
+  padding: 1rem 0.85rem;
+  background: var(--bg-secondary, #1a1a2e);
+  color: var(--text-primary, #ddd);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  border-radius: 10px;
+  border: 1px solid var(--border-default, #444);
+  box-sizing: border-box;
+}
+
+.card-zoom-fallback strong {
+  display: block;
+  font-size: 1rem;
+  margin-bottom: 0.25rem;
+}
+
+.card-zoom-fallback span {
+  font-size: 0.8rem;
+  color: var(--text-secondary, #aaa);
+}
+
+.card-zoom-fallback p {
+  margin: 0.5rem 0 0;
+  font-size: 0.78rem;
+  color: var(--text-secondary, #aaa);
+  line-height: 1.45;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────── */
 
 .card-aura-badge {
   font-size: 0.48rem;

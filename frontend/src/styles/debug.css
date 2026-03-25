@@ -225,6 +225,29 @@
   animation: debug-pulse 1.2s ease-in-out infinite;
 }
 
+.debug-skip-btn {
+  margin-left: auto;
+  font-size: 0.65rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  border: 1px solid var(--border-default, #444);
+  background: transparent;
+  color: var(--text-secondary, #8b949e);
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.debug-skip-btn:hover:not(:disabled) {
+  background: rgba(248, 81, 73, 0.15);
+  border-color: #f85149;
+  color: #f85149;
+}
+
+.debug-skip-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 @keyframes debug-pulse {
   0%, 100% { opacity: 1; }
   50%       { opacity: 0.4; }
@@ -292,6 +315,44 @@
 .debug-muted {
   color: var(--text-muted, #555);
   font-style: italic;
+}
+
+/* ── Thinking block (collapsible reasoning tokens) ───────────────────────── */
+
+.debug-thinking-container {
+  margin-bottom: 0.5rem;
+  border: 1px solid var(--border-muted, #2d333b);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.debug-thinking-header {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.5rem;
+  cursor: pointer;
+  background: rgba(100, 100, 120, 0.15);
+  user-select: none;
+}
+
+.debug-thinking-label {
+  font-size: 0.68rem;
+  color: var(--text-secondary, #8b949e);
+  font-style: italic;
+}
+
+.debug-thinking-body {
+  font-size: 0.68rem;
+  color: var(--text-secondary, #8b949e);
+  font-family: monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 0.4rem 0.5rem;
+  max-height: 180px;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.2);
+  line-height: 1.4;
 }
 
 /* ── Commentary body ────────────────────────────────────────────────────── */
