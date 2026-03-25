@@ -6,6 +6,7 @@ import json
 import logging
 import time
 import uuid
+from typing import Callable
 
 import openai
 
@@ -41,9 +42,14 @@ class ObserverAI:
         chosen_action_desc: str,
         legal_actions: list[dict],
         game_state_summary: str,
+        content_callback: Callable[[str], None] | None = None,
+        thinking_callback: Callable[[str], None] | None = None,
+        stop_check: Callable[[], bool] | None = None,
     ) -> dict:
         """
         Rate the play and return a dict with rating, explanation, alternative.
+        If content_callback is provided, streams response tokens to it as they arrive.
+        If thinking_callback is provided, streams reasoning/thinking tokens to it.
         On timeout or error, returns a placeholder so the game keeps running.
         """
         legal_list = "\n".join(
@@ -58,14 +64,17 @@ class ObserverAI:
             f"All legal actions available:\n{legal_list}\n\n"
             "Rate this play."
         )
+        messages = [
+            {"role": "system", "content": _OBSERVER_SYSTEM},
+            {"role": "user", "content": prompt},
+        ]
 
         try:
+            if content_callback is not None or thinking_callback is not None:
+                return self._analyze_streaming(messages, content_callback, thinking_callback, stop_check)
             response = self._client.chat.completions.create(
                 model=self._model,
-                messages=[
-                    {"role": "system", "content": _OBSERVER_SYSTEM},
-                    {"role": "user", "content": prompt},
-                ],
+                messages=messages,
                 temperature=0.2,
                 timeout=15.0,
             )
@@ -78,6 +87,58 @@ class ObserverAI:
                 "explanation": f"Analysis unavailable ({exc})",
                 "alternative": None,
             }
+
+    def _analyze_streaming(
+        self,
+        messages: list[dict],
+        content_callback: Callable[[str], None] | None,
+        thinking_callback: Callable[[str], None] | None,
+        stop_check: Callable[[], bool] | None,
+    ) -> dict:
+        """
+        Stream the LLM response. Calls content_callback for response tokens and
+        thinking_callback for reasoning/thinking tokens (e.g. extended thinking models).
+        stop_check is polled after each chunk — if it returns True, streaming stops early.
+        Returns parsed result.
+        """
+        accumulated = ""
+        try:
+            with self._client.chat.completions.create(
+                model=self._model,
+                messages=messages,
+                temperature=0.2,
+                timeout=60.0,
+                stream=True,
+            ) as stream:
+                for chunk in stream:
+                    if stop_check and stop_check():
+                        break
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
+                    # Regular response content
+                    content = delta.content
+                    if content:
+                        accumulated += content
+                        if content_callback:
+                            content_callback(content)
+                    # Extended thinking / reasoning tokens (field name varies by server)
+                    thinking = (
+                        getattr(delta, 'reasoning_content', None)
+                        or getattr(delta, 'reasoning', None)
+                        or getattr(delta, 'thinking', None)
+                    )
+                    if thinking and thinking_callback:
+                        thinking_callback(thinking)
+        except Exception as exc:
+            logger.warning("ObserverAI streaming failed: %s", exc)
+            if not accumulated:
+                return {
+                    "rating": None,
+                    "explanation": f"Analysis unavailable ({exc})",
+                    "alternative": None,
+                }
+        return self._parse(accumulated)
 
     def _parse(self, content: str) -> dict:
         text = content.strip()

@@ -129,7 +129,7 @@ function validateForm(form: FormState): FieldErrors {
     if (!form.commander2.trim()) errors.commander2 = 'Commander name required'
   }
 
-  if (form.observerUrl.trim() && !form.observerModel.trim()) {
+  if (form.debug && form.observerUrl.trim() && !form.observerModel.trim()) {
     errors.observerModel = 'Observer model is required when observer URL is set'
   }
 
@@ -277,8 +277,8 @@ export function CreateGameForm({ onClose }: Props) {
         verbose: form.verbose,
         max_turns: parseInt(form.maxTurns, 10) || 200,
         debug: form.debug,
-        observer_url: form.observerUrl.trim() || null,
-        observer_model: form.observerModel.trim() || null,
+        observer_url: form.debug ? (form.observerUrl.trim() || null) : null,
+        observer_model: form.debug ? (form.observerModel.trim() || null) : null,
       }
 
       const res = await fetch('/ai-game', {

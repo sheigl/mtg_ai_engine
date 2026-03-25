@@ -2,6 +2,7 @@
 import logging
 import re
 import sys
+import threading
 import time
 
 from .ai_player import AIPlayer
@@ -11,6 +12,7 @@ from .debug_forwarder import DebugForwarder
 from .models import GameConfig, GameSummary, TurnRecord
 from .observer import ObserverAI
 from .prompts import build_game_state_prompt
+from mtg_engine.export.observer_skip import register as _skip_register, unregister as _skip_unregister
 
 logger = logging.getLogger(__name__)
 
@@ -418,20 +420,17 @@ class GameLoop:
 
             decision_count += 1
 
-            # Observer AI: analyze all non-pass actions — heuristic and LLM alike
+            # Observer AI: analyze all non-pass actions — heuristic and LLM alike.
+            # Runs in a background thread but the game loop JOINS (waits) for it to
+            # finish before advancing, so commentary is always complete before the
+            # next action. The user can click Skip to cancel the analysis early.
             if self._observer and self._forwarder and chosen_action.get("action_type") != "pass":
                 gs_summary = _format_gs_summary(gs)
-                commentary = self._observer.analyze(
-                    player_name=priority_player,
-                    turn=turn_number,
-                    phase=phase,
-                    step=step,
-                    chosen_action_desc=action_desc,
-                    legal_actions=legal_actions,
-                    game_state_summary=gs_summary,
-                )
                 obs_entry_id = self._forwarder.new_entry_id()
-                obs_entry = {
+                stop_event = _skip_register(obs_entry_id)
+
+                # Post the entry immediately so the UI shows a "streaming" indicator
+                self._forwarder.post_entry({
                     "entry_id": obs_entry_id,
                     "entry_type": "commentary",
                     "source": "Observer AI",
@@ -440,13 +439,63 @@ class GameLoop:
                     "step": step,
                     "timestamp": time.time(),
                     "prompt": "",
-                    "response": commentary.get("explanation", ""),
-                    "is_complete": True,
-                    "rating": commentary.get("rating"),
-                    "explanation": commentary.get("explanation"),
-                    "alternative": commentary.get("alternative"),
-                }
-                self._forwarder.post_entry(obs_entry)
+                    "response": "",
+                    "is_complete": False,
+                    "rating": None,
+                    "explanation": None,
+                    "alternative": None,
+                    "thinking": "",
+                })
+
+                # Brief pause so the initial SSE event reaches the browser and renders
+                # the streaming indicator before the LLM call begins.
+                time.sleep(0.1)
+
+                # Capture loop variables for the background thread closure
+                _fwd = self._forwarder
+                _eid = obs_entry_id
+                _observer = self._observer
+                _stop = stop_event
+                _obs_kwargs = dict(
+                    player_name=priority_player,
+                    turn=turn_number,
+                    phase=phase,
+                    step=step,
+                    chosen_action_desc=action_desc,
+                    legal_actions=list(legal_actions),
+                    game_state_summary=gs_summary,
+                )
+
+                def _run_observer() -> None:
+                    try:
+                        def _content_cb(chunk: str) -> None:
+                            _fwd.patch_entry(_eid, chunk, is_complete=False)
+
+                        def _thinking_cb(chunk: str) -> None:
+                            _fwd.patch_entry(_eid, "", is_complete=False, thinking_chunk=chunk)
+
+                        commentary = _observer.analyze(
+                            **_obs_kwargs,
+                            content_callback=_content_cb,
+                            thinking_callback=_thinking_cb,
+                            stop_check=_stop.is_set,
+                        )
+                        # Only post the final result if not already skipped by the endpoint
+                        if not _stop.is_set():
+                            _fwd.patch_entry(
+                                _eid,
+                                "",
+                                is_complete=True,
+                                rating=commentary.get("rating"),
+                                explanation=commentary.get("explanation"),
+                                alternative=commentary.get("alternative"),
+                            )
+                    finally:
+                        _skip_unregister(_eid)
+
+                obs_thread = threading.Thread(target=_run_observer, daemon=True)
+                obs_thread.start()
+                obs_thread.join()  # Block game loop until observer completes or is skipped
 
             # Re-check game state after action
             try:

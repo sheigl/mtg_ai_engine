@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from mtg_engine.api.game_manager import get_manager
+from mtg_engine.export.observer_skip import trigger_skip
 from mtg_engine.export.store import get_export_store
 from mtg_engine.models.debug import DebugEntry, DebugEntryPatch
 
@@ -45,13 +46,32 @@ async def create_debug_entry(game_id: str, entry: DebugEntry) -> dict:
 async def patch_debug_entry(game_id: str, entry_id: str, patch: DebugEntryPatch) -> dict:
     """Append streaming tokens to an in-progress entry."""
     recorder = _get_recorder(game_id)
-    updated = recorder.patch_entry(entry_id, patch.response_chunk, patch.is_complete)
+    updated = recorder.patch_entry(
+        entry_id,
+        patch.response_chunk,
+        patch.is_complete,
+        rating=patch.rating,
+        explanation=patch.explanation,
+        alternative=patch.alternative,
+        thinking_chunk=patch.thinking_chunk,
+    )
     if updated is None:
         raise HTTPException(
             status_code=404,
             detail={"error": "Entry not found", "error_code": "ENTRY_NOT_FOUND"},
         )
     return {"data": {"entry_id": entry_id, "is_complete": updated.is_complete}}
+
+
+# ── POST /game/{game_id}/debug/entry/{entry_id}/skip ─────────────────────────
+
+@router.post("/{game_id}/debug/entry/{entry_id}/skip")
+async def skip_observer_entry(game_id: str, entry_id: str) -> dict:
+    """Signal the observer to stop streaming and mark the entry complete."""
+    recorder = _get_recorder(game_id)
+    trigger_skip(entry_id)
+    recorder.patch_entry(entry_id, "", True, explanation="Analysis skipped.")
+    return {"data": {"entry_id": entry_id, "skipped": True}}
 
 
 # ── GET /game/{game_id}/debug ─────────────────────────────────────────────────

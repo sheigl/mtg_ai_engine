@@ -893,21 +893,25 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                     description=f"Cast {card.name}",
                 ))
 
-    # Activate abilities
-    # Note: mana-producing abilities (e.g. tap a land for mana) are intentionally
-    # excluded here. The game loop's _auto_tap_mana() handles all mana tapping
-    # transparently just before any cast action, so presenting mana taps to the AI
-    # only leads to wasted actions (tapping land then passing without casting).
-
+    # Activate abilities (including mana-producing ones when they unlock castable spells)
+    # Precompute once: are there spells newly castable if all mana sources are tapped?
+    # This correctly handles multi-land scenarios (e.g. {1}{G} with empty pool + 2 Forests).
+    _new_castable_with_full_pool = (
+        _castable_count(_total_available_pool()) > _castable_count(player.mana_pool)
+    )
     for perm in gs.battlefield:
         if perm.controller != player_name:
             continue
         abilities = parse_oracle_text(perm.card.oracle_text or "", perm.card.type_line)
         activated = [a for a in abilities if isinstance(a, ActivatedAbility)]
         for idx, ab in enumerate(activated):
-            # Skip mana-producing abilities — handled automatically by the game loop
-            if _mana_add_symbol(ab.effect) is not None:
-                continue
+            mana_sym = _mana_add_symbol(ab.effect)
+            if mana_sym is not None:
+                # Only offer mana activations when tapping all available sources would
+                # unlock spells not castable from the current pool.
+                # auto_tap_mana handles the actual tapping when the AI commits to a cast.
+                if not _new_castable_with_full_pool:
+                    continue
             # Check tap cost — CR 302.6: a creature's {T} ability can't be
             # activated while it has summoning sickness (non-creature permanents
             # such as lands are unaffected by this rule).

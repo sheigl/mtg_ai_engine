@@ -149,7 +149,7 @@ export function DebugPanel({ gameId, isGameOver, debugEnabled }: Props) {
                 )}
                 {visibleEntries.map((entry: DebugEntry) =>
                   entry.entry_type === 'commentary' ? (
-                    <CommentaryBlock key={entry.entry_id} entry={entry} />
+                    <CommentaryBlock key={entry.entry_id} entry={entry} gameId={gameId} />
                   ) : (
                     <PromptResponseBlock key={entry.entry_id} entry={entry} allSources={allSources} />
                   )

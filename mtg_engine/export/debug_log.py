@@ -28,9 +28,11 @@ class DebugLogRecorder:
             pass
 
     def _notify(self, entry: DebugEntry) -> None:
+        # Snapshot so the queue never sees a later mutation of the same object
+        snapshot = entry.model_copy()
         for fn in self._listeners:
             try:
-                fn(entry)
+                fn(snapshot)
             except Exception:
                 pass
 
@@ -40,13 +42,30 @@ class DebugLogRecorder:
         self._index[entry.entry_id] = entry
         self._notify(entry)
 
-    def patch_entry(self, entry_id: str, chunk: str, is_complete: bool) -> DebugEntry | None:
+    def patch_entry(
+        self,
+        entry_id: str,
+        chunk: str,
+        is_complete: bool,
+        rating: str | None = None,
+        explanation: str | None = None,
+        alternative: str | None = None,
+        thinking_chunk: str = "",
+    ) -> DebugEntry | None:
         """Append a chunk to an existing entry's response; notifies listeners. Returns None if not found."""
         entry = self._index.get(entry_id)
         if entry is None:
             return None
         entry.response += chunk
         entry.is_complete = is_complete
+        if rating is not None:
+            entry.rating = rating
+        if explanation is not None:
+            entry.explanation = explanation
+        if alternative is not None:
+            entry.alternative = alternative
+        if thinking_chunk:
+            entry.thinking += thinking_chunk
         self._notify(entry)
         return entry
 
