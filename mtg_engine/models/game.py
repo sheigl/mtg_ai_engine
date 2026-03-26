@@ -82,6 +82,9 @@ class Permanent(BaseModel):
     is_face_down: bool = False
     timestamp: float = 0.0  # for layer system ordering (CR 613.7)
     copy_of_permanent_id: Optional[str] = None  # layer 1 copy effects (014)
+    # Temporary P/T bonuses from "until end of turn" effects (layer 7c)
+    power_bonus: int = 0
+    toughness_bonus: int = 0
 
 
 class StackObject(BaseModel):

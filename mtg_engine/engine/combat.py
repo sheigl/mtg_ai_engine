@@ -38,6 +38,7 @@ def _effective_power(perm: Permanent) -> int:
     except (ValueError, TypeError):
         p = 0
     p += perm.counters.get("+1/+1", 0) - perm.counters.get("-1/-1", 0)
+    p += perm.power_bonus
     return max(0, p)
 
 
@@ -47,6 +48,7 @@ def _effective_toughness(perm: Permanent) -> int:
     except (ValueError, TypeError):
         t = 0
     t += perm.counters.get("+1/+1", 0) - perm.counters.get("-1/-1", 0)
+    t += perm.toughness_bonus
     return t
 
 

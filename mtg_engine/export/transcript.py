@@ -85,12 +85,14 @@ class TranscriptRecorder:
     def record_cast(
         self, player: str, card_name: str, targets: list[str],
         turn: int, phase: str, step: str,
+        mana_cost: str = "",
     ) -> None:
         target_str = f" targeting {', '.join(targets)}" if targets else ""
+        cost_str = f" ({mana_cost})" if mana_cost else ""
         self._entry(
             "cast",
-            f"{player} casts {card_name}{target_str}",
-            {"player": player, "card_name": card_name, "targets": targets},
+            f"{player} casts {card_name}{cost_str}{target_str}",
+            {"player": player, "card_name": card_name, "targets": targets, "mana_cost": mana_cost},
             turn, phase, step,
         )
 
@@ -182,15 +184,29 @@ class TranscriptRecorder:
             turn, phase, step,
         )
 
+    def record_play_land(
+        self, player: str, card_name: str,
+        turn: int, phase: str, step: str,
+    ) -> None:
+        self._entry(
+            "play_land",
+            f"{player} plays {card_name}.",
+            {"player": player, "card_name": card_name},
+            turn, phase, step,
+        )
+
     def record_activate(
         self, player: str, perm_name: str, ability_index: int, targets: list[str],
         turn: int, phase: str, step: str,
+        ability_text: str = "",
     ) -> None:
         target_str = f" targeting {', '.join(targets)}" if targets else ""
+        effect = f": {ability_text}" if ability_text else ""
         self._entry(
             "activate",
-            f"{player} activates ability of {perm_name}{target_str}.",
-            {"player": player, "perm_name": perm_name, "ability_index": ability_index, "targets": targets},
+            f"{player} activates {perm_name}{effect}{target_str}.",
+            {"player": player, "perm_name": perm_name, "ability_index": ability_index,
+             "targets": targets, "ability_text": ability_text},
             turn, phase, step,
         )
 

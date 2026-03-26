@@ -332,6 +332,10 @@ def play_land(game_id: str, req: PlayLandRequest) -> dict:
     else:
         gs = _get_gs(game_id)
 
+    land_player = gs.priority_holder
+    land_turn, land_phase, land_step = gs.turn, gs.phase.value, gs.step.value
+    land_card_name: str = ""
+
     try:
         player = get_player(gs, gs.priority_holder)
 
@@ -351,6 +355,7 @@ def play_land(game_id: str, req: PlayLandRequest) -> dict:
             raise ValueError(f"Card {req.card_id!r} not found in hand")
         if "land" not in card.type_line.lower():
             raise ValueError(f"{card.name} is not a land")
+        land_card_name = card.name
 
         # Move from hand to battlefield (REQ-A02: no stack)
         player.hand[:] = [c for c in player.hand if c.id != req.card_id]
@@ -363,6 +368,12 @@ def play_land(game_id: str, req: PlayLandRequest) -> dict:
 
     if not req.dry_run:
         mgr.update(game_id, gs)
+        recorder = _get_recorder_safe(game_id, mgr)
+        if recorder and land_card_name:
+            recorder.record_play_land(
+                land_player, land_card_name,
+                land_turn, land_phase, land_step,
+            )
     return _ok(gs)
 
 
@@ -389,6 +400,7 @@ def cast(game_id: str, req: CastRequest) -> dict:
             raise _err("Commander not in command zone", "INVALID_ACTION")
         card_name = cmd_card.name
         tax = 2 * player_gs.commander_cast_count
+        cmd_mana_cost = f"{{{tax}}}{cmd_card.mana_cost or ''}" if tax else (cmd_card.mana_cost or "")
 
         # Temporarily move commander into hand so cast_spell can find it
         player_gs.command_zone[:] = [c for c in player_gs.command_zone if c.id != req.card_id]
@@ -414,11 +426,13 @@ def cast(game_id: str, req: CastRequest) -> dict:
             mgr.update(game_id, gs)
             recorder = _get_recorder_safe(game_id, mgr)
             if recorder:
-                recorder.record_cast(caster, card_name, req.targets, cast_turn, cast_phase, cast_step)
+                recorder.record_cast(caster, card_name, req.targets, cast_turn, cast_phase, cast_step,
+                                     mana_cost=cmd_mana_cost)
         return _ok(gs)
 
     card_obj = next((c for c in player_gs.hand if c.id == req.card_id), None)
     card_name = card_obj.name if card_obj else req.card_id
+    card_mana_cost = card_obj.mana_cost or "" if card_obj else ""
 
     try:
         gs = cast_spell(
@@ -438,7 +452,8 @@ def cast(game_id: str, req: CastRequest) -> dict:
         mgr.update(game_id, gs)
         recorder = _get_recorder_safe(game_id, mgr)
         if recorder:
-            recorder.record_cast(caster, card_name, req.targets, cast_turn, cast_phase, cast_step)
+            recorder.record_cast(caster, card_name, req.targets, cast_turn, cast_phase, cast_step,
+                                 mana_cost=card_mana_cost)
     return _ok(gs)
 
 
@@ -457,6 +472,7 @@ def activate(game_id: str, req: ActivateRequest) -> dict:
     activator = gs.priority_holder
     act_turn, act_phase, act_step = gs.turn, gs.phase.value, gs.step.value
     perm_name_for_log = req.permanent_id  # fallback; overwritten below if perm found
+    ability_text_for_log = ""
 
     try:
         from mtg_engine.card_data.ability_parser import parse_oracle_text, ActivatedAbility
@@ -475,6 +491,7 @@ def activate(game_id: str, req: ActivateRequest) -> dict:
             raise ValueError(f"Ability index {req.ability_index} out of range")
 
         ability = activated[req.ability_index]
+        ability_text_for_log = ability.raw_text
 
         # Pay tap cost
         player = get_player(gs, gs.priority_holder)
@@ -507,6 +524,7 @@ def activate(game_id: str, req: ActivateRequest) -> dict:
             recorder.record_activate(
                 activator, perm_name_for_log, req.ability_index, req.targets,
                 act_turn, act_phase, act_step,
+                ability_text=ability_text_for_log,
             )
     return _ok(gs)
 
@@ -720,16 +738,23 @@ def legal_actions(game_id: str) -> dict:
     GET /game/{game_id}/legal-actions — compute all legal actions. REQ-S05, REQ-6.3.
     Must respond in under 200ms (REQ-P01).
     """
+    from mtg_engine.export.store import get_export_store
     mgr = get_manager()
     gs = _get_gs(game_id)
     actions = _compute_legal_actions(gs)
+    actions_data = [a.model_dump() for a in actions]
+    # Record snapshot at each priority grant (needed for UUID→name resolution in game log).
+    store = get_export_store(game_id)
+    store.snapshots.record_snapshot(gs, actions_data)
     return {
         "data": {
             "priority_player": gs.priority_holder,
             "phase": gs.phase.value,
             "step": gs.step.value,
-            "legal_actions": [a.model_dump() for a in actions],
+            "legal_actions": actions_data,
             "is_paused": mgr.is_paused(game_id),
+            "is_game_over": gs.is_game_over,
+            "winner": gs.winner,
         }
     }
 
@@ -884,11 +909,42 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
             # Mana is tapped just-in-time by the game loop when the AI commits to casting.
             mana_cost = card.mana_cost or ""
             if can_pay_cost(player.mana_pool, mana_cost) or can_pay_cost(_total_available_pool(), mana_cost):
+                # Pre-select targets for spells that require a creature target.
+                # Auras: target a friendly creature (avoids unattached-aura SBA loop).
+                # "target creature gets +N/+N": target the best friendly creature.
+                spell_targets: list[str] = []
+                oracle_lower = (card.oracle_text or "").lower()
+                is_aura = "enchantment" in card.type_line.lower() and "enchant creature" in oracle_lower
+                is_pump = bool(_re_spell.search(r"target creature gets \+\d+/\+\d+", oracle_lower))
+                if is_aura or is_pump:
+                    # Prefer the strongest friendly creature (by power) that is untapped,
+                    # so auras/pumps go on the most impactful attacker.
+                    def _creature_priority(p) -> tuple:
+                        try:
+                            pw = int(p.card.power or "0")
+                        except (ValueError, TypeError):
+                            pw = 0
+                        return (not p.tapped, pw)  # untapped first, then highest power
+
+                    my_creatures = sorted(
+                        [p for p in gs.battlefield
+                         if p.controller == player_name
+                         and "creature" in p.card.type_line.lower()],
+                        key=_creature_priority, reverse=True,
+                    )
+                    if my_creatures:
+                        spell_targets = [my_creatures[0].id]
+                    else:
+                        any_creatures = [
+                            p.id for p in gs.battlefield
+                            if "creature" in p.card.type_line.lower()
+                        ]
+                        spell_targets = any_creatures[:1]
                 actions.append(LegalAction(
                     action_type="cast",
                     card_id=card.id,
                     card_name=card.name,
-                    valid_targets=[],
+                    valid_targets=spell_targets,
                     mana_options=[{k: v for k, v in {"mana_cost": mana_cost}.items()}],
                     description=f"Cast {card.name}",
                 ))
@@ -986,12 +1042,13 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
             p.id for p in gs.battlefield
             if any(k.startswith("goad_by_") for k in p.counters)
         }
+        # CR 302.6: summoning sickness only prevents attacking and using {T} abilities,
+        # NOT blocking. Tapped creatures also cannot block (CR 509.1a).
         potential_blockers = [
             p for p in gs.battlefield
             if p.controller == player_name
             and "creature" in p.card.type_line.lower()
             and not p.tapped
-            and not p.summoning_sick
             and p.id not in cannot_block_ids
             and p.id not in goaded_ids
         ]

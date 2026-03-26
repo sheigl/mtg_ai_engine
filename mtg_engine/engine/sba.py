@@ -214,6 +214,7 @@ def _effective_toughness(perm: Permanent) -> int | None:
         return None
     t += perm.counters.get("+1/+1", 0)
     t -= perm.counters.get("-1/-1", 0)
+    t += perm.toughness_bonus
     return t
 
 

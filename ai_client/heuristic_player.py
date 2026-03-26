@@ -14,16 +14,24 @@ _AURA_BOOST_RE = re.compile(r'enchanted creature gets \+(\d+)/\+(\d+)', re.IGNOR
 
 def _perm_power(perm: dict) -> int:
     try:
-        return int(perm.get("card", {}).get("power") or 0)
+        base = int(perm.get("card", {}).get("power") or 0)
     except (ValueError, TypeError):
-        return 0
+        base = 0
+    base += perm.get("power_bonus", 0)
+    counters = perm.get("counters", {})
+    base += counters.get("+1/+1", 0) - counters.get("-1/-1", 0)
+    return max(0, base)
 
 
 def _perm_toughness(perm: dict) -> int:
     try:
-        return int(perm.get("card", {}).get("toughness") or 0)
+        base = int(perm.get("card", {}).get("toughness") or 0)
     except (ValueError, TypeError):
-        return 0
+        base = 0
+    base += perm.get("toughness_bonus", 0)
+    counters = perm.get("counters", {})
+    base += counters.get("+1/+1", 0) - counters.get("-1/-1", 0)
+    return max(0, base)
 
 
 def _cmc_str(mana_cost: str) -> int:
@@ -395,11 +403,8 @@ class HeuristicPlayer:
                 if in_combat:
                     # During combat: highly valuable
                     score += 40.0
-                elif has_attacker and phase == "precombat_main":
-                    # Pre-combat main phase with a ready attacker: worth holding for combat
-                    score += 15.0
                 else:
-                    # Upkeep, draw, or other non-combat steps — wasteful to cast pump now
+                    # Main phase or other non-combat steps — never cast pump spells here
                     return -50.0
 
             if "creature" in type_line:
@@ -807,11 +812,11 @@ class HeuristicPlayer:
             return 1000.0
 
         # Score favourable trades: our blocker kills their attacker and nets positive CMC
+        # CR 302.6: summoning sickness doesn't prevent blocking — only tapped = can't block
         my_creatures = [
             p for p in all_perms
             if p.get("controller") == my_name
             and not p.get("tapped")
-            and not p.get("summoning_sick")
             and "creature" in (p.get("card", {}).get("type_line") or "").lower()
         ]
 

@@ -21,6 +21,26 @@ _DOUBLE_SEPARATOR = "═" * 40
 _MANA_ADD_RE = re.compile(r'Add\s+\{')
 
 
+def _pool_can_pay(pool: dict, mana_cost: str) -> bool:
+    """Return True if pool dict can pay the given mana cost string.
+
+    Handles colored ({W}/{U}/{B}/{R}/{G}/{C}) and generic ({N}) symbols.
+    X and hybrid are treated as 0 (conservative).
+    """
+    pool = dict(pool)
+    generic = 0
+    for sym in re.findall(r'\{([^}]+)\}', mana_cost):
+        if sym in ('W', 'U', 'B', 'R', 'G', 'C'):
+            if pool.get(sym, 0) <= 0:
+                return False
+            pool[sym] = pool[sym] - 1
+        elif sym.isdigit():
+            generic += int(sym)
+        # X, S, hybrid → treat as 0
+    total_remaining = sum(max(0, pool.get(c, 0)) for c in ('W', 'U', 'B', 'R', 'G', 'C'))
+    return total_remaining >= generic
+
+
 def _parse_mana_cost_to_payment(mana_cost: str, mana_pool: dict) -> dict:
     """
     Convert a mana cost string like "{1}{G}" into a payment dict like {"G": 1, "W": 1}.
@@ -156,6 +176,23 @@ def print_game_summary(summary: GameSummary) -> None:
     print(_DOUBLE_SEPARATOR)
 
 
+def _format_mana_pool(pool: dict) -> str:
+    syms = []
+    for sym in ("W", "U", "B", "R", "G", "C"):
+        n = pool.get(sym, 0)
+        if n:
+            syms.extend([f"{{{sym}}}"] * n)
+    return "".join(syms) or "empty"
+
+
+def _has_floating_mana(gs: dict, player_name: str) -> bool:
+    """Return True if the named player has mana floating in their pool."""
+    for p in gs.get("players", []):
+        if p.get("name") == player_name:
+            return any(v > 0 for v in p.get("mana_pool", {}).values())
+    return False
+
+
 def _format_gs_summary(gs: dict) -> str:
     """Format a concise game-state summary for the observer AI prompt."""
     lines = []
@@ -166,9 +203,11 @@ def _format_gs_summary(gs: dict) -> str:
             for perm in gs.get("battlefield", [])
             if perm.get("controller") == p.get("name")
         ]
+        pool_str = _format_mana_pool(p.get("mana_pool", {}))
         lines.append(
             f"{p.get('name')}: life={p.get('life', '?')}, hand={hand_count} cards, "
-            f"battlefield=[{', '.join(bf) if bf else 'empty'}]"
+            f"battlefield=[{', '.join(bf) if bf else 'empty'}], "
+            f"floating_mana={pool_str}"
         )
     return "\n".join(lines)
 
@@ -381,10 +420,16 @@ class GameLoop:
                 (p.get("mana_pool", {}) for p in gs.get("players", []) if p.get("name") == priority_player),
                 {},
             )
-            # Just-in-time mana tapping: only tap when the AI has decided to cast.
-            # This avoids wasted taps when the AI would pass anyway.
+            # Just-in-time mana tapping: only tap when the AI has decided to cast,
+            # and only tap exactly enough to pay the spell's cost.
             if chosen_action.get("action_type") in ("cast", "cast_commander"):
-                legal_data = self._auto_tap_mana(game_id, legal_data)
+                mana_options = chosen_action.get("mana_options", [{}])
+                _spell_cost = (mana_options[0].get("mana_cost", "") if mana_options else "")
+                if chosen_action.get("action_type") == "cast_commander":
+                    _tax = (mana_options[0].get("commander_tax", 0) if mana_options else 0)
+                    if _tax:
+                        _spell_cost = f"{{{_tax}}}{_spell_cost}"
+                legal_data = self._auto_tap_mana(game_id, legal_data, _spell_cost)
                 # Re-fetch mana pool after tapping
                 priority_pool = next(
                     (p.get("mana_pool", {}) for p in gs.get("players", []) if p.get("name") == priority_player),
@@ -421,10 +466,13 @@ class GameLoop:
             decision_count += 1
 
             # Observer AI: analyze all non-pass actions — heuristic and LLM alike.
+            # Also analyze "pass" when the player has floating mana (wasted mana).
             # Runs in a background thread but the game loop JOINS (waits) for it to
             # finish before advancing, so commentary is always complete before the
             # next action. The user can click Skip to cancel the analysis early.
-            if self._observer and self._forwarder and chosen_action.get("action_type") != "pass":
+            _action_type = chosen_action.get("action_type")
+            _should_observe = _action_type != "pass" or _has_floating_mana(gs, priority_player)
+            if self._observer and self._forwarder and _should_observe:
                 gs_summary = _format_gs_summary(gs)
                 obs_entry_id = self._forwarder.new_entry_id()
                 stop_event = _skip_register(obs_entry_id)
@@ -527,13 +575,29 @@ class GameLoop:
         print_game_summary(summary)
         return summary
 
-    def _auto_tap_mana(self, game_id: str, legal_data: dict) -> dict:
+    def _auto_tap_mana(self, game_id: str, legal_data: dict, mana_cost: str = "") -> dict:
         """
-        Silently activate all available mana-producing abilities before the AI decides.
-        Returns updated legal_data (with refreshed legal_actions reflecting the full mana pool).
+        Tap exactly enough mana to pay `mana_cost`, then stop.
+        If mana_cost is empty, taps all available mana sources (legacy behaviour).
+        Returns updated legal_data reflecting the new mana pool.
         Mana abilities are detected by "Add {" in their description.
         """
+        priority_player = legal_data.get("priority_player", "")
         while True:
+            # Stop as soon as the current pool can already pay the target cost.
+            if mana_cost and priority_player:
+                try:
+                    gs_now = self._engine.get_game_state(game_id)
+                    pool_dict = next(
+                        (p.get("mana_pool", {}) for p in gs_now.get("players", [])
+                         if p.get("name") == priority_player),
+                        {},
+                    )
+                    if _pool_can_pay(pool_dict, mana_cost):
+                        break
+                except EngineError:
+                    pass
+
             legal_actions = legal_data.get("legal_actions", [])
             mana_acts = [
                 a for a in legal_actions

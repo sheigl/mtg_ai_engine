@@ -1,6 +1,6 @@
 # mtg_ai_engine Development Guidelines
 
-Auto-generated from all feature plans. Last updated: 2026-03-24
+Auto-generated from all feature plans. Last updated: 2026-03-25
 
 ## Active Technologies
 - Python 3.11 (matches existing codebase) + `httpx` (HTTP to engine API), `openai` (OpenAI-compatible LLM client), `argparse` (stdlib CLI parsing) (008-ai-cli-client)
@@ -19,6 +19,8 @@ Auto-generated from all feature plans. Last updated: 2026-03-24
 - In-memory game state (existing); no persistence changes (015-ui-game-creator)
 - Python 3.11 (backend, unchanged) + TypeScript 5.x (frontend) + React 18, TanStack Query v5 (all existing — no new dependencies) (016-scryfall-card-art)
 - N/A — browser HTTP cache for images (Scryfall CDN sets 7-day cache headers) (016-scryfall-card-art)
+- Python 3.11 + FastAPI, Pydantic v2, httpx (all existing — no new dependencies required) (017-forge-ai-parity)
+- In-memory game state (existing GameManager); AIMemory is per-game in-process only (017-forge-ai-parity)
 
 - Python 3.11 + FastAPI, Pydantic v2, standard `logging` module (007-play-by-play-log)
 
@@ -38,9 +40,9 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.11: Follow standard conventions
 
 ## Recent Changes
+- 017-forge-ai-parity: Added Python 3.11 + FastAPI, Pydantic v2, httpx (all existing — no new dependencies required)
 - 016-scryfall-card-art: Added Python 3.11 (backend, unchanged) + TypeScript 5.x (frontend) + React 18, TanStack Query v5 (all existing — no new dependencies)
 - 015-ui-game-creator: Added Python 3.11 (backend) + TypeScript 5.x (frontend) + FastAPI, Pydantic v2, httpx, openai (all existing); React 18, TanStack Query v5 (all existing) — no new dependencies
-- 014-rules-engine-completeness: Added Python 3.11 + FastAPI, Pydantic v2, pytest (all existing — no new dependencies)
 
 
 <!-- MANUAL ADDITIONS START -->

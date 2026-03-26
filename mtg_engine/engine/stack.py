@@ -177,6 +177,20 @@ def resolve_top(game_state: GameState) -> GameState:
                 perm.attached_to = target_id
                 if perm.id not in target_perm.attachments:
                     target_perm.attachments.append(perm.id)
+                # Apply aura's continuous P/T bonus and keyword grants to the enchanted creature.
+                # Reversed in zones.move_permanent_to_zone when the aura leaves.
+                pt_match = re.search(r"enchanted creature gets? \+(\d+)/\+(\d+)", oracle)
+                if pt_match:
+                    target_perm.power_bonus += int(pt_match.group(1))
+                    target_perm.toughness_bonus += int(pt_match.group(2))
+                # Grant keywords (e.g. Rancor → trample)
+                for kw in ("trample", "flying", "lifelink", "deathtouch", "first strike",
+                           "double strike", "haste", "vigilance", "reach", "hexproof",
+                           "indestructible", "menace"):
+                    if kw in oracle and kw not in target_perm.card.keywords:
+                        target_perm.card = target_perm.card.model_copy(
+                            update={"keywords": list(target_perm.card.keywords) + [kw]}
+                        )
     elif "instant" in type_lower or "sorcery" in type_lower:
         # Non-permanent spell → resolve effect
         game_state = _apply_spell_effect(game_state, stack_obj)
@@ -247,6 +261,18 @@ def _apply_spell_effect(game_state: GameState, stack_obj: StackObject) -> GameSt
         damage = int(dmg_match.group(1))
         for target_id in stack_obj.targets:
             game_state = _deal_damage(game_state, target_id, damage, card)
+
+    # Pump effects: "target creature gets +N/+M until end of turn" (Giant Growth, etc.)
+    pump_match = re.search(r"target creature gets \+(\d+)/\+(\d+) until end of turn", oracle)
+    if pump_match and stack_obj.targets:
+        p_bonus = int(pump_match.group(1))
+        t_bonus = int(pump_match.group(2))
+        for target_id in stack_obj.targets:
+            target_perm = next((p for p in game_state.battlefield if p.id == target_id), None)
+            if target_perm:
+                target_perm.power_bonus += p_bonus
+                target_perm.toughness_bonus += t_bonus
+                logger.info("%s: +%d/+%d applied to %s", card.name, p_bonus, t_bonus, target_perm.card.name)
 
     # Counter spell: "counter target spell"
     if "counter target spell" in oracle and stack_obj.targets:

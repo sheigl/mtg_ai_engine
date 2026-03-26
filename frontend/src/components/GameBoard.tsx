@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useGameState } from '../hooks/useGameState'
 import { PlayerZone } from './PlayerZone'
@@ -14,20 +15,37 @@ function getPlayerPermanents(gs: GameState, playerName: string) {
   return gs.battlefield.filter(p => p.controller === playerName)
 }
 
-function GameOverOverlay({ gs }: { gs: GameState }) {
+function GameOverOverlay({
+  gs,
+  gameId,
+  onDismiss,
+}: {
+  gs: GameState
+  gameId: string
+  onDismiss: () => void
+}) {
   const navigate = useNavigate()
   if (!gs.is_game_over) return null
 
+  function downloadLog() {
+    const a = document.createElement('a')
+    a.href = `/export/${gameId}/game-log`
+    a.download = `game-log-${gameId}.txt`
+    a.click()
+  }
+
   return (
-    <div className="game-over-overlay" onClick={() => navigate('/')}>
-      <div className="game-over-box" onClick={e => e.stopPropagation()}>
+    <div className="game-over-overlay">
+      <div className="game-over-box">
         <div className="game-over-title">Game Over</div>
         <div className="game-over-winner">
           {gs.winner === 'draw' ? 'Draw!' : `${gs.winner} wins!`}
         </div>
-        <button style={{ marginTop: '1rem' }} onClick={() => navigate('/')}>
-          Back to Games
-        </button>
+        <div className="game-over-actions">
+          <button onClick={onDismiss}>View Board</button>
+          <button onClick={downloadLog}>↓ Download Log</button>
+          <button onClick={() => navigate('/')}>← Back to Games</button>
+        </div>
       </div>
     </div>
   )
@@ -37,6 +55,7 @@ export function GameBoard() {
   const { gameId } = useParams<{ gameId: string }>()
   const { data: gs, isLoading, isError, error } = useGameState(gameId)
   const navigate = useNavigate()
+  const [gameOverDismissed, setGameOverDismissed] = useState(false)
 
   if (isError) {
     const isNotFound = error instanceof Error && error.message === 'GAME_NOT_FOUND'
@@ -66,13 +85,21 @@ export function GameBoard() {
   const p2Permanents = getPlayerPermanents(gs, player2.name)
   const isCommander = gs.format === 'commander'
 
+  function downloadGameLog() {
+    const a = document.createElement('a')
+    a.href = `/export/${gameId}/game-log`
+    a.download = `game-log-${gameId}.txt`
+    a.click()
+  }
+
   return (
     <div className="game-board with-sidebar">
       <ConnectionStatus isError={false} isLoading={false} />
 
-      <button className="back-button" onClick={() => navigate('/')}>
-        ← Games
-      </button>
+      <div className="top-left-buttons">
+        <button onClick={() => navigate('/')}>← Games</button>
+        <button onClick={downloadGameLog} title="Download turn-by-turn game log">↓ Download Log</button>
+      </div>
 
       {/* Opponent (Player 2) info */}
       <PlayerZone
@@ -114,7 +141,9 @@ export function GameBoard() {
       </div>
 
       {/* Game over overlay */}
-      <GameOverOverlay gs={gs} />
+      {!gameOverDismissed && (
+        <GameOverOverlay gs={gs} gameId={gs.game_id} onDismiss={() => setGameOverDismissed(true)} />
+      )}
 
       {/* Debug Panel */}
       <DebugPanel gameId={gs.game_id} isGameOver={gs.is_game_over} debugEnabled={gs.debug_enabled} />
