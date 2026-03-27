@@ -6,7 +6,7 @@ from .ai_player import AIPlayer
 from .client import EngineClient
 from .game_loop import GameLoop
 from .heuristic_player import HeuristicPlayer
-from .models import GameConfig, PlayerConfig
+from .models import AiPersonalityProfile, GameConfig, PlayerConfig
 from .observer import ObserverAI
 from .prompts import DEFAULT_COMMANDER_DECK, DEFAULT_DECK
 
@@ -153,6 +153,15 @@ def build_parser() -> argparse.ArgumentParser:
             "'heuristic' uses a local score-based engine with no API calls."
         ),
     )
+    parser.add_argument(
+        "--personality",
+        metavar="PROFILE",
+        default="default",
+        help=(
+            "AI personality profile for heuristic players: 'default' or 'aggro' "
+            "(default: default). Applies to both players unless overridden."
+        ),
+    )
     return parser
 
 
@@ -164,9 +173,16 @@ def main() -> None:
     players: list[PlayerConfig] = args.players or []
     # Assign player types from --player1-type / --player2-type flags
     player_types = [args.player1_type, args.player2_type]
+    # Resolve personality profile (US17, T056)
+    _personality_name = getattr(args, "personality", "default")
+    if _personality_name == "aggro":
+        _personality = AiPersonalityProfile.AGGRO  # type: ignore[attr-defined]
+    else:
+        _personality = AiPersonalityProfile.DEFAULT  # type: ignore[attr-defined]
     for i, pc in enumerate(players):
         if i < len(player_types):
             pc.player_type = player_types[i]
+        pc.personality = _personality
 
     if len(players) < 2:
         print(

@@ -7,6 +7,7 @@ from fastapi.responses import PlainTextResponse
 from mtg_engine.api.game_manager import get_manager
 from mtg_engine.export.store import get_export_store, delete_export_store
 from mtg_engine.export.outcome import build_outcome
+from mtg_engine.export.game_log import build_game_log
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/export", tags=["export"])
@@ -36,6 +37,16 @@ def export_rules_qa(game_id: str) -> dict:
     """GET /export/{game_id}/rules-qa → JSON array of Q&A pairs."""
     store = _get_store(game_id)
     return {"data": store.rules_qa.to_json()}
+
+
+@router.get("/{game_id}/game-log")
+def export_game_log(game_id: str) -> PlainTextResponse:
+    """GET /export/{game_id}/game-log → human-readable turn-by-turn game log."""
+    store = _get_store(game_id)
+    transcript = store.transcript.to_json()
+    snapshots = [s.model_dump() for s in store.snapshots.get_all()]
+    log_text = build_game_log(transcript, snapshots, game_id=game_id)
+    return PlainTextResponse(log_text, media_type="text/plain")
 
 
 @router.get("/{game_id}/outcome")

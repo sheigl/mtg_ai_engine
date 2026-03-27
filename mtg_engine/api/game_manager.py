@@ -89,6 +89,7 @@ class GameManager:
             players=[p1, p2],
             format=format,
             debug_enabled=debug,
+            mulligan_phase_active=True,
         )
         gs.refresh_hash()
         self._games[game_id] = gs
