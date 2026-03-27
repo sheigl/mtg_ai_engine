@@ -70,6 +70,12 @@ class EngineClient:
             "order_blockers": "/order-blockers",
             "assign_combat_damage": "/assign-combat-damage",
             "put_trigger": "/put-trigger",
+            # New endpoints (017-forge-ai-parity)
+            "mulligan": "/mulligan",
+            "activate-loyalty": "/activate-loyalty",
+            "cascade-choice": "/cascade-choice",
+            "choice": "/choice",
+            "copy_spell": "/copy-spell",
         }
         path_suffix = endpoint_map.get(action_type)
         if path_suffix is None:

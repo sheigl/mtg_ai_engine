@@ -18,6 +18,9 @@ _OBSERVER_SYSTEM = (
     "that were available at that moment. "
     "Rate the play as one of: good, acceptable, suboptimal. "
     "If suboptimal, you MUST name a specific better alternative from the legal actions list. "
+    "Common suboptimal patterns to flag: tapping lands or producing mana without casting anything "
+    "(mana float / wasted mana), casting combat tricks (pump spells) in the main phase instead of "
+    "holding for combat, attacking into unfavorable blocks, not using available mana productively. "
     "Respond with valid JSON only: "
     "{\"rating\": \"good|acceptable|suboptimal\", \"explanation\": \"<2-3 sentences>\", \"alternative\": \"<action description or null>\"}"
 )

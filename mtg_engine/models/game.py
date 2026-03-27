@@ -82,6 +82,12 @@ class Permanent(BaseModel):
     is_face_down: bool = False
     timestamp: float = 0.0  # for layer system ordering (CR 613.7)
     copy_of_permanent_id: Optional[str] = None  # layer 1 copy effects (014)
+    # Temporary P/T bonuses from "until end of turn" effects (layer 7c)
+    power_bonus: int = 0
+    toughness_bonus: int = 0
+    # Planeswalker loyalty tracking (017-forge-ai-parity)
+    loyalty: int = 0
+    loyalty_activated_this_turn: bool = False
 
 
 class StackObject(BaseModel):
@@ -193,6 +199,12 @@ class GameState(BaseModel):
     prevent_all_combat_damage: bool = False
     phase_skip_flags: dict[str, bool] = Field(default_factory=dict)
     debug_enabled: bool = False
+    # Mulligan phase (017-forge-ai-parity)
+    mulligan_phase_active: bool = False
+    hands_mulliganed: dict[str, int] = Field(default_factory=dict)
+    players_kept: list[str] = Field(default_factory=list)
+    # Cascade pending choice (017-forge-ai-parity)
+    pending_cascade: Optional[dict] = None
 
     def compute_hash(self) -> str:
         """Compute deterministic hash of state, excluding state_hash itself. REQ-API05"""

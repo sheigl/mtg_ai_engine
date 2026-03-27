@@ -9,7 +9,7 @@ from .ai_player import AIPlayer
 from .client import EngineClient, EngineError
 from .heuristic_player import HeuristicPlayer, compute_block_declarations
 from .debug_forwarder import DebugForwarder
-from .models import GameConfig, GameSummary, TurnRecord
+from .models import AIMemory, GameConfig, GameSummary, TurnRecord
 from .observer import ObserverAI
 from .prompts import build_game_state_prompt
 from mtg_engine.export.observer_skip import register as _skip_register, unregister as _skip_unregister
@@ -19,6 +19,26 @@ logger = logging.getLogger(__name__)
 _SEPARATOR = "─" * 41
 _DOUBLE_SEPARATOR = "═" * 40
 _MANA_ADD_RE = re.compile(r'Add\s+\{')
+
+
+def _pool_can_pay(pool: dict, mana_cost: str) -> bool:
+    """Return True if pool dict can pay the given mana cost string.
+
+    Handles colored ({W}/{U}/{B}/{R}/{G}/{C}) and generic ({N}) symbols.
+    X and hybrid are treated as 0 (conservative).
+    """
+    pool = dict(pool)
+    generic = 0
+    for sym in re.findall(r'\{([^}]+)\}', mana_cost):
+        if sym in ('W', 'U', 'B', 'R', 'G', 'C'):
+            if pool.get(sym, 0) <= 0:
+                return False
+            pool[sym] = pool[sym] - 1
+        elif sym.isdigit():
+            generic += int(sym)
+        # X, S, hybrid → treat as 0
+    total_remaining = sum(max(0, pool.get(c, 0)) for c in ('W', 'U', 'B', 'R', 'G', 'C'))
+    return total_remaining >= generic
 
 
 def _parse_mana_cost_to_payment(mana_cost: str, mana_pool: dict) -> dict:
@@ -72,17 +92,35 @@ def _map_action_to_request(action: dict, mana_pool: dict | None = None) -> tuple
         mana_options = action.get("mana_options", [{}])
         mana_cost_str = mana_options[0].get("mana_cost", "") if mana_options else ""
         mana_payment = _parse_mana_cost_to_payment(mana_cost_str, mana_pool or {})
-        return "cast", {
+        # AI scores set action["chosen_target"] for targeted spells; use it as targets[0]
+        chosen_target = action.get("chosen_target")
+        if chosen_target:
+            targets = [chosen_target]
+        elif action.get("sacrifice_target"):
+            targets = [action["sacrifice_target"]]
+        else:
+            targets = action.get("valid_targets", [])
+        payload: dict = {
             "card_id": action.get("card_id", ""),
-            "targets": action.get("valid_targets", []),
+            "targets": targets,
             "mana_payment": mana_payment,
         }
+        if action.get("alternative_cost"):
+            payload["alternative_cost"] = action["alternative_cost"]
+        if action.get("modes_chosen"):
+            payload["modes_chosen"] = action["modes_chosen"]
+        if action.get("from_graveyard"):
+            payload["from_graveyard"] = True
+        return "cast", payload
 
     if action_type == "activate":
+        # Equipment equip target wiring (US10, T037)
+        equip_target = action.get("equip_target")
+        activate_targets = [equip_target] if equip_target else []
         return "activate", {
             "permanent_id": action.get("permanent_id", ""),
             "ability_index": action.get("ability_index", 0),
-            "targets": [],
+            "targets": activate_targets,
             "mana_payment": {},
         }
 
@@ -117,6 +155,40 @@ def _map_action_to_request(action: dict, mana_pool: dict | None = None) -> tuple
             "targets": [],
             "mana_payment": {},
             "from_command_zone": True,
+        }
+
+    if action_type == "activate_loyalty":
+        return "activate-loyalty", {
+            "permanent_id": action.get("permanent_id", ""),
+            "ability_index": action.get("loyalty_ability_index", 0),
+            "targets": action.get("valid_targets", []),
+        }
+
+    if action_type == "copy_spell":
+        return "copy_spell", {
+            "source_permanent_id": action.get("permanent_id", ""),
+            "stack_object_id": action.get("stack_object_id", ""),
+            "targets": action.get("valid_targets", []),
+        }
+
+    if action_type == "choice":
+        return "choice", {
+            "choice_id": action.get("choice_id", ""),
+            "selection": action.get("selection", "top"),
+        }
+
+    if action_type == "cascade_choice":
+        return "cascade-choice", {
+            "player_name": action.get("player_name", ""),
+            "card_id": action.get("cascade_card_id", ""),
+            "cast": True,  # AI scores determine this — if chosen it means cast
+        }
+
+    if action_type == "declare_mulligan":
+        keep = "keep" in (action.get("description") or "").lower()
+        return "mulligan", {
+            "player_name": action.get("player_name", ""),
+            "keep": keep,
         }
 
     # Fallback: pass
@@ -156,6 +228,23 @@ def print_game_summary(summary: GameSummary) -> None:
     print(_DOUBLE_SEPARATOR)
 
 
+def _format_mana_pool(pool: dict) -> str:
+    syms = []
+    for sym in ("W", "U", "B", "R", "G", "C"):
+        n = pool.get(sym, 0)
+        if n:
+            syms.extend([f"{{{sym}}}"] * n)
+    return "".join(syms) or "empty"
+
+
+def _has_floating_mana(gs: dict, player_name: str) -> bool:
+    """Return True if the named player has mana floating in their pool."""
+    for p in gs.get("players", []):
+        if p.get("name") == player_name:
+            return any(v > 0 for v in p.get("mana_pool", {}).values())
+    return False
+
+
 def _format_gs_summary(gs: dict) -> str:
     """Format a concise game-state summary for the observer AI prompt."""
     lines = []
@@ -166,9 +255,11 @@ def _format_gs_summary(gs: dict) -> str:
             for perm in gs.get("battlefield", [])
             if perm.get("controller") == p.get("name")
         ]
+        pool_str = _format_mana_pool(p.get("mana_pool", {}))
         lines.append(
             f"{p.get('name')}: life={p.get('life', '?')}, hand={hand_count} cards, "
-            f"battlefield=[{', '.join(bf) if bf else 'empty'}]"
+            f"battlefield=[{', '.join(bf) if bf else 'empty'}], "
+            f"floating_mana={pool_str}"
         )
     return "\n".join(lines)
 
@@ -196,6 +287,8 @@ class GameLoop:
         self._player_map: dict[str, AIPlayer] = {
             config.players[i].name: players[i] for i in range(len(players))
         }
+        # Per-player AIMemory instances (one per game, created in run())
+        self._memories: dict[str, AIMemory] = {}
 
     def run(self) -> GameSummary:
         """
@@ -221,8 +314,16 @@ class GameLoop:
         if self._debug or self._observer:
             self._forwarder = DebugForwarder(self._config.engine_url, game_id)
 
+        # Instantiate one AIMemory per AI player (heuristic players only)
+        self._memories = {
+            pc.name: AIMemory()
+            for pc in self._config.players
+            if pc.player_type == "heuristic"
+        }
+
         decision_count = 0
         turn_number = 1
+        _last_turn_by_player: dict[str, int] = {}
         termination_reason = "game_over"
         winner = None
 
@@ -291,6 +392,13 @@ class GameLoop:
 
             turn_number = gs.get("turn", 1)
 
+            # Call memory.new_turn() at the start of each new turn for this player
+            if priority_player in self._memories:
+                prev_turn = _last_turn_by_player.get(priority_player, 0)
+                if turn_number != prev_turn:
+                    self._memories[priority_player].new_turn()
+                    _last_turn_by_player[priority_player] = turn_number
+
             # Safety: max turns is measured in game turns, not individual decisions
             if self._config.max_turns > 0 and turn_number > self._config.max_turns:
                 termination_reason = "max_turns_reached"
@@ -342,10 +450,12 @@ class GameLoop:
             else:
                 ai_player._debug_callback = None
 
+            player_memory = self._memories.get(priority_player)
             chosen_index, reasoning = ai_player.decide(
                 prompt,
                 legal_actions=legal_actions,
                 game_state={**gs, "priority_player": priority_player, "phase": phase, "step": step},
+                **({"memory": player_memory} if isinstance(ai_player, HeuristicPlayer) else {}),
             )
             fallback_used = reasoning == "(AI endpoint unreachable)"
 
@@ -381,10 +491,16 @@ class GameLoop:
                 (p.get("mana_pool", {}) for p in gs.get("players", []) if p.get("name") == priority_player),
                 {},
             )
-            # Just-in-time mana tapping: only tap when the AI has decided to cast.
-            # This avoids wasted taps when the AI would pass anyway.
+            # Just-in-time mana tapping: only tap when the AI has decided to cast,
+            # and only tap exactly enough to pay the spell's cost.
             if chosen_action.get("action_type") in ("cast", "cast_commander"):
-                legal_data = self._auto_tap_mana(game_id, legal_data)
+                mana_options = chosen_action.get("mana_options", [{}])
+                _spell_cost = (mana_options[0].get("mana_cost", "") if mana_options else "")
+                if chosen_action.get("action_type") == "cast_commander":
+                    _tax = (mana_options[0].get("commander_tax", 0) if mana_options else 0)
+                    if _tax:
+                        _spell_cost = f"{{{_tax}}}{_spell_cost}"
+                legal_data = self._auto_tap_mana(game_id, legal_data, _spell_cost)
                 # Re-fetch mana pool after tapping
                 priority_pool = next(
                     (p.get("mana_pool", {}) for p in gs.get("players", []) if p.get("name") == priority_player),
@@ -403,7 +519,15 @@ class GameLoop:
             if action_type == "declare_attackers" and isinstance(ai_player, HeuristicPlayer):
                 gs_with_priority = {**gs, "priority_player": priority_player}
                 selected_ids = ai_player.select_attackers(chosen_action, gs_with_priority, priority_player)
-                defending_player = chosen_action.get("card_name", "")
+                # US20 T064: use _select_attack_direction for multiplayer targeting
+                total_power = sum(
+                    int(p.get("card", {}).get("power") or 0)
+                    for p in gs.get("battlefield", [])
+                    if p.get("id") in selected_ids
+                )
+                defending_player = ai_player._select_attack_direction(
+                    gs_with_priority, priority_player, total_power
+                ) or chosen_action.get("card_name", "")
                 payload["attack_declarations"] = [
                     {"attacker_id": aid, "defending_id": defending_player}
                     for aid in selected_ids
@@ -421,10 +545,13 @@ class GameLoop:
             decision_count += 1
 
             # Observer AI: analyze all non-pass actions — heuristic and LLM alike.
+            # Also analyze "pass" when the player has floating mana (wasted mana).
             # Runs in a background thread but the game loop JOINS (waits) for it to
             # finish before advancing, so commentary is always complete before the
             # next action. The user can click Skip to cancel the analysis early.
-            if self._observer and self._forwarder and chosen_action.get("action_type") != "pass":
+            _action_type = chosen_action.get("action_type")
+            _should_observe = _action_type != "pass" or _has_floating_mana(gs, priority_player)
+            if self._observer and self._forwarder and _should_observe:
                 gs_summary = _format_gs_summary(gs)
                 obs_entry_id = self._forwarder.new_entry_id()
                 stop_event = _skip_register(obs_entry_id)
@@ -527,13 +654,29 @@ class GameLoop:
         print_game_summary(summary)
         return summary
 
-    def _auto_tap_mana(self, game_id: str, legal_data: dict) -> dict:
+    def _auto_tap_mana(self, game_id: str, legal_data: dict, mana_cost: str = "") -> dict:
         """
-        Silently activate all available mana-producing abilities before the AI decides.
-        Returns updated legal_data (with refreshed legal_actions reflecting the full mana pool).
+        Tap exactly enough mana to pay `mana_cost`, then stop.
+        If mana_cost is empty, taps all available mana sources (legacy behaviour).
+        Returns updated legal_data reflecting the new mana pool.
         Mana abilities are detected by "Add {" in their description.
         """
+        priority_player = legal_data.get("priority_player", "")
         while True:
+            # Stop as soon as the current pool can already pay the target cost.
+            if mana_cost and priority_player:
+                try:
+                    gs_now = self._engine.get_game_state(game_id)
+                    pool_dict = next(
+                        (p.get("mana_pool", {}) for p in gs_now.get("players", [])
+                         if p.get("name") == priority_player),
+                        {},
+                    )
+                    if _pool_can_pay(pool_dict, mana_cost):
+                        break
+                except EngineError:
+                    pass
+
             legal_actions = legal_data.get("legal_actions", [])
             mana_acts = [
                 a for a in legal_actions

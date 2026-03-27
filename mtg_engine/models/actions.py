@@ -35,6 +35,7 @@ class CastRequest(BaseModel):
     modes_chosen: list[int] = Field(default_factory=list)
     dry_run: bool = False
     from_command_zone: bool = False
+    from_graveyard: bool = False
 
 
 class ActivateRequest(BaseModel):
@@ -105,6 +106,32 @@ class LegalAction(BaseModel):
     valid_targets: list[str] = Field(default_factory=list)
     mana_options: list[dict] = Field(default_factory=list)
     description: Optional[str] = None
+    # Extended fields for new action types (017-forge-ai-parity)
+    loyalty_ability_index: Optional[int] = None   # activate_loyalty: which ability index
+    cascade_card_id: Optional[str] = None          # cascade_choice: the card being offered
+    from_graveyard: bool = False                   # cast originating from graveyard zone
+
+
+# --- New request models for Forge AI parity (017) ---
+
+class MulliganRequest(BaseModel):
+    """London mulligan decision request."""
+    player_name: str
+    keep: bool  # True = keep hand, False = discard and draw hand_size-1
+
+
+class ActivateLoyaltyRequest(BaseModel):
+    """Activate a planeswalker loyalty ability."""
+    permanent_id: str    # planeswalker permanent ID
+    ability_index: int   # 0 = first ability (usually +), 1 = second, 2 = ultimate
+    targets: list[str] = Field(default_factory=list)
+
+
+class CascadeChoiceRequest(BaseModel):
+    """Resolve a cascade trigger — cast the offered card or skip."""
+    player_name: str
+    card_id: str    # the cascaded card being offered
+    cast: bool      # True = cast it for free, False = exile it and skip
 
 
 class CopySpellRequest(BaseModel):

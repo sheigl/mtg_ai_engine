@@ -67,6 +67,8 @@ def begin_step(game_state: GameState) -> GameState:
             active.hand.pop()  # simplified: discard last card (full impl requires player choice)
         for perm in game_state.battlefield:
             perm.damage_marked = 0
+            perm.power_bonus = 0
+            perm.toughness_bonus = 0
         # Clear mana pools at cleanup
         for p in game_state.players:
             p.mana_pool = ManaPool()
@@ -93,6 +95,13 @@ def advance_step(game_state: GameState) -> GameState:
     Applies start-of-step effects and grants priority. REQ-T01, REQ-S01.
     """
     current = (game_state.phase, game_state.step)
+
+    # CR 511.3: Clear combat state when leaving the End of Combat step.
+    # Without this, old attackers persist into the next turn and deal damage again.
+    if current == (Phase.COMBAT, Step.END_OF_COMBAT):
+        from mtg_engine.engine.combat import end_combat as _end_combat
+        game_state = _end_combat(game_state)
+
     try:
         idx = TURN_SEQUENCE.index(current)
     except ValueError:

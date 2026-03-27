@@ -180,9 +180,32 @@ def move_permanent_to_zone(
     # Clean up attachment references: if this permanent was attached to something,
     # remove it from that permanent's attachments list
     if permanent.attached_to:
+        import re as _re
         host = next((p for p in game_state.battlefield if p.id == permanent.attached_to), None)
         if host and permanent.id in host.attachments:
             host.attachments[:] = [a for a in host.attachments if a != permanent.id]
+        # Reverse aura P/T bonus and keyword grants when the aura leaves.
+        if host and "aura" in permanent.card.type_line.lower():
+            oracle_lower = (permanent.card.oracle_text or "").lower()
+            pt_match = _re.search(r"enchanted creature gets? \+(\d+)/\+(\d+)", oracle_lower)
+            if pt_match:
+                host.power_bonus -= int(pt_match.group(1))
+                host.toughness_bonus -= int(pt_match.group(2))
+            # Remove keywords that this aura granted (only remove if not intrinsic to the host)
+            for kw in ("trample", "flying", "lifelink", "deathtouch", "first strike",
+                       "double strike", "haste", "vigilance", "reach", "hexproof",
+                       "indestructible", "menace"):
+                if kw in oracle_lower and kw in host.card.keywords:
+                    # Only remove if no other attached aura also grants this keyword
+                    other_aura_grants = any(
+                        kw in (a_perm.card.oracle_text or "").lower()
+                        for a_perm in game_state.battlefield
+                        if a_perm.id != permanent.id and a_perm.attached_to == host.id
+                    )
+                    if not other_aura_grants:
+                        host.card = host.card.model_copy(
+                            update={"keywords": [k for k in host.card.keywords if k != kw]}
+                        )
 
     # Move card to destination zone (REQ-G08: preserve library order)
     if to_zone in ("hand", "library", "graveyard", "exile"):
