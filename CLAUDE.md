@@ -1,6 +1,6 @@
 # mtg_ai_engine Development Guidelines
 
-Auto-generated from all feature plans. Last updated: 2026-03-25
+Auto-generated from all feature plans. Last updated: 2026-03-26
 
 ## Active Technologies
 - Python 3.11 (matches existing codebase) + `httpx` (HTTP to engine API), `openai` (OpenAI-compatible LLM client), `argparse` (stdlib CLI parsing) (008-ai-cli-client)
@@ -41,8 +41,8 @@ Python 3.11: Follow standard conventions
 
 ## Recent Changes
 - 017-forge-ai-parity: Added Python 3.11 + FastAPI, Pydantic v2, httpx (all existing — no new dependencies required)
+- 017-forge-ai-parity: Added Python 3.11 + FastAPI, Pydantic v2, httpx (all existing — no new dependencies required)
 - 016-scryfall-card-art: Added Python 3.11 (backend, unchanged) + TypeScript 5.x (frontend) + React 18, TanStack Query v5 (all existing — no new dependencies)
-- 015-ui-game-creator: Added Python 3.11 (backend) + TypeScript 5.x (frontend) + FastAPI, Pydantic v2, httpx, openai (all existing); React 18, TanStack Query v5 (all existing) — no new dependencies
 
 
 <!-- MANUAL ADDITIONS START -->

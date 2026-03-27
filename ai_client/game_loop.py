@@ -9,7 +9,7 @@ from .ai_player import AIPlayer
 from .client import EngineClient, EngineError
 from .heuristic_player import HeuristicPlayer, compute_block_declarations
 from .debug_forwarder import DebugForwarder
-from .models import GameConfig, GameSummary, TurnRecord
+from .models import AIMemory, GameConfig, GameSummary, TurnRecord
 from .observer import ObserverAI
 from .prompts import build_game_state_prompt
 from mtg_engine.export.observer_skip import register as _skip_register, unregister as _skip_unregister
@@ -92,17 +92,35 @@ def _map_action_to_request(action: dict, mana_pool: dict | None = None) -> tuple
         mana_options = action.get("mana_options", [{}])
         mana_cost_str = mana_options[0].get("mana_cost", "") if mana_options else ""
         mana_payment = _parse_mana_cost_to_payment(mana_cost_str, mana_pool or {})
-        return "cast", {
+        # AI scores set action["chosen_target"] for targeted spells; use it as targets[0]
+        chosen_target = action.get("chosen_target")
+        if chosen_target:
+            targets = [chosen_target]
+        elif action.get("sacrifice_target"):
+            targets = [action["sacrifice_target"]]
+        else:
+            targets = action.get("valid_targets", [])
+        payload: dict = {
             "card_id": action.get("card_id", ""),
-            "targets": action.get("valid_targets", []),
+            "targets": targets,
             "mana_payment": mana_payment,
         }
+        if action.get("alternative_cost"):
+            payload["alternative_cost"] = action["alternative_cost"]
+        if action.get("modes_chosen"):
+            payload["modes_chosen"] = action["modes_chosen"]
+        if action.get("from_graveyard"):
+            payload["from_graveyard"] = True
+        return "cast", payload
 
     if action_type == "activate":
+        # Equipment equip target wiring (US10, T037)
+        equip_target = action.get("equip_target")
+        activate_targets = [equip_target] if equip_target else []
         return "activate", {
             "permanent_id": action.get("permanent_id", ""),
             "ability_index": action.get("ability_index", 0),
-            "targets": [],
+            "targets": activate_targets,
             "mana_payment": {},
         }
 
@@ -137,6 +155,40 @@ def _map_action_to_request(action: dict, mana_pool: dict | None = None) -> tuple
             "targets": [],
             "mana_payment": {},
             "from_command_zone": True,
+        }
+
+    if action_type == "activate_loyalty":
+        return "activate-loyalty", {
+            "permanent_id": action.get("permanent_id", ""),
+            "ability_index": action.get("loyalty_ability_index", 0),
+            "targets": action.get("valid_targets", []),
+        }
+
+    if action_type == "copy_spell":
+        return "copy_spell", {
+            "source_permanent_id": action.get("permanent_id", ""),
+            "stack_object_id": action.get("stack_object_id", ""),
+            "targets": action.get("valid_targets", []),
+        }
+
+    if action_type == "choice":
+        return "choice", {
+            "choice_id": action.get("choice_id", ""),
+            "selection": action.get("selection", "top"),
+        }
+
+    if action_type == "cascade_choice":
+        return "cascade-choice", {
+            "player_name": action.get("player_name", ""),
+            "card_id": action.get("cascade_card_id", ""),
+            "cast": True,  # AI scores determine this — if chosen it means cast
+        }
+
+    if action_type == "declare_mulligan":
+        keep = "keep" in (action.get("description") or "").lower()
+        return "mulligan", {
+            "player_name": action.get("player_name", ""),
+            "keep": keep,
         }
 
     # Fallback: pass
@@ -235,6 +287,8 @@ class GameLoop:
         self._player_map: dict[str, AIPlayer] = {
             config.players[i].name: players[i] for i in range(len(players))
         }
+        # Per-player AIMemory instances (one per game, created in run())
+        self._memories: dict[str, AIMemory] = {}
 
     def run(self) -> GameSummary:
         """
@@ -260,8 +314,16 @@ class GameLoop:
         if self._debug or self._observer:
             self._forwarder = DebugForwarder(self._config.engine_url, game_id)
 
+        # Instantiate one AIMemory per AI player (heuristic players only)
+        self._memories = {
+            pc.name: AIMemory()
+            for pc in self._config.players
+            if pc.player_type == "heuristic"
+        }
+
         decision_count = 0
         turn_number = 1
+        _last_turn_by_player: dict[str, int] = {}
         termination_reason = "game_over"
         winner = None
 
@@ -330,6 +392,13 @@ class GameLoop:
 
             turn_number = gs.get("turn", 1)
 
+            # Call memory.new_turn() at the start of each new turn for this player
+            if priority_player in self._memories:
+                prev_turn = _last_turn_by_player.get(priority_player, 0)
+                if turn_number != prev_turn:
+                    self._memories[priority_player].new_turn()
+                    _last_turn_by_player[priority_player] = turn_number
+
             # Safety: max turns is measured in game turns, not individual decisions
             if self._config.max_turns > 0 and turn_number > self._config.max_turns:
                 termination_reason = "max_turns_reached"
@@ -381,10 +450,12 @@ class GameLoop:
             else:
                 ai_player._debug_callback = None
 
+            player_memory = self._memories.get(priority_player)
             chosen_index, reasoning = ai_player.decide(
                 prompt,
                 legal_actions=legal_actions,
                 game_state={**gs, "priority_player": priority_player, "phase": phase, "step": step},
+                **({"memory": player_memory} if isinstance(ai_player, HeuristicPlayer) else {}),
             )
             fallback_used = reasoning == "(AI endpoint unreachable)"
 
@@ -448,7 +519,15 @@ class GameLoop:
             if action_type == "declare_attackers" and isinstance(ai_player, HeuristicPlayer):
                 gs_with_priority = {**gs, "priority_player": priority_player}
                 selected_ids = ai_player.select_attackers(chosen_action, gs_with_priority, priority_player)
-                defending_player = chosen_action.get("card_name", "")
+                # US20 T064: use _select_attack_direction for multiplayer targeting
+                total_power = sum(
+                    int(p.get("card", {}).get("power") or 0)
+                    for p in gs.get("battlefield", [])
+                    if p.get("id") in selected_ids
+                )
+                defending_player = ai_player._select_attack_direction(
+                    gs_with_priority, priority_player, total_power
+                ) or chosen_action.get("card_name", "")
                 payload["attack_declarations"] = [
                     {"attacker_id": aid, "defending_id": defending_player}
                     for aid in selected_ids

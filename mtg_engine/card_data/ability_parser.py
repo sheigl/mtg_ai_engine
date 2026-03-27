@@ -32,6 +32,14 @@ class UnparsedAbility(BaseModel):
     raw_text: str
 
 
+class LoyaltyAbility(BaseModel):
+    """A planeswalker loyalty ability parsed from oracle text."""
+    index: int
+    loyalty_change: int   # positive for +, negative for −, 0 for [0]
+    effect: str
+    raw_text: str
+
+
 Ability = Union[TriggeredAbility, ActivatedAbility, KeywordAbility, SpellEffect, UnparsedAbility]
 
 # All keyword abilities defined in REQ-R20
@@ -64,6 +72,11 @@ KEYWORDS: frozenset[str] = frozenset({
     "prototype", "backup", "bargain", "disguise", "cloak", "plot",
     "suspect", "manifest dread", "saddle", "gift",
 })
+
+_LOYALTY_RE = re.compile(
+    r"^([+\-−]?\d+|0)\s*[–—:-]\s*(.+)$",
+    re.DOTALL,
+)
 
 _TRIGGERED_RE = re.compile(
     r"^((?:When(?:ever)?|At)\b[^,]*),\s*(.+)$",
@@ -153,6 +166,35 @@ def _parse_segment(text: str) -> list[Ability]:
 def _strip_reminder(text: str) -> str:
     """Strip trailing inline reminder text in parentheses, e.g. 'Trample (This creature...)'."""
     return re.sub(r"\s*\([^)]*\)\s*$", "", text).strip()
+
+
+def parse_loyalty_abilities(oracle_text: str) -> list[LoyaltyAbility]:
+    """
+    Parse planeswalker loyalty abilities from oracle text.
+    Detects [+N], [-N], [0] patterns (e.g. "+1: Draw a card").
+    Returns a list of LoyaltyAbility objects in order.
+    """
+    abilities: list[LoyaltyAbility] = []
+    lines = [s.strip() for s in oracle_text.split("\n") if s.strip()]
+
+    for line in lines:
+        m = _LOYALTY_RE.match(line)
+        if not m:
+            continue
+        loyalty_str = m.group(1).replace("−", "-").replace("–", "-")
+        try:
+            loyalty_change = int(loyalty_str)
+        except ValueError:
+            continue
+        effect = m.group(2).strip()
+        abilities.append(LoyaltyAbility(
+            index=len(abilities),
+            loyalty_change=loyalty_change,
+            effect=effect,
+            raw_text=line,
+        ))
+
+    return abilities
 
 
 def _try_parse_keywords(text: str) -> list[KeywordAbility] | None:

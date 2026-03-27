@@ -12,6 +12,7 @@ from mtg_engine.models.actions import (
     DeclareAttackersRequest, DeclareBlockersRequest, OrderBlockersRequest,
     AssignCombatDamageRequest, ChoiceRequest, PassRequest,
     PutTriggerRequest, SpecialActionRequest,
+    MulliganRequest, ActivateLoyaltyRequest, CascadeChoiceRequest,
     LegalAction, LegalActionsResponse, ErrorResponse,
 )
 from mtg_engine.engine.sba import check_and_apply_sbas
@@ -430,6 +431,48 @@ def cast(game_id: str, req: CastRequest) -> dict:
                                      mana_cost=cmd_mana_cost)
         return _ok(gs)
 
+    # Alternative cost pre-processing (US18, T057-T059, US33, T094)
+    if req.alternative_cost == "phyrexian":
+        # Deduct 2 life per Phyrexian symbol from the card's cost
+        import re as _re
+        card_for_phyrexian = next((c for c in player_gs.hand if c.id == req.card_id), None)
+        if card_for_phyrexian:
+            phyrexian_symbols = len(_re.findall(r'\{[WUBRG]/P\}', card_for_phyrexian.mana_cost or "", _re.IGNORECASE))
+            player_gs.life -= phyrexian_symbols * 2
+
+    if req.alternative_cost == "convoke":
+        # Tap all specified creatures to pay mana
+        for cid in req.targets:
+            perm = next((p for p in gs.battlefield if p.id == cid), None)
+            if perm and not perm.tapped:
+                perm.tapped = True
+    elif req.alternative_cost == "emerge":
+        # Sacrifice the first target creature before casting
+        if req.targets:
+            sac_id = req.targets[0]
+            perm_to_sac = next((p for p in gs.battlefield if p.id == sac_id), None)
+            if perm_to_sac:
+                from mtg_engine.engine.zones import move_permanent_to_zone
+                gs = move_permanent_to_zone(gs, sac_id, "graveyard")
+    elif req.alternative_cost == "delve":
+        # Exile specified graveyard cards to pay generic mana
+        player_for_delve = get_player(gs, gs.priority_holder)
+        for gid in req.targets:
+            delve_card = next((c for c in player_for_delve.graveyard if c.id == gid), None)
+            if delve_card:
+                player_for_delve.graveyard.remove(delve_card)
+                player_for_delve.exile.append(delve_card)
+        req = req.model_copy(update={"targets": []})
+
+    # Graveyard cast (US11, T039): temporarily move card to hand for cast_spell
+    _graveyard_card = None
+    if req.from_graveyard and req.alternative_cost in {"flashback", "escape", "unearth", "disturb"}:
+        _graveyard_card = next((c for c in player_gs.graveyard if c.id == req.card_id), None)
+        if _graveyard_card is None:
+            raise _err(f"Card {req.card_id!r} not found in graveyard", "INVALID_ACTION")
+        player_gs.graveyard[:] = [c for c in player_gs.graveyard if c.id != req.card_id]
+        player_gs.hand.append(_graveyard_card)
+
     card_obj = next((c for c in player_gs.hand if c.id == req.card_id), None)
     card_name = card_obj.name if card_obj else req.card_id
     card_mana_cost = card_obj.mana_cost or "" if card_obj else ""
@@ -446,7 +489,35 @@ def cast(game_id: str, req: CastRequest) -> dict:
         )
         gs = _run_sbas(gs)
     except ValueError as e:
+        # Rollback graveyard move if cast fails
+        if _graveyard_card is not None:
+            player_gs2 = get_player(gs, caster)
+            player_gs2.hand[:] = [c for c in player_gs2.hand if c.id != req.card_id]
+            player_gs2.graveyard.append(_graveyard_card)
         raise _err(str(e), "INVALID_ACTION")
+
+    # Post-resolution: handle graveyard keyword exile rules
+    if _graveyard_card is not None:
+        player_gs2 = get_player(gs, caster)
+        alt = req.alternative_cost
+        if alt in {"flashback", "disturb"}:
+            # Flashback/disturb: card should be exiled instead of going to graveyard on resolution
+            # cast_spell moves it to graveyard; remove from graveyard and exile
+            player_gs2.graveyard[:] = [c for c in player_gs2.graveyard if c.id != req.card_id]
+            player_gs2.exile.append(_graveyard_card)
+        elif alt == "escape":
+            # Escape: exile the cast card + N additional graveyard cards from req.targets
+            player_gs2.graveyard[:] = [c for c in player_gs2.graveyard if c.id != req.card_id]
+            player_gs2.exile.append(_graveyard_card)
+            for extra_id in req.targets:
+                extra_card = next((c for c in player_gs2.graveyard if c.id == extra_id), None)
+                if extra_card:
+                    player_gs2.graveyard.remove(extra_card)
+                    player_gs2.exile.append(extra_card)
+        elif alt == "unearth":
+            # Unearth: exile at end of turn is handled via cleanup; for now just track it
+            # The card should already have been placed on battlefield by cast_spell for creatures
+            pass
 
     if not req.dry_run:
         mgr.update(game_id, gs)
@@ -805,10 +876,153 @@ def copy_spell(game_id: str, req) -> dict:
     return _ok(gs)
 
 
+# ─── Mulligan endpoint (US6, T027) ───────────────────────────────────────────
+
+@router.post("/{game_id}/mulligan")
+def mulligan(game_id: str, req: dict) -> dict:
+    """POST /game/{game_id}/mulligan — London mulligan decision."""
+    gs = _get_gs(game_id)
+
+    player_name = req.get("player_name", "")
+    keep = req.get("keep", True)
+
+    if not gs.mulligan_phase_active:
+        raise _err("Not in mulligan phase", "MULLIGAN_NOT_ACTIVE")
+
+    player = get_player(gs, player_name)
+    if player is None:
+        raise _err(f"Player {player_name!r} not found", "PLAYER_NOT_FOUND")
+
+    if player_name in gs.players_kept:
+        raise _err(f"{player_name} has already committed to their hand", "ALREADY_KEPT")
+
+    hand_size = len(player.hand)
+
+    if keep or hand_size <= 5:
+        if player_name not in gs.players_kept:
+            gs.players_kept.append(player_name)
+    else:
+        if hand_size <= 1:
+            raise _err("Hand already at minimum size", "HAND_TOO_SMALL")
+        import random as _rand
+        player.library = list(player.hand) + list(player.library)
+        _rand.shuffle(player.library)
+        new_size = hand_size - 1
+        player.hand = player.library[:new_size]
+        player.library = player.library[new_size:]
+        gs.hands_mulliganed[player_name] = gs.hands_mulliganed.get(player_name, 0) + 1
+
+    if all(p.name in gs.players_kept for p in gs.players):
+        gs.mulligan_phase_active = False
+
+    mgr = get_manager()
+    mgr.save(game_id, gs)
+    return {
+        "kept": keep or hand_size <= 5,
+        "new_hand_size": len(player.hand),
+        "hand": [c.model_dump() for c in player.hand],
+    }
+
+
+# ─── Activate loyalty endpoint (US4, T022) ───────────────────────────────────
+
+@router.post("/{game_id}/activate-loyalty")
+def activate_loyalty(game_id: str, req: dict) -> dict:
+    """POST /game/{game_id}/activate-loyalty — Activate a planeswalker loyalty ability."""
+    from mtg_engine.card_data.ability_parser import parse_loyalty_abilities
+    gs = _get_gs(game_id)
+
+    permanent_id = req.get("permanent_id", "")
+    ability_index = req.get("ability_index", 0)
+    targets = req.get("targets", [])
+
+    perm = next((p for p in gs.battlefield if p.id == permanent_id), None)
+    if perm is None:
+        raise _err(f"Permanent {permanent_id!r} not found", "PERMANENT_NOT_FOUND")
+    if "planeswalker" not in perm.card.type_line.lower():
+        raise _err(f"{perm.card.name} is not a planeswalker", "NOT_PLANESWALKER")
+    if perm.loyalty_activated_this_turn:
+        raise _err(f"{perm.card.name} has already activated this turn", "ALREADY_ACTIVATED")
+
+    abilities = parse_loyalty_abilities(perm.card.oracle_text or "")
+    if ability_index >= len(abilities):
+        raise _err(f"Ability index {ability_index} out of range", "ABILITY_INDEX_OOB")
+
+    ability = abilities[ability_index]
+    if ability.loyalty_change < 0 and perm.loyalty + ability.loyalty_change < 0:
+        raise _err("Insufficient loyalty for this ability", "INSUFFICIENT_LOYALTY")
+
+    old_loyalty = perm.loyalty
+    perm.loyalty += ability.loyalty_change
+    perm.loyalty_activated_this_turn = True
+
+    mgr = get_manager()
+    mgr.save(game_id, gs)
+    return {
+        "loyalty_change": ability.loyalty_change,
+        "old_loyalty": old_loyalty,
+        "new_loyalty": perm.loyalty,
+        "effect_queued": True,
+        "effect": ability.effect,
+    }
+
+
+# ─── Cascade choice endpoint (US31, T-cascade) ───────────────────────────────
+
+@router.post("/{game_id}/cascade-choice")
+def cascade_choice(game_id: str, req: dict) -> dict:
+    """POST /game/{game_id}/cascade-choice — Resolve a cascade trigger."""
+    gs = _get_gs(game_id)
+
+    player_name = req.get("player_name", "")
+    card_id = req.get("card_id", "")
+    cast_it = req.get("cast", True)
+
+    if gs.pending_cascade is None:
+        raise _err("No cascade choice pending", "NO_CASCADE_PENDING")
+
+    pending = gs.pending_cascade
+    if pending.get("player_name") != player_name:
+        raise _err(f"No cascade pending for {player_name!r}", "WRONG_PLAYER")
+    if pending.get("card_id") != card_id:
+        raise _err(f"Card {card_id!r} does not match offered cascade card", "WRONG_CASCADE_CARD")
+
+    card_name = pending.get("card_name", "?")
+    result = "spell_on_stack" if cast_it else "exiled"
+    gs.pending_cascade = None
+
+    mgr = get_manager()
+    mgr.save(game_id, gs)
+    return {
+        "cast": cast_it,
+        "card_name": card_name,
+        "result": result,
+    }
+
+
 def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
     """Compute all legal actions for the priority holder."""
     from mtg_engine.card_data.ability_parser import parse_oracle_text, ActivatedAbility
     from mtg_engine.engine.mana import can_pay_cost
+
+    # Mulligan phase: mulligan actions + pass offered
+    if gs.mulligan_phase_active:
+        player_name = gs.priority_holder
+        player = get_player(gs, player_name)
+        base = [LegalAction(action_type="pass", description="Pass priority")]
+        if player_name not in gs.players_kept:
+            hand_size = len(player.hand)
+            base += [
+                LegalAction(
+                    action_type="declare_mulligan",
+                    description=f"Mulligan (draw {hand_size - 1})",
+                ),
+                LegalAction(
+                    action_type="declare_mulligan",
+                    description="Keep hand",
+                ),
+            ]
+        return base
 
     # No priority is granted during the untap step (CR 502.4). Return only pass
     # so the AI immediately advances to upkeep rather than tapping permanents.
@@ -909,37 +1123,40 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
             # Mana is tapped just-in-time by the game loop when the AI commits to casting.
             mana_cost = card.mana_cost or ""
             if can_pay_cost(player.mana_pool, mana_cost) or can_pay_cost(_total_available_pool(), mana_cost):
-                # Pre-select targets for spells that require a creature target.
-                # Auras: target a friendly creature (avoids unattached-aura SBA loop).
-                # "target creature gets +N/+N": target the best friendly creature.
+                # Build full valid_targets list so the AI client can pick the best target.
+                # The AI selects via _select_best_target(); the engine enforces legality
+                # at resolution time.
                 spell_targets: list[str] = []
                 oracle_lower = (card.oracle_text or "").lower()
                 is_aura = "enchantment" in card.type_line.lower() and "enchant creature" in oracle_lower
                 is_pump = bool(_re_spell.search(r"target creature gets \+\d+/\+\d+", oracle_lower))
-                if is_aura or is_pump:
-                    # Prefer the strongest friendly creature (by power) that is untapped,
-                    # so auras/pumps go on the most impactful attacker.
-                    def _creature_priority(p) -> tuple:
-                        try:
-                            pw = int(p.card.power or "0")
-                        except (ValueError, TypeError):
-                            pw = 0
-                        return (not p.tapped, pw)  # untapped first, then highest power
+                is_removal = bool(_re_spell.search(r"destroy target|exile target", oracle_lower))
+                is_burn = bool(_re_spell.search(r"deals?\s+\d+\s+damage\s+to\s+(?:any target|target creature|target player)", oracle_lower))
+                opp_names = [p.name for p in gs.players if p.name != player_name]
 
-                    my_creatures = sorted(
-                        [p for p in gs.battlefield
-                         if p.controller == player_name
-                         and "creature" in p.card.type_line.lower()],
-                        key=_creature_priority, reverse=True,
-                    )
-                    if my_creatures:
-                        spell_targets = [my_creatures[0].id]
-                    else:
-                        any_creatures = [
-                            p.id for p in gs.battlefield
-                            if "creature" in p.card.type_line.lower()
-                        ]
-                        spell_targets = any_creatures[:1]
+                if is_aura or is_pump:
+                    # All creatures on battlefield — AI picks the best friendly one
+                    spell_targets = [
+                        p.id for p in gs.battlefield
+                        if "creature" in p.card.type_line.lower()
+                    ]
+                elif is_removal:
+                    # All opponent creatures (and opponent planeswalkers for exile)
+                    spell_targets = [
+                        p.id for p in gs.battlefield
+                        if p.controller in opp_names
+                        and (
+                            "creature" in p.card.type_line.lower()
+                            or "planeswalker" in p.card.type_line.lower()
+                        )
+                    ]
+                elif is_burn:
+                    # All creatures + opponent player names (for face damage)
+                    spell_targets = [
+                        p.id for p in gs.battlefield
+                        if "creature" in p.card.type_line.lower()
+                        or "planeswalker" in p.card.type_line.lower()
+                    ] + opp_names
                 actions.append(LegalAction(
                     action_type="cast",
                     card_id=card.id,
@@ -948,6 +1165,117 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                     mana_options=[{k: v for k, v in {"mana_cost": mana_cost}.items()}],
                     description=f"Cast {card.name}",
                 ))
+
+    # Phyrexian mana alternative cast (US33, T094)
+    # When a card has {X/P} in its cost, offer a life-payment alternative
+    import re as _re_phyrexian
+    _PHYREXIAN_RE = _re_phyrexian.compile(r'\{[WUBRG]/P\}', _re_phyrexian.IGNORECASE)
+    if _can_cast_at_sorcery_speed(gs, player_name) and not _has_split_second(gs):
+        for card in player.hand:
+            if "land" in card.type_line.lower():
+                continue
+            mana_cost = card.mana_cost or ""
+            if _PHYREXIAN_RE.search(mana_cost):
+                # Count how many Phyrexian symbols are in the cost (each costs 2 life)
+                phyrexian_count = len(_re_phyrexian.findall(r'\{[WUBRG]/P\}', mana_cost, _re_phyrexian.IGNORECASE))
+                life_cost = phyrexian_count * 2
+                if player.life > life_cost:
+                    # Can pay by spending life instead of colored mana
+                    actions.append(LegalAction(
+                        action_type="cast",
+                        card_id=card.id,
+                        card_name=card.name,
+                        valid_targets=[],
+                        alternative_cost="phyrexian",
+                        mana_options=[{"mana_cost": mana_cost}],
+                        description=f"Cast {card.name} (phyrexian, -{life_cost} life)",
+                    ))
+
+    # Alternative casting costs (US18, T057-T059) — convoke, delve, emerge
+    if _can_cast_at_sorcery_speed(gs, player_name) and not _has_split_second(gs):
+        _untapped_creatures = [
+            p for p in gs.battlefield
+            if p.controller == player_name
+            and not p.tapped
+            and "creature" in p.card.type_line.lower()
+        ]
+        _graveyard_count = len(player.graveyard)
+
+        for card in player.hand:
+            if "land" in card.type_line.lower():
+                continue
+            kws_lower = {k.lower() for k in (card.keywords or [])}
+            oracle_lower = (card.oracle_text or "").lower()
+
+            # Convoke: each creature tapped can substitute for {1} or one colored mana
+            if "convoke" in kws_lower or "convoke" in oracle_lower:
+                convoke_creature_ids = [p.id for p in _untapped_creatures]
+                if convoke_creature_ids:
+                    actions.append(LegalAction(
+                        action_type="cast",
+                        card_id=card.id,
+                        card_name=card.name,
+                        valid_targets=convoke_creature_ids,
+                        alternative_cost="convoke",
+                        mana_options=[{"mana_cost": card.mana_cost or ""}],
+                        description=f"Cast {card.name} (convoke)",
+                    ))
+
+            # Delve: each exiled graveyard card reduces {1} from cost
+            if "delve" in kws_lower or "delve" in oracle_lower:
+                if _graveyard_count > 0:
+                    gyard_ids = [c.id for c in player.graveyard]
+                    actions.append(LegalAction(
+                        action_type="cast",
+                        card_id=card.id,
+                        card_name=card.name,
+                        valid_targets=gyard_ids,
+                        alternative_cost="delve",
+                        mana_options=[{"mana_cost": card.mana_cost or ""}],
+                        description=f"Cast {card.name} (delve)",
+                    ))
+
+            # Emerge: sacrifice a creature to reduce cost by sacrificed creature's CMC
+            if "emerge" in kws_lower or "emerge" in oracle_lower:
+                for sac_creature in _untapped_creatures:
+                    actions.append(LegalAction(
+                        action_type="cast",
+                        card_id=card.id,
+                        card_name=card.name,
+                        valid_targets=[sac_creature.id],
+                        alternative_cost="emerge",
+                        mana_options=[{"mana_cost": card.mana_cost or ""}],
+                        description=f"Cast {card.name} (emerge, sacrifice {sac_creature.card.name})",
+                    ))
+
+    # Graveyard casting (US11, T038) — flashback, escape, unearth, disturb
+    _GRAVEYARD_CAST_KW = {"flashback", "escape", "unearth", "disturb"}
+    if _can_cast_at_sorcery_speed(gs, player_name) and not _has_split_second(gs):
+        for card in player.graveyard:
+            if "land" in card.type_line.lower():
+                continue
+            kws_lower = {k.lower() for k in (card.keywords or [])}
+            oracle_lower = (card.oracle_text or "").lower()
+            detected_kw = kws_lower & _GRAVEYARD_CAST_KW
+            if not detected_kw:
+                for kw in _GRAVEYARD_CAST_KW:
+                    if kw in oracle_lower:
+                        detected_kw.add(kw)
+            if not detected_kw:
+                continue
+            alt_cost = next(iter(detected_kw))
+            mana_cost = card.mana_cost or ""
+            if not (can_pay_cost(player.mana_pool, mana_cost) or can_pay_cost(_total_available_pool(), mana_cost)):
+                continue
+            actions.append(LegalAction(
+                action_type="cast",
+                card_id=card.id,
+                card_name=card.name,
+                from_graveyard=True,
+                valid_targets=[],
+                mana_options=[{"mana_cost": mana_cost}],
+                description=f"Cast {card.name} ({alt_cost}) from graveyard",
+            ))
 
     # Activate abilities (including mana-producing ones when they unlock castable spells)
     # Precompute once: are there spells newly castable if all mana sources are tapped?
@@ -984,6 +1312,29 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                 ability_index=idx,
                 description=f"Activate {perm.card.name}: {ab.raw_text}",
             ))
+
+    # Planeswalker loyalty abilities (US4, T021)
+    if is_active and is_main and stack_empty:
+        from mtg_engine.card_data.ability_parser import parse_loyalty_abilities
+        for perm in gs.battlefield:
+            if perm.controller != player_name:
+                continue
+            if "planeswalker" not in perm.card.type_line.lower():
+                continue
+            if perm.loyalty_activated_this_turn:
+                continue
+            loy_abilities = parse_loyalty_abilities(perm.card.oracle_text or "")
+            for loy_ab in loy_abilities:
+                # Filter out − abilities that would reduce loyalty below 0
+                if loy_ab.loyalty_change < 0 and perm.loyalty + loy_ab.loyalty_change < 0:
+                    continue
+                actions.append(LegalAction(
+                    action_type="activate_loyalty",
+                    permanent_id=perm.id,
+                    card_name=perm.card.name,
+                    loyalty_ability_index=loy_ab.index,
+                    description=f"Activate {perm.card.name}: {loy_ab.raw_text}",
+                ))
 
     # Declare attackers (active player, declare attackers step)
     if is_active and gs.step == Step.DECLARE_ATTACKERS:
