@@ -399,6 +399,18 @@ class GameLoop:
                     self._memories[priority_player].new_turn()
                     _last_turn_by_player[priority_player] = turn_number
 
+            # Populate revealed_cards: if opponent has visible hand cards (e.g. from
+            # a look-at-hand effect), record them in memory so scoring can react.
+            if priority_player in self._memories:
+                memory_for_player = self._memories[priority_player]
+                for p in gs.get("players", []):
+                    opp_name = p.get("name", "")
+                    if opp_name == priority_player:
+                        continue
+                    visible_cards = p.get("visible_hand", [])
+                    if visible_cards:
+                        memory_for_player.revealed_cards[opp_name] = list(visible_cards)
+
             # Safety: max turns is measured in game turns, not individual decisions
             if self._config.max_turns > 0 and turn_number > self._config.max_turns:
                 termination_reason = "max_turns_reached"

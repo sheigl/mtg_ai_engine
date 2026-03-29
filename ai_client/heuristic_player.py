@@ -353,6 +353,10 @@ class HeuristicPlayer:
                 return p
         return {}
 
+    def _is_opponent_turn(self, game_state: dict, my_name: str) -> bool:
+        """Return True when the active player is not us (non-active priority window)."""
+        return game_state.get("active_player", my_name) != my_name
+
     def _extract_battlefield(self, game_state: dict, controller: str) -> list[dict]:
         """Return all permanents controlled by the given player."""
         return [
@@ -415,6 +419,12 @@ class HeuristicPlayer:
                     return -5.0  # hold fog — slightly prefer pass over random cast
                 if self._memory.trick_attackers and self._has_combat_trick_in_hand(game_state, my_name):
                     return -5.0  # hold trick — prefer casting it over passing
+            # On opponent's turn with a non-empty stack, passing is fine (let opponent's
+            # spell resolve unless we have a counterspell)
+            if self._is_opponent_turn(game_state, my_name):
+                stack = game_state.get("stack", [])
+                if not stack:
+                    return 2.0  # prefer passing when nothing is happening
             return 0.0
 
         if action_type == "play_land":
@@ -1227,6 +1237,25 @@ class HeuristicPlayer:
                     break
             if card:
                 break
+
+        # ── Non-active priority: opponent's turn adjustments (US9, T108) ───
+        if self._is_opponent_turn(game_state, my_name) and card:
+            type_line_check = (card.get("type_line") or "").lower()
+            oracle_check = (card.get("oracle_text") or "").lower()
+            is_instant = "instant" in type_line_check
+            is_counterspell = bool(_COUNTER_RE.search(oracle_check))
+            stack = game_state.get("stack", [])
+            # Boost counterspells when there is something to counter on the stack
+            if is_counterspell and stack:
+                top = stack[-1]
+                top_caster = top.get("caster", "")
+                if top_caster != my_name:
+                    top_cmc = _cmc_str(top.get("mana_cost") or "")
+                    score += 20.0 + top_cmc * 5.0  # higher-value spells are worth countering
+            elif not is_instant:
+                # Non-instants during opponent's turn — engine won't offer these legally,
+                # but if somehow offered, strongly deprioritise them
+                score -= 100.0
 
         if card:
             type_line = (card.get("type_line") or "").lower()

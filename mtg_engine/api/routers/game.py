@@ -218,6 +218,9 @@ def create_game(req: CreateGameRequest) -> dict:
             verbose=req.verbose,
             debug=req.debug,
         )
+    # US16 T148: Wire zone-change triggers for death/ETB detection (CR 603.2)
+    from mtg_engine.engine.triggers import initialize_triggers
+    initialize_triggers(gs)
     return _ok(gs)
 
 
@@ -486,6 +489,9 @@ def cast(game_id: str, req: CastRequest) -> dict:
             req.mana_payment,
             alternative_cost=req.alternative_cost,
             modes_chosen=req.modes_chosen,
+            x_value=req.x_value,
+            kicker_paid=req.kicker_paid,
+            jump_start_discard_id=req.jump_start_discard_id,
         )
         gs = _run_sbas(gs)
     except ValueError as e:
@@ -495,6 +501,32 @@ def cast(game_id: str, req: CastRequest) -> dict:
             player_gs2.hand[:] = [c for c in player_gs2.hand if c.id != req.card_id]
             player_gs2.graveyard.append(_graveyard_card)
         raise _err(str(e), "INVALID_ACTION")
+
+    # T051: Ward cost check — if any target has ward, set pending_ward_payment
+    # Ward triggers when a spell targeting a permanent with ward is put on the stack (CR 702.157)
+    import re as _re_ward
+    if req.targets and gs.stack:
+        top_spell = gs.stack[-1]
+        for target_id in req.targets:
+            target_perm = next((p for p in gs.battlefield if p.id == target_id), None)
+            if target_perm:
+                ward_match = _re_ward.search(
+                    r'[Ww]ard[—–-]?(\{[^}]+\}|\d+)',
+                    target_perm.card.oracle_text or ""
+                )
+                if ward_match and target_perm.controller != caster:
+                    ward_cost_raw = ward_match.group(1)
+                    # Normalize numeric ward cost (e.g. "2" → "{2}")
+                    ward_cost = ward_cost_raw if ward_cost_raw.startswith("{") else f"{{{ward_cost_raw}}}"
+                    gs.pending_ward_payment = {
+                        "player": caster,
+                        "ward_cost": ward_cost,
+                        "targeting_spell_id": top_spell.id,
+                        "target_permanent_id": target_id,
+                    }
+                    logger.info("Ward triggered: %s must pay %s or spell is countered",
+                                caster, ward_cost)
+                    break  # only trigger ward once per spell
 
     # Post-resolution: handle graveyard keyword exile rules
     if _graveyard_card is not None:
@@ -564,6 +596,24 @@ def activate(game_id: str, req: ActivateRequest) -> dict:
         ability = activated[req.ability_index]
         ability_text_for_log = ability.raw_text
 
+        # US20 T162: Enforce timing_restriction on activated abilities (CR 602.1)
+        if ability.timing_restriction:
+            restriction = ability.timing_restriction.lower()
+            is_sorcery_speed = (
+                gs.active_player == gs.priority_holder
+                and gs.step == Step.MAIN
+                and not gs.stack
+            )
+            if ("sorcery" in restriction or "your main phase" in restriction) and not is_sorcery_speed:
+                raise ValueError(
+                    f"{perm.card.name}: ability can only be activated at sorcery speed "
+                    f"({ability.timing_restriction})"
+                )
+            if "your turn" in restriction and gs.active_player != gs.priority_holder:
+                raise ValueError(
+                    f"{perm.card.name}: ability can only be activated during your turn"
+                )
+
         # Pay tap cost
         player = get_player(gs, gs.priority_holder)
         if "{T}" in ability.cost:
@@ -583,6 +633,19 @@ def activate(game_id: str, req: ActivateRequest) -> dict:
         if mana_add:
             sym = mana_add.group(1).strip("{}")
             player.mana_pool = add_mana(player.mana_pool, sym.upper())
+
+        # T128: Regeneration ability — add a regen shield to target permanent (CR 701.15a)
+        regen_match = _re.search(r"regenerate (target|this|~)", ability.effect, _re.IGNORECASE)
+        if regen_match:
+            # Determine target: if "target" use req.targets[0], else use the perm itself
+            if "target" in regen_match.group(1).lower() and req.targets:
+                regen_target_id = req.targets[0]
+            else:
+                regen_target_id = perm.id
+            regen_perm = next((p for p in gs.battlefield if p.id == regen_target_id), None)
+            if regen_perm:
+                regen_perm.regen_shields += 1
+                logger.info("Regen shield added to %s (total: %d)", regen_perm.card.name, regen_perm.regen_shields)
 
         gs = _run_sbas(gs)
     except ValueError as e:
@@ -624,6 +687,29 @@ def put_trigger(game_id: str, req: PutTriggerRequest) -> dict:
         gs = _run_sbas(gs)
     except ValueError as e:
         raise _err(str(e), "INVALID_ACTION")
+
+    if not req.dry_run:
+        mgr.update(game_id, gs)
+    return _ok(gs)
+
+
+@router.post("/{game_id}/decline-trigger")
+def decline_trigger(game_id: str, req: PutTriggerRequest) -> dict:
+    """POST /game/{game_id}/decline-trigger — discard an optional trigger without effect. US17"""
+    mgr = get_manager()
+    if req.dry_run:
+        gs = mgr.snapshot(game_id)
+    else:
+        gs = _get_gs(game_id)
+
+    trigger = next((t for t in gs.pending_triggers if t.id == req.trigger_id), None)
+    if trigger is None:
+        raise _err(f"Trigger {req.trigger_id!r} not found", "TRIGGER_NOT_FOUND")
+    if not trigger.is_optional:
+        raise _err(f"Trigger {req.trigger_id!r} is not optional and cannot be declined", "INVALID_ACTION")
+
+    gs.pending_triggers[:] = [t for t in gs.pending_triggers if t.id != req.trigger_id]
+    logger.info("Optional trigger %r declined by %s", trigger.source_card_name, trigger.controller)
 
     if not req.dry_run:
         mgr.update(game_id, gs)
@@ -691,6 +777,8 @@ def do_declare_blockers(game_id: str, req: DeclareBlockersRequest) -> dict:
     try:
         gs = declare_blockers(gs, req.block_declarations)
         gs = _run_sbas(gs)
+        # CR 509.3: after blockers are declared, active player gets priority
+        gs.priority_holder = gs.active_player
     except ValueError as e:
         raise _err(str(e), "INVALID_ACTION")
 
@@ -772,8 +860,116 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
     """POST /game/{game_id}/choice — player makes a pending choice."""
     mgr = get_manager()
     gs = _get_gs(game_id)
-    # Choice handling will be expanded with replacement effects in Phase 4+
-    # For now, acknowledge the choice
+    choice_id = req.choice_id
+
+    if choice_id == "scry_keep":
+        # Keep all scried cards on top (they're already there — just clear the pending state)
+        gs.pending_scry_choice = None
+        mgr.update(game_id, gs)
+    elif choice_id == "scry_bottom":
+        # Move the scried cards from the top of the library to the bottom
+        if gs.pending_scry_choice:
+            player_name = gs.pending_scry_choice["player"]
+            n = gs.pending_scry_choice["n"]
+            from mtg_engine.engine.zones import get_player
+            scry_player = get_player(gs, player_name)
+            if scry_player.library:
+                cards_to_bottom = scry_player.library[:n]
+                scry_player.library = scry_player.library[n:] + cards_to_bottom
+            gs.pending_scry_choice = None
+            mgr.update(game_id, gs)
+    elif choice_id == "surveil_keep":
+        # Keep surveiled cards on top of library
+        gs.pending_surveil_choice = None
+        mgr.update(game_id, gs)
+    elif choice_id == "surveil_graveyard":
+        # Move surveiled cards from the top of library to graveyard
+        if gs.pending_surveil_choice:
+            player_name = gs.pending_surveil_choice["player"]
+            n = gs.pending_surveil_choice["n"]
+            from mtg_engine.engine.zones import get_player
+            surveil_player = get_player(gs, player_name)
+            if surveil_player.library:
+                cards_to_gy = surveil_player.library[:n]
+                surveil_player.library = surveil_player.library[n:]
+                surveil_player.graveyard.extend(cards_to_gy)
+            gs.pending_surveil_choice = None
+            mgr.update(game_id, gs)
+
+    elif choice_id == "ward_pay":
+        # T051: Player pays ward cost — spell targeting their permanent continues
+        if gs.pending_ward_payment:
+            ward_cost = gs.pending_ward_payment.get("ward_cost", "")
+            payer_name = gs.pending_ward_payment.get("player", gs.priority_holder)
+            payer = get_player(gs, payer_name)
+            from mtg_engine.engine.mana import can_pay_cost as _cpc_w, pay_cost as _pc_w
+            if ward_cost and _cpc_w(payer.mana_pool, ward_cost):
+                # Auto-pay from pool
+                from mtg_engine.engine.mana import parse_mana_cost as _pmc_w
+                cost_dict = _pmc_w(ward_cost)
+                mana_payment = {}
+                for color in ("W", "U", "B", "R", "G", "C"):
+                    needed = cost_dict.get(color, 0)
+                    if needed > 0:
+                        mana_payment[color] = needed
+                payer.mana_pool = _pc_w(payer.mana_pool, ward_cost, mana_payment)
+            gs.pending_ward_payment = None
+            mgr.update(game_id, gs)
+
+    elif choice_id == "ward_counter":
+        # T051: Player declines to pay ward — targeting spell is countered (CR 702.157b)
+        if gs.pending_ward_payment:
+            spell_id = gs.pending_ward_payment.get("targeting_spell_id", "")
+            countered = next((s for s in gs.stack if s.id == spell_id), None)
+            if countered:
+                gs.stack[:] = [s for s in gs.stack if s.id != spell_id]
+                owner = get_player(gs, countered.controller)
+                if not countered.is_copy:
+                    owner.graveyard.append(countered.source_card)
+                logger.info("Ward: %s countered for non-payment", countered.source_card.name)
+            gs.pending_ward_payment = None
+            mgr.update(game_id, gs)
+
+    elif choice_id == "tutor_pick":
+        # T040: Player picks a card from library (tutor)
+        if gs.pending_tutor_choice:
+            destination = gs.pending_tutor_choice.get("destination", "hand")
+            tutor_player_name = gs.pending_tutor_choice.get("player", gs.priority_holder)
+            tutor_player = get_player(gs, tutor_player_name)
+            selected_id = req.selection if isinstance(req.selection, str) else None
+            card = next((c for c in tutor_player.library if c.id == selected_id), None) if selected_id else None
+            if card is None and tutor_player.library:
+                card = tutor_player.library[0]  # fallback: take top card
+            if card:
+                tutor_player.library[:] = [c for c in tutor_player.library if c.id != card.id]
+                if destination == "hand":
+                    tutor_player.hand.append(card)
+                elif destination == "battlefield":
+                    from mtg_engine.engine.zones import put_permanent_onto_battlefield
+                    gs, _ = put_permanent_onto_battlefield(gs, card, tutor_player_name)
+                tutor_player.library.sort(key=lambda _c: 0)  # shuffle signal; simplified
+            gs.pending_tutor_choice = None
+            mgr.update(game_id, gs)
+
+    elif choice_id == "discard_pick":
+        # T040: Player picks a card to discard
+        if gs.pending_discard_choice:
+            discard_player_name = gs.pending_discard_choice.get("player", gs.priority_holder)
+            discard_player = get_player(gs, discard_player_name)
+            selected_id = req.selection if isinstance(req.selection, str) else None
+            card = next((c for c in discard_player.hand if c.id == selected_id), None) if selected_id else None
+            if card is None and discard_player.hand:
+                card = discard_player.hand[0]
+            if card:
+                discard_player.hand[:] = [c for c in discard_player.hand if c.id != card.id]
+                discard_player.graveyard.append(card)
+            remaining = gs.pending_discard_choice.get("count", 1) - 1
+            if remaining > 0:
+                gs.pending_discard_choice = {**gs.pending_discard_choice, "count": remaining}
+            else:
+                gs.pending_discard_choice = None
+            mgr.update(game_id, gs)
+
     return _ok(gs)
 
 
@@ -782,14 +978,82 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
 @router.post("/{game_id}/special-action")
 def special_action(game_id: str, req: SpecialActionRequest) -> dict:
     """POST /game/{game_id}/special-action. REQ-A16"""
+    import re as _re_sa
     mgr = get_manager()
     gs = _get_gs(game_id)
-    # Morph, suspend, etc. — placeholder; raises NotImplementedError for unsupported
-    raise _err(
-        f"Special action {req.action_type!r} not yet implemented",
-        "NOT_IMPLEMENTED",
-        422,
-    )
+    player_name = gs.priority_holder
+    player = get_player(gs, player_name)
+
+    if req.action_type == "special" and req.alternative_cost == "suspend":
+        # T095: Suspend — exile card from hand with N time counters (CR 702.61a)
+        # Time counters are tracked by encoding "suspended:N" into card.parse_status
+        card = next((c for c in player.hand if c.id == req.card_id), None)
+        if card is None:
+            raise _err(f"Card {req.card_id!r} not in hand", "INVALID_ACTION")
+        suspend_match = _re_sa.search(r'[Ss]uspend (\d+)[—–-](\{[^}]+\})', card.oracle_text or "")
+        if not suspend_match:
+            raise _err(f"{card.name} does not have suspend", "INVALID_ACTION")
+        n_counters = int(suspend_match.group(1))
+        suspend_cost = suspend_match.group(2)
+        from mtg_engine.engine.mana import can_pay_cost as _cpc
+        if not _cpc(player.mana_pool, suspend_cost):
+            raise _err(f"Insufficient mana to suspend {card.name}", "INSUFFICIENT_MANA")
+        # Auto-pay suspend cost from pool
+        from mtg_engine.engine.mana import parse_mana_cost as _pmc, pay_cost as _pc
+        cost_dict = _pmc(suspend_cost)
+        mana_payment = {}
+        for color in ("W", "U", "B", "R", "G", "C"):
+            needed = cost_dict.get(color, 0)
+            if needed > 0:
+                mana_payment[color] = needed
+        player.mana_pool = _pc(player.mana_pool, suspend_cost, mana_payment)
+        # Move from hand to suspended_cards; encode time counter count in parse_status
+        player.hand[:] = [c for c in player.hand if c.id != req.card_id]
+        suspended = card.model_copy(update={"parse_status": f"suspended:{n_counters}"})
+        player.suspended_cards.append(suspended)
+        logger.info("%s suspended with %d time counters", card.name, n_counters)
+        gs = _run_sbas(gs)
+
+    elif req.action_type == "special" and req.alternative_cost == "foretell":
+        # T096: Foretell — exile card face-down from hand for {2} (CR 702.143a)
+        card = next((c for c in player.hand if c.id == req.card_id), None)
+        if card is None:
+            raise _err(f"Card {req.card_id!r} not in hand", "INVALID_ACTION")
+        kws_lower = {k.lower() for k in (card.keywords or [])}
+        oracle_lower = (card.oracle_text or "").lower()
+        if "foretell" not in kws_lower and "foretell" not in oracle_lower:
+            raise _err(f"{card.name} does not have foretell", "INVALID_ACTION")
+        # Pay {2}
+        from mtg_engine.engine.mana import can_pay_cost as _cpc, pay_cost as _pc
+        foretell_cost = "{2}"
+        if not _cpc(player.mana_pool, foretell_cost):
+            raise _err("Insufficient mana for foretell ({2})", "INSUFFICIENT_MANA")
+        mana_payment = {}
+        available = player.mana_pool
+        generic_needed = 2
+        for color in ("W", "U", "B", "R", "G", "C"):
+            have = getattr(available, color, 0)
+            if have > 0 and generic_needed > 0:
+                use = min(have, generic_needed)
+                mana_payment[color] = use
+                generic_needed -= use
+        player.mana_pool = _pc(player.mana_pool, foretell_cost, mana_payment)
+        # Move card from hand to foretold_cards exile zone
+        player.hand[:] = [c for c in player.hand if c.id != req.card_id]
+        player.foretold_cards.append(card)
+        logger.info("%s foretold", card.name)
+        gs = _run_sbas(gs)
+
+    else:
+        raise _err(
+            f"Special action {req.action_type!r}/{req.alternative_cost!r} not yet implemented",
+            "NOT_IMPLEMENTED",
+            422,
+        )
+
+    if not req.dry_run:
+        mgr.update(game_id, gs)
+    return _ok(gs)
 
 
 # ─── Stack ────────────────────────────────────────────────────────────────────
@@ -1036,6 +1300,101 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
     is_main = gs.step == Step.MAIN
     stack_empty = not gs.stack
 
+    # Early-exit: pending blocking choices — these block all other actions until resolved
+    if gs.pending_scry_choice and gs.pending_scry_choice.get("player") == player_name:
+        scry_cards = gs.pending_scry_choice.get("cards", [])
+        card_ids = [c.get("id", c.get("name", "?")) if isinstance(c, dict) else c for c in scry_cards]
+        actions.append(LegalAction(
+            action_type="choice",
+            description=f"Scry {len(scry_cards)}: keep on top",
+            valid_targets=card_ids,
+            card_name="scry_keep",
+        ))
+        actions.append(LegalAction(
+            action_type="choice",
+            description=f"Scry {len(scry_cards)}: put all on bottom",
+            valid_targets=card_ids,
+            card_name="scry_bottom",
+        ))
+        return actions
+
+    if gs.pending_surveil_choice and gs.pending_surveil_choice.get("player") == player_name:
+        surveil_cards = gs.pending_surveil_choice.get("cards", [])
+        card_ids = [c.get("id", c.get("name", "?")) if isinstance(c, dict) else c for c in surveil_cards]
+        actions.append(LegalAction(
+            action_type="choice",
+            description=f"Surveil {len(surveil_cards)}: keep on top",
+            valid_targets=card_ids,
+            card_name="surveil_keep",
+        ))
+        actions.append(LegalAction(
+            action_type="choice",
+            description=f"Surveil {len(surveil_cards)}: put all in graveyard",
+            valid_targets=card_ids,
+            card_name="surveil_graveyard",
+        ))
+        return actions
+
+    if gs.pending_tutor_choice and gs.pending_tutor_choice.get("player") == player_name:
+        filter_type = gs.pending_tutor_choice.get("filter_type", "")
+        destination = gs.pending_tutor_choice.get("destination", "hand")
+        lib_card_ids = [c.id for c in player.library]
+        actions.append(LegalAction(
+            action_type="choice",
+            card_name="tutor_pick",
+            description=f"Search library for {filter_type} → {destination}",
+            valid_targets=lib_card_ids,
+        ))
+        return actions
+
+    if gs.pending_discard_choice and gs.pending_discard_choice.get("player") == player_name:
+        count = gs.pending_discard_choice.get("count", 1)
+        hand_ids = [c.id for c in player.hand]
+        actions.append(LegalAction(
+            action_type="choice",
+            card_name="discard_pick",
+            description=f"Discard {count} card(s)",
+            valid_targets=hand_ids,
+        ))
+        return actions
+
+    if gs.pending_ward_payment and gs.pending_ward_payment.get("player") == player_name:
+        ward_cost = gs.pending_ward_payment.get("ward_cost", "")
+        targeting_spell_id = gs.pending_ward_payment.get("targeting_spell_id", "")
+        actions.append(LegalAction(
+            action_type="choice",
+            card_name="ward_pay",
+            description=f"Pay ward {ward_cost} (spell targeting your permanent continues)",
+            valid_targets=[targeting_spell_id],
+        ))
+        actions.append(LegalAction(
+            action_type="choice",
+            card_name="ward_counter",
+            description=f"Don't pay ward {ward_cost} (targeting spell is countered)",
+            valid_targets=[targeting_spell_id],
+        ))
+        return actions
+
+    if gs.pending_cascade and gs.pending_cascade.get("player") == player_name:
+        found_card = gs.pending_cascade.get("found_card", {})
+        cascade_card_id = found_card.get("id", "") if isinstance(found_card, dict) else ""
+        cascade_card_name = found_card.get("name", "?") if isinstance(found_card, dict) else "?"
+        actions.append(LegalAction(
+            action_type="cascade_choice",
+            cascade_card_id=cascade_card_id,
+            card_name=cascade_card_name,
+            description=f"Cascade: cast {cascade_card_name} for free",
+            valid_targets=[cascade_card_id],
+        ))
+        actions.append(LegalAction(
+            action_type="cascade_choice",
+            cascade_card_id=cascade_card_id,
+            card_name=cascade_card_name,
+            description=f"Cascade: exile {cascade_card_name} (skip)",
+            valid_targets=[],
+        ))
+        return actions
+
     # Always can pass priority
     actions.append(LegalAction(
         action_type="pass",
@@ -1110,6 +1469,47 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
             return _any_creature_on_bf
         return True
 
+    def _get_spell_colors(card: "Card") -> set[str]:
+        """Extract color names from the card's mana cost symbols."""
+        cost = card.mana_cost or ""
+        mapping = {"W": "white", "U": "blue", "B": "black", "R": "red", "G": "green"}
+        return {color for sym, color in mapping.items()
+                if f"{{{sym}}}" in cost or f"{{{sym}/" in cost}
+
+    def _get_protection_colors(perm: "Permanent") -> set[str]:
+        """Parse 'protection from [color]' from oracle text."""
+        oracle = (perm.card.oracle_text or "").lower()
+        colors = {"white", "blue", "black", "red", "green"}
+        return {c for c in colors if f"protection from {c}" in oracle}
+
+    def _is_targetable(perm: "Permanent", targeting_player: str, spell_card: "Card") -> bool:
+        """Return False if perm cannot be targeted by spell_card cast by targeting_player."""
+        kws = [k.lower() for k in (perm.card.keywords or [])]
+        oracle = (perm.card.oracle_text or "").lower()
+        # Shroud: untargetable by anyone
+        if "shroud" in kws or "shroud" in oracle:
+            return False
+        # Hexproof: only opponent cannot target
+        if ("hexproof" in kws or "hexproof" in oracle) and targeting_player != perm.controller:
+            return False
+        # Protection from color
+        protected = _get_protection_colors(perm)
+        if protected:
+            spell_colors = _get_spell_colors(spell_card)
+            if spell_colors & protected:
+                return False
+        return True
+
+    # Compute mana available for X spells
+    def _count_colored_pips(cost: str) -> int:
+        """Count non-generic, non-X mana symbols."""
+        return len(_re_spell.findall(r'\{[WUBRG]\}', cost, _re_spell.IGNORECASE))
+
+    def _total_available_mana() -> int:
+        """Total mana producible from pool + untapped sources."""
+        pool = _total_available_pool()
+        return pool.W + pool.U + pool.B + pool.R + pool.G + pool.C
+
     if not _has_split_second(gs):
         for card in player.hand:
             if "land" in card.type_line.lower():
@@ -1122,7 +1522,8 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
             # Show spell if payable with current pool OR after tapping available lands.
             # Mana is tapped just-in-time by the game loop when the AI commits to casting.
             mana_cost = card.mana_cost or ""
-            if can_pay_cost(player.mana_pool, mana_cost) or can_pay_cost(_total_available_pool(), mana_cost):
+            has_x = "{X}" in mana_cost or "{x}" in mana_cost
+            if can_pay_cost(player.mana_pool, mana_cost) or can_pay_cost(_total_available_pool(), mana_cost) or has_x:
                 # Build full valid_targets list so the AI client can pick the best target.
                 # The AI selects via _select_best_target(); the engine enforces legality
                 # at resolution time.
@@ -1132,16 +1533,24 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                 is_pump = bool(_re_spell.search(r"target creature gets \+\d+/\+\d+", oracle_lower))
                 is_removal = bool(_re_spell.search(r"destroy target|exile target", oracle_lower))
                 is_burn = bool(_re_spell.search(r"deals?\s+\d+\s+damage\s+to\s+(?:any target|target creature|target player)", oracle_lower))
+                is_counter = bool(_re_spell.search(r"counter target spell", oracle_lower))
                 opp_names = [p.name for p in gs.players if p.name != player_name]
 
-                if is_aura or is_pump:
-                    # All creatures on battlefield — AI picks the best friendly one
+                if is_counter:
+                    # US22 T173: exclude uncounterable stack objects from valid targets
+                    spell_targets = [
+                        s.id for s in gs.stack
+                        if not s.uncounterable
+                    ]
+                elif is_aura or is_pump:
+                    # Friendly + own creatures; filter by hexproof/shroud/protection
                     spell_targets = [
                         p.id for p in gs.battlefield
                         if "creature" in p.card.type_line.lower()
+                        and _is_targetable(p, player_name, card)
                     ]
                 elif is_removal:
-                    # All opponent creatures (and opponent planeswalkers for exile)
+                    # Opponent creatures/planeswalkers; filter by hexproof/shroud/protection
                     spell_targets = [
                         p.id for p in gs.battlefield
                         if p.controller in opp_names
@@ -1149,22 +1558,43 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                             "creature" in p.card.type_line.lower()
                             or "planeswalker" in p.card.type_line.lower()
                         )
+                        and _is_targetable(p, player_name, card)
                     ]
                 elif is_burn:
-                    # All creatures + opponent player names (for face damage)
+                    # All creatures + opponent player names; filter permanents
                     spell_targets = [
                         p.id for p in gs.battlefield
-                        if "creature" in p.card.type_line.lower()
-                        or "planeswalker" in p.card.type_line.lower()
+                        if (
+                            "creature" in p.card.type_line.lower()
+                            or "planeswalker" in p.card.type_line.lower()
+                        )
+                        and _is_targetable(p, player_name, card)
                     ] + opp_names
-                actions.append(LegalAction(
-                    action_type="cast",
-                    card_id=card.id,
-                    card_name=card.name,
-                    valid_targets=spell_targets,
-                    mana_options=[{k: v for k, v in {"mana_cost": mana_cost}.items()}],
-                    description=f"Cast {card.name}",
-                ))
+
+                # X spells: generate one action per X value (1 to max_x)
+                if has_x:
+                    colored_pips = _count_colored_pips(mana_cost)
+                    avail = _total_available_mana()
+                    max_x = min(10, max(0, avail - colored_pips))
+                    for x_val in range(1, max_x + 1):
+                        actions.append(LegalAction(
+                            action_type="cast",
+                            card_id=card.id,
+                            card_name=card.name,
+                            valid_targets=spell_targets,
+                            x_value=x_val,
+                            mana_options=[{"mana_cost": mana_cost, "x_value": x_val}],
+                            description=f"Cast {card.name} (X={x_val})",
+                        ))
+                else:
+                    actions.append(LegalAction(
+                        action_type="cast",
+                        card_id=card.id,
+                        card_name=card.name,
+                        valid_targets=spell_targets,
+                        mana_options=[{"mana_cost": mana_cost}],
+                        description=f"Cast {card.name}",
+                    ))
 
     # Phyrexian mana alternative cast (US33, T094)
     # When a card has {X/P} in its cost, offer a life-payment alternative
@@ -1248,6 +1678,96 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                         description=f"Cast {card.name} (emerge, sacrifice {sac_creature.card.name})",
                     ))
 
+            # Kicker: offer a separate cast action with kicker_paid=True
+            kicker_match = _re_spell.search(r'[Kk]icker (\{[^}]+\})', card.oracle_text or "")
+            if kicker_match:
+                kicker_cost = kicker_match.group(1)
+                base_cost = card.mana_cost or ""
+                combined_cost = base_cost + kicker_cost
+                if can_pay_cost(player.mana_pool, combined_cost) or can_pay_cost(_total_available_pool(), combined_cost):
+                    actions.append(LegalAction(
+                        action_type="cast",
+                        card_id=card.id,
+                        card_name=card.name,
+                        valid_targets=[],
+                        kicker_paid=True,
+                        alternative_cost="kicker",
+                        mana_options=[{"mana_cost": base_cost, "kicker_cost": kicker_cost}],
+                        description=f"Cast {card.name} with kicker",
+                    ))
+
+            # Jump-start: cast from graveyard by discarding a card
+            if "jump-start" in kws_lower or "jump-start" in oracle_lower:
+                if player.hand:
+                    discard_id = player.hand[0].id  # AI picks first card; engine just needs a valid ID
+                    actions.append(LegalAction(
+                        action_type="cast",
+                        card_id=card.id,
+                        card_name=card.name,
+                        from_graveyard=True,
+                        valid_targets=[discard_id],
+                        alternative_cost="jump-start",
+                        mana_options=[{"mana_cost": card.mana_cost or ""}],
+                        description=f"Cast {card.name} (jump-start, discard a card)",
+                    ))
+
+    # Suspend: exile card with time counters from hand (sorcery speed, main phase only)
+    if is_active and is_main and stack_empty and not _has_split_second(gs):
+        for card in player.hand:
+            if "land" in card.type_line.lower():
+                continue
+            suspend_match = _re_spell.search(r'[Ss]uspend (\d+)[—–-](\{[^}]+\})', card.oracle_text or "")
+            if suspend_match:
+                suspend_n = int(suspend_match.group(1))
+                suspend_cost = suspend_match.group(2)
+                if can_pay_cost(player.mana_pool, suspend_cost) or can_pay_cost(_total_available_pool(), suspend_cost):
+                    actions.append(LegalAction(
+                        action_type="special",
+                        card_id=card.id,
+                        card_name=card.name,
+                        alternative_cost="suspend",
+                        mana_options=[{"mana_cost": suspend_cost}],
+                        description=f"Suspend {card.name} ({suspend_n} time counters)",
+                    ))
+
+    # Foretell: exile card face-down for {2} (main phase, active player)
+    if is_active and is_main and stack_empty and not _has_split_second(gs):
+        foretell_cost = "{2}"
+        if can_pay_cost(player.mana_pool, foretell_cost) or can_pay_cost(_total_available_pool(), foretell_cost):
+            for card in player.hand:
+                if "land" in card.type_line.lower():
+                    continue
+                kws_lower = {k.lower() for k in (card.keywords or [])}
+                oracle_lower = (card.oracle_text or "").lower()
+                if "foretell" in kws_lower or "foretell" in oracle_lower:
+                    actions.append(LegalAction(
+                        action_type="special",
+                        card_id=card.id,
+                        card_name=card.name,
+                        alternative_cost="foretell",
+                        mana_options=[{"mana_cost": foretell_cost}],
+                        description=f"Foretell {card.name} ({foretell_cost})",
+                    ))
+
+    # Cast foretold cards from exile at discounted cost
+    if not _has_split_second(gs):
+        for card in player.foretold_cards:
+            # Extract foretell cost: "Foretell {cost}" from oracle text
+            ft_match = _re_spell.search(r'[Ff]oretell (\{[^}]+\})', card.oracle_text or "")
+            foretell_alt_cost = ft_match.group(1) if ft_match else (card.mana_cost or "")
+            sorcery_speed = _is_sorcery_speed(card)
+            if sorcery_speed and not _can_cast_at_sorcery_speed(gs, player_name):
+                continue
+            if can_pay_cost(player.mana_pool, foretell_alt_cost) or can_pay_cost(_total_available_pool(), foretell_alt_cost):
+                actions.append(LegalAction(
+                    action_type="cast",
+                    card_id=card.id,
+                    card_name=card.name,
+                    alternative_cost="foretell",
+                    mana_options=[{"mana_cost": foretell_alt_cost}],
+                    description=f"Cast {card.name} (foretold, {foretell_alt_cost})",
+                ))
+
     # Graveyard casting (US11, T038) — flashback, escape, unearth, disturb
     _GRAVEYARD_CAST_KW = {"flashback", "escape", "unearth", "disturb"}
     if _can_cast_at_sorcery_speed(gs, player_name) and not _has_split_second(gs):
@@ -1296,6 +1816,18 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                 # auto_tap_mana handles the actual tapping when the AI commits to a cast.
                 if not _new_castable_with_full_pool:
                     continue
+            # US20 T163: Filter activated abilities by timing_restriction (CR 602.1)
+            if ab.timing_restriction:
+                restr = ab.timing_restriction.lower()
+                _is_sorcery_now = (
+                    gs.active_player == player_name
+                    and gs.step == Step.MAIN
+                    and not gs.stack
+                )
+                if ("sorcery" in restr or "your main phase" in restr) and not _is_sorcery_now:
+                    continue
+                if "your turn" in restr and gs.active_player != player_name:
+                    continue
             # Check tap cost — CR 302.6: a creature's {T} ability can't be
             # activated while it has summoning sickness (non-creature permanents
             # such as lands are unaffected by this rule).
@@ -1305,6 +1837,27 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
             mana_part = _re.sub(r"\{T\}", "", ab.cost).strip().strip(",").strip()
             if mana_part and not can_pay_cost(player.mana_pool, mana_part):
                 continue
+            # US24 T179-T180: Validate sacrifice costs — only offer if a valid target exists
+            import re as _re_sac
+            sac_match = _re_sac.search(r"sacrifice (a|an) ([\w ]+)", ab.cost, _re_sac.IGNORECASE)
+            if sac_match:
+                sac_type = sac_match.group(2).strip().lower()
+                # Check if controller has a permanent matching the type to sacrifice
+                has_sac_target = any(
+                    p.controller == player_name
+                    and p.id != perm.id  # can't sacrifice the source if not required
+                    and sac_type in p.card.type_line.lower()
+                    for p in gs.battlefield
+                )
+                if not has_sac_target:
+                    # More permissive: also accept if the ability itself is the source
+                    has_sac_target = any(
+                        p.controller == player_name
+                        and sac_type in p.card.type_line.lower()
+                        for p in gs.battlefield
+                    )
+                if not has_sac_target:
+                    continue
             actions.append(LegalAction(
                 action_type="activate",
                 permanent_id=perm.id,
@@ -1336,8 +1889,8 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                     description=f"Activate {perm.card.name}: {loy_ab.raw_text}",
                 ))
 
-    # Declare attackers (active player, declare attackers step)
-    if is_active and gs.step == Step.DECLARE_ATTACKERS:
+    # Declare attackers (active player, declare attackers step, only if not yet declared)
+    if is_active and gs.step == Step.DECLARE_ATTACKERS and gs.combat is None:
         # US6: Derive and enforce attack constraints
         from mtg_engine.engine.constraints import derive_combat_constraints
         from mtg_engine.engine.mana import can_pay_cost as _can_pay_attack
@@ -1372,12 +1925,22 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
 
         if attackers:
             opponent = next((p.name for p in gs.players if p.name != player_name), "")
+            # T120: include opponent's planeswalkers as valid defending targets (CR 506.2)
+            opp_planeswalkers = [
+                p for p in gs.battlefield
+                if p.controller == opponent
+                and "planeswalker" in p.card.type_line.lower()
+            ]
+            defender_ids = [opponent] + [pw.id for pw in opp_planeswalkers]
             attacker_names = ", ".join(p.card.name for p in attackers)
+            pw_names = (", ".join(pw.card.name for pw in opp_planeswalkers))
+            desc_suffix = f" (or {pw_names})" if opp_planeswalkers else ""
             actions.append(LegalAction(
                 action_type="declare_attackers",
                 valid_targets=[p.id for p in attackers],  # attacker permanent IDs
-                card_name=opponent,                        # defending player
-                description=f"Attack with: {attacker_names}",
+                card_name=opponent,                        # default defending player
+                description=f"Attack with: {attacker_names}{desc_suffix}",
+                mana_options=[{"defender_ids": defender_ids}],
             ))
 
     # Declare blockers (non-active/defending player, declare blockers step, only once per step)
@@ -1395,6 +1958,55 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
         }
         # CR 302.6: summoning sickness only prevents attacking and using {T} abilities,
         # NOT blocking. Tapped creatures also cannot block (CR 509.1a).
+        # US21 T168: Pre-filter for evasion/protection restrictions across all attackers
+        from mtg_engine.engine.combat import _LANDWALK_MAP
+        attacker_perms = [
+            next((p for p in gs.battlefield if p.id == a.permanent_id), None)
+            for a in gs.combat.attackers
+        ]
+        attacker_perms = [a for a in attacker_perms if a is not None]
+
+        def _blocker_can_block_any(blocker_perm) -> bool:
+            """Check if the blocker can legally block at least one attacker."""
+            for atk in attacker_perms:
+                # Flying check
+                if "flying" in atk.card.keywords and not (
+                    "flying" in blocker_perm.card.keywords or "reach" in blocker_perm.card.keywords
+                ):
+                    continue
+                # Shadow check
+                if ("shadow" in atk.card.keywords) != ("shadow" in blocker_perm.card.keywords):
+                    continue
+                # Horsemanship check
+                if "horsemanship" in atk.card.keywords and "horsemanship" not in blocker_perm.card.keywords:
+                    continue
+                # Protection (DEBT - Blocking component) check
+                blocker_colors = [c.lower() for c in blocker_perm.card.colors]
+                prot_blocked = False
+                for kw in atk.card.keywords:
+                    if kw.lower().startswith("protection from ") and kw.lower()[len("protection from "):] in blocker_colors:
+                        prot_blocked = True
+                        break
+                if prot_blocked:
+                    continue
+                # Landwalk check
+                landwalk_blocked = False
+                for kw in atk.card.keywords:
+                    land_type = _LANDWALK_MAP.get(kw.lower())
+                    if land_type:
+                        if any(
+                            p.controller == player_name
+                            and "land" in p.card.type_line.lower()
+                            and land_type in p.card.type_line.lower()
+                            for p in gs.battlefield
+                        ):
+                            landwalk_blocked = True
+                            break
+                if landwalk_blocked:
+                    continue
+                return True  # can block this attacker
+            return False  # no attacker can be blocked by this creature
+
         potential_blockers = [
             p for p in gs.battlefield
             if p.controller == player_name
@@ -1402,6 +2014,7 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
             and not p.tapped
             and p.id not in cannot_block_ids
             and p.id not in goaded_ids
+            and _blocker_can_block_any(p)
         ]
         attacker_names = ", ".join(
             next((p.card.name for p in gs.battlefield if p.id == a.permanent_id), a.permanent_id)
@@ -1447,6 +2060,13 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                 action_type="put_trigger",
                 description=f"Put trigger on stack: {trigger.effect_description}",
             ))
+            # US17 T152: Optional ("you may") triggers also offer a decline action (CR 603.3)
+            if trigger.is_optional:
+                actions.append(LegalAction(
+                    action_type="decline_trigger",
+                    card_id=trigger.id,
+                    description=f"Decline optional trigger: {trigger.effect_description}",
+                ))
 
     # Commander: cast commander from command zone
     if gs.format == "commander" and is_active and is_main and stack_empty:
