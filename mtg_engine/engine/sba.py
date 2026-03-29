@@ -90,8 +90,15 @@ def _check_once(game_state: GameState) -> tuple[GameState, list[SBAEvent]]:
             if toughness is not None and toughness > 0 and perm.damage_marked >= toughness:
                 to_remove.append(perm)
     for perm in to_remove:
-        game_state = _destroy_permanent(game_state, perm)
-        events.append(SBAEvent("lethal_damage", f"{perm.card.name} has lethal damage", [perm.id]))
+        # CR 701.15: regeneration shield prevents destruction, taps creature, clears damage
+        if perm.regen_shields > 0:
+            perm.regen_shields -= 1
+            perm.damage_marked = 0
+            perm.tapped = True
+            events.append(SBAEvent("regen_shield", f"{perm.card.name} regenerates", [perm.id]))
+        else:
+            game_state = _destroy_permanent(game_state, perm)
+            events.append(SBAEvent("lethal_damage", f"{perm.card.name} has lethal damage", [perm.id]))
 
     # CR 704.5h: creature dealt damage by a deathtouch source → destroyed (REQ-R10)
     # Tracked via "__deathtouch_damage__" counter on the permanent
@@ -102,19 +109,44 @@ def _check_once(game_state: GameState) -> tuple[GameState, list[SBAEvent]]:
                 to_remove.append(perm)
     for perm in to_remove:
         perm.counters.pop("__deathtouch_damage__", None)
-        game_state = _destroy_permanent(game_state, perm)
-        events.append(SBAEvent("deathtouch", f"{perm.card.name} destroyed by deathtouch", [perm.id]))
+        if perm.regen_shields > 0:
+            perm.regen_shields -= 1
+            perm.damage_marked = 0
+            perm.tapped = True
+            events.append(SBAEvent("regen_shield", f"{perm.card.name} regenerates (deathtouch)", [perm.id]))
+        else:
+            game_state = _destroy_permanent(game_state, perm)
+            events.append(SBAEvent("deathtouch", f"{perm.card.name} destroyed by deathtouch", [perm.id]))
 
-    # CR 704.5i: planeswalker with 0 loyalty counters → graveyard
+    # CR 704.5i: planeswalker with 0 loyalty → graveyard
     to_remove = []
     for perm in game_state.battlefield:
         if _is_planeswalker(perm):
-            loyalty = perm.counters.get("loyalty", 0)
-            if loyalty <= 0:
+            if perm.loyalty <= 0:
                 to_remove.append(perm)
     for perm in to_remove:
         game_state = _move_to_graveyard(game_state, perm)
         events.append(SBAEvent("planeswalker_loyalty", f"{perm.card.name} has 0 loyalty", [perm.id]))
+
+    # CR 704.5l: planeswalker uniqueness — only one planeswalker of each subtype per player
+    pw_type_groups: dict[str, list[Permanent]] = defaultdict(list)
+    for perm in game_state.battlefield:
+        if _is_planeswalker(perm):
+            type_parts = perm.card.type_line.split("—")
+            if len(type_parts) > 1:
+                for subtype in type_parts[1].strip().split():
+                    pw_type_groups[f"{perm.controller}::{subtype}"].append(perm)
+    for key, perms in pw_type_groups.items():
+        if len(perms) > 1:
+            perms.sort(key=lambda p: p.timestamp)
+            for perm in perms[:-1]:
+                if any(p.id == perm.id for p in game_state.battlefield):
+                    game_state = _move_to_graveyard(game_state, perm)
+                    events.append(SBAEvent(
+                        "planeswalker_uniqueness",
+                        f"Planeswalker uniqueness: {perm.card.name} put in graveyard",
+                        [perm.id],
+                    ))
 
     # CR 704.5j: legend rule — same controller, same legendary permanent name → keep one
     legend_groups: dict[str, list[Permanent]] = defaultdict(list)

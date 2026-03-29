@@ -85,9 +85,17 @@ class Permanent(BaseModel):
     # Temporary P/T bonuses from "until end of turn" effects (layer 7c)
     power_bonus: int = 0
     toughness_bonus: int = 0
+    # US23: Effect expiry scope — "end_of_turn" or "player:<name>" for "until your next turn"
+    power_bonus_expires: Optional[str] = None
+    toughness_bonus_expires: Optional[str] = None
     # Planeswalker loyalty tracking (017-forge-ai-parity)
     loyalty: int = 0
     loyalty_activated_this_turn: bool = False
+    # New fields for 018 feature
+    unearthed: bool = False     # True if entered via Unearth — exile at end of turn
+    time_counters: int = 0      # Used for suspended cards in exile zone
+    foretold: bool = False      # True if exiled face-down via Foretell
+    regen_shields: int = 0      # CR 701.15: active regeneration shields
 
 
 class StackObject(BaseModel):
@@ -100,6 +108,11 @@ class StackObject(BaseModel):
     modes_chosen: list[int] = Field(default_factory=list)
     alternative_cost: Optional[str] = None
     mana_payment: dict[str, int] = Field(default_factory=dict)
+    # New fields for 018 feature
+    x_value: int = 0                          # X value for {X} spells
+    kicker_paid: bool = False                  # Whether kicker cost was paid
+    jump_start_discard_id: Optional[str] = None   # Card discarded for jump-start cost
+    uncounterable: bool = False               # CR 702.102: spell cannot be countered
 
 
 class PlayerState(BaseModel):
@@ -118,6 +131,9 @@ class PlayerState(BaseModel):
     command_zone: list[Card] = Field(default_factory=list)
     commander_name: Optional[str] = None
     commander_cast_count: int = 0
+    # New fields for 018 feature
+    suspended_cards: list[Card] = Field(default_factory=list)   # Cards exiled via Suspend (with time_counters)
+    foretold_cards: list[Card] = Field(default_factory=list)    # Cards exiled face-down via Foretell
 
 
 class PendingTrigger(BaseModel):
@@ -127,6 +143,7 @@ class PendingTrigger(BaseModel):
     trigger_type: str
     effect_description: str
     source_card_name: str
+    is_optional: bool = False  # CR 603.3: "you may" triggers offer a choice
 
 
 class DamagePreventionEffect(BaseModel):
@@ -205,6 +222,25 @@ class GameState(BaseModel):
     players_kept: list[str] = Field(default_factory=list)
     # Cascade pending choice (017-forge-ai-parity)
     pending_cascade: Optional[dict] = None
+    # Pending blocking choices (set by engine, cleared on choice submission)
+    pending_scry_choice: Optional[dict] = None
+    # Format: {"player": str, "cards": [Card], "n": int}
+    pending_surveil_choice: Optional[dict] = None
+    # Format: {"player": str, "cards": [Card], "n": int}
+    pending_tutor_choice: Optional[dict] = None
+    # Format: {"player": str, "filter_type": str, "destination": "hand" | "battlefield"}
+    pending_discard_choice: Optional[dict] = None
+    # Format: {"player": str, "count": int}
+    pending_ward_payment: Optional[dict] = None
+    # Format: {"player": str, "ward_cost": str, "targeting_spell_id": str}
+    # Transform tracking
+    spells_cast_this_turn: int = 0    # Reset each turn; checked for werewolf conditions
+    spells_cast_last_turn: int = 0    # Snapshot of previous turn's count
+    # Extra turns queue (CR 500.7): LIFO — pop() gives next extra turn recipient
+    extra_turns: list[str] = Field(default_factory=list)
+    # Delayed triggered abilities (CR 603.7): fire at a future phase/step
+    # Each entry: {"phase": str, "step": str|None, "controller": str, "effect": str, "once": bool}
+    delayed_triggers: list[dict] = Field(default_factory=list)
 
     def compute_hash(self) -> str:
         """Compute deterministic hash of state, excluding state_hash itself. REQ-API05"""

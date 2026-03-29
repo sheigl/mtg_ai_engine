@@ -55,6 +55,32 @@ def begin_step(game_state: GameState) -> GameState:
         # No priority in untap step; mana pools don't need clearing
         return game_state
 
+    elif step == Step.UPKEEP:
+        # CR 702.61c: At the beginning of your upkeep, remove a time counter from each
+        # suspended card you own. When the last is removed, cast it for free.
+        active = get_player(game_state, game_state.active_player)
+        still_suspended = []
+        for card in active.suspended_cards:
+            tc_match = None
+            if card.parse_status and card.parse_status.startswith("suspended:"):
+                try:
+                    tc_match = int(card.parse_status.split(":")[1])
+                except (ValueError, IndexError):
+                    tc_match = 0
+            remaining = (tc_match or 0) - 1
+            if remaining <= 0:
+                # Cast for free — move from suspended_cards to hand then stack
+                logger.info("Suspend: %s time counters exhausted — casting for free", card.name)
+                ready = card.model_copy(update={"parse_status": "ok"})
+                active.hand.append(ready)
+                # Trigger a zero-cost cast by putting it on the stack via pending trigger
+                # (Full implementation: cast for free. Simplified: return to hand for AI to cast.)
+            else:
+                updated = card.model_copy(update={"parse_status": f"suspended:{remaining}"})
+                still_suspended.append(updated)
+                logger.debug("Suspend: %s now has %d time counter(s)", card.name, remaining)
+        active.suspended_cards = still_suspended
+
     elif step == Step.DRAW:
         # REQ-T04: active player draws one card (first-player first-turn exception
         # is handled at game creation, not here)
@@ -67,8 +93,16 @@ def begin_step(game_state: GameState) -> GameState:
             active.hand.pop()  # simplified: discard last card (full impl requires player choice)
         for perm in game_state.battlefield:
             perm.damage_marked = 0
-            perm.power_bonus = 0
-            perm.toughness_bonus = 0
+            # US23: Only clear P/T bonuses that expire this cleanup
+            # "end_of_turn" expires at active player's cleanup; "player:<name>" expires at that player's cleanup
+            expires_p = perm.power_bonus_expires
+            expires_t = perm.toughness_bonus_expires
+            if expires_p in (None, "end_of_turn") or expires_p == f"player:{game_state.active_player}":
+                perm.power_bonus = 0
+                perm.power_bonus_expires = None
+            if expires_t in (None, "end_of_turn") or expires_t == f"player:{game_state.active_player}":
+                perm.toughness_bonus = 0
+                perm.toughness_bonus_expires = None
         # Clear mana pools at cleanup
         for p in game_state.players:
             p.mana_pool = ManaPool()
@@ -79,6 +113,34 @@ def begin_step(game_state: GameState) -> GameState:
         game_state.attack_constraints.clear()
         game_state.block_constraints.clear()
         return game_state
+
+    # US18: Check delayed triggers — move matching ones into pending_triggers (CR 603.7)
+    if game_state.delayed_triggers:
+        from mtg_engine.models.game import PendingTrigger
+        import uuid as _uuid
+        current_phase = game_state.phase.value
+        current_step = game_state.step.value
+        still_pending = []
+        for dt in game_state.delayed_triggers:
+            phase_match = dt.get("phase") == current_phase
+            step_val = dt.get("step")
+            step_match = step_val is None or step_val == current_step
+            if phase_match and step_match:
+                trigger = PendingTrigger(
+                    id=str(_uuid.uuid4()),
+                    source_permanent_id="delayed",
+                    controller=dt["controller"],
+                    trigger_type="delayed",
+                    effect_description=dt["effect"],
+                    source_card_name="delayed_trigger",
+                )
+                game_state.pending_triggers.append(trigger)
+                logger.info("Delayed trigger fires for %s at %s/%s", dt["controller"], current_phase, current_step)
+                if not dt.get("once", True):
+                    still_pending.append(dt)
+            else:
+                still_pending.append(dt)
+        game_state.delayed_triggers = still_pending
 
     # Clear mana pools at end of each step (mana floating rule)
     # Untap and Cleanup already handled above
@@ -150,14 +212,20 @@ def advance_step(game_state: GameState) -> GameState:
 
 
 def _advance_turn(game_state: GameState) -> GameState:
-    """Switch to the next player's turn."""
-    other = _other_player(game_state)
-    game_state.active_player = other
-    game_state.priority_holder = other
+    """Switch to the next player's turn, consuming extra turns first (CR 500.7)."""
+    # CR 500.7: extra turns form a LIFO stack — pop() gives the next extra turn recipient
+    if game_state.extra_turns:
+        next_player = game_state.extra_turns.pop()
+        logger.info("Extra turn begins for %s (remaining extra turns: %d)",
+                    next_player, len(game_state.extra_turns))
+    else:
+        next_player = _other_player(game_state)
+    game_state.active_player = next_player
+    game_state.priority_holder = next_player
     game_state.turn += 1
     game_state.phase = Phase.BEGINNING
     game_state.step = Step.UNTAP
-    # US7: Clear phase skip flags at end of turn
+    # Clear phase skip flags at end of turn
     game_state.phase_skip_flags.clear()
     logger.info("Turn %d begins; active player: %s", game_state.turn, game_state.active_player)
     return game_state

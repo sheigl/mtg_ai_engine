@@ -36,6 +36,10 @@ class CastRequest(BaseModel):
     dry_run: bool = False
     from_command_zone: bool = False
     from_graveyard: bool = False
+    # New fields for 018 feature
+    x_value: int = 0                          # X value chosen for {X} mana cost
+    kicker_paid: bool = False                  # Whether to pay kicker cost
+    jump_start_discard_id: Optional[str] = None   # Card to discard for jump-start
 
 
 class ActivateRequest(BaseModel):
@@ -110,6 +114,9 @@ class LegalAction(BaseModel):
     loyalty_ability_index: Optional[int] = None   # activate_loyalty: which ability index
     cascade_card_id: Optional[str] = None          # cascade_choice: the card being offered
     from_graveyard: bool = False                   # cast originating from graveyard zone
+    # New fields for 018 feature
+    x_value: Optional[int] = None         # For X spell variants
+    kicker_paid: Optional[bool] = None    # For kicker variants
 
 
 # --- New request models for Forge AI parity (017) ---

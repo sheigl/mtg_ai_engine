@@ -243,6 +243,13 @@ def put_permanent_onto_battlefield(
     from_zone: str = "unknown",
 ) -> tuple[GameState, Permanent]:
     """Create a Permanent from a Card and add it to the battlefield."""
+    # Initialize planeswalker loyalty from card data (CR 306.5b)
+    init_loyalty = 0
+    if "planeswalker" in card.type_line.lower() and card.loyalty:
+        try:
+            init_loyalty = int(card.loyalty)
+        except (ValueError, TypeError):
+            init_loyalty = 0
     perm = Permanent(
         id=str(uuid.uuid4()),
         card=card,
@@ -252,6 +259,7 @@ def put_permanent_onto_battlefield(
         turn_entered_battlefield=turn_entered if turn_entered is not None else game_state.turn,
         summoning_sick=True,
         timestamp=time.time(),
+        loyalty=init_loyalty,
     )
     game_state.battlefield.append(perm)
 

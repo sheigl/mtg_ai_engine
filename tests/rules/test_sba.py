@@ -161,7 +161,7 @@ def test_planeswalker_zero_loyalty():
         loyalty="3",
     )
     gs, perm = put_permanent_onto_battlefield(gs, card, "p1")
-    perm.counters["loyalty"] = 0
+    perm.loyalty = 0  # drain loyalty directly (CR 704.5i uses perm.loyalty)
     gs, events = check_and_apply_sbas(gs)
     assert len(gs.battlefield) == 0
     assert any(e.sba_type == "planeswalker_loyalty" for e in events)

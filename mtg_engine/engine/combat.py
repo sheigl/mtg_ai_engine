@@ -63,6 +63,54 @@ def _is_lethal_damage(damage: int, blocker: Permanent, has_deathtouch: bool) -> 
     return damage >= _effective_toughness(blocker)
 
 
+def _has_hexproof_or_shroud(perm: Permanent) -> bool:
+    """Check if a permanent has hexproof or shroud."""
+    return _has_keyword(perm, "hexproof") or _has_keyword(perm, "shroud")
+
+
+def _has_protection(perm: Permanent, from_keyword: str) -> bool:
+    """Check if a permanent has protection from a specific keyword."""
+    return any(f"protection from {from_keyword}" in kw.lower() for kw in perm.card.keywords)
+
+
+# Landwalk keyword → land subtype mapping (CR 702.11)
+_LANDWALK_MAP = {
+    "islandwalk": "island",
+    "swampwalk": "swamp",
+    "mountainwalk": "mountain",
+    "forestwalk": "forest",
+    "plainswalk": "plains",
+}
+
+
+def _check_landwalk(
+    game_state: GameState,
+    attacker: Permanent,
+    blocker: Permanent,
+    defending_player_name: str,
+) -> None:
+    """
+    CR 702.11: Landwalk — if attacker has [type]walk and defending player controls a land
+    of that type, the attacker cannot be blocked. Raises ValueError if block is illegal.
+    """
+    for kw in attacker.card.keywords:
+        kw_lower = kw.lower()
+        land_type = _LANDWALK_MAP.get(kw_lower)
+        if land_type:
+            # Check if defending player controls a land of this type
+            controls_land = any(
+                p.controller == defending_player_name
+                and "land" in p.card.type_line.lower()
+                and land_type in p.card.type_line.lower()
+                for p in game_state.battlefield
+            )
+            if controls_land:
+                raise ValueError(
+                    f"{attacker.card.name} has {kw} — cannot be blocked while defending player "
+                    f"controls a {land_type}"
+                )
+
+
 # ─── Declare Attackers ────────────────────────────────────────────────────────
 
 def declare_attackers(
@@ -152,6 +200,49 @@ def declare_blockers(
         if _has_keyword(attacker, "flying"):
             if not (_has_keyword(blocker, "flying") or _has_keyword(blocker, "reach")):
                 raise ValueError(f"{blocker.card.name} cannot block a flying creature")
+
+        # US19 CR 702.16c: Protection "Blocking" — creature with protection from X
+        # cannot be blocked by X creatures
+        blocker_colors = [c.lower() for c in blocker.card.colors]
+        for kw in attacker.card.keywords:
+            kw_lower = kw.lower()
+            if kw_lower.startswith("protection from "):
+                protected_from = kw_lower[len("protection from "):]
+                if protected_from in blocker_colors:
+                    raise ValueError(
+                        f"{blocker.card.name} cannot block {attacker.card.name} "
+                        f"(protection from {protected_from})"
+                    )
+
+        # US21 CR 702.27 (Shadow): shadow creatures can only be blocked by shadow creatures,
+        # and shadow creatures can only block shadow creatures
+        attacker_has_shadow = _has_keyword(attacker, "shadow")
+        blocker_has_shadow = _has_keyword(blocker, "shadow")
+        if attacker_has_shadow and not blocker_has_shadow:
+            raise ValueError(f"{blocker.card.name} cannot block a shadow creature without shadow")
+        if blocker_has_shadow and not attacker_has_shadow:
+            raise ValueError(f"{blocker.card.name} (shadow) cannot block a non-shadow creature")
+
+        # US21 CR 702.54 (Horsemanship): same as flying but for horsemanship
+        if _has_keyword(attacker, "horsemanship"):
+            if not _has_keyword(blocker, "horsemanship"):
+                raise ValueError(f"{blocker.card.name} cannot block a creature with horsemanship")
+
+        # US21 CR 702.11 (Landwalk): if attacker has [type]walk and defending player controls
+        # a land of that type, the attacker is unblockable
+        defending_player_name = next(
+            (p.name for p in game_state.players if p.name != game_state.active_player), ""
+        )
+        _check_landwalk(game_state, attacker, blocker, defending_player_name)
+
+        # US2: Menace enforcement — attacker with menace requires 2+ blockers
+        if _has_keyword(attacker, "menace"):
+            existing_blockers = len(attacker_info.blocker_ids)
+            blockers_for_this_attacker = sum(
+                1 for d in block_declarations if d.attacker_id == decl.attacker_id
+            )
+            if existing_blockers == 0 and blockers_for_this_attacker == 1:
+                raise ValueError(f"{attacker.card.name} has menace and must be blocked by 2+ creatures")
 
         attacker_info.is_blocked = True
         attacker_info.blocker_ids.append(blocker.id)
@@ -362,12 +453,16 @@ def assign_combat_damage(
         # Deal damage to target
         target_perm = next((p for p in game_state.battlefield if p.id == assign.target_id), None)
         if target_perm:
-            if has_infect:
+            is_planeswalker_target = "planeswalker" in target_perm.card.type_line.lower()
+            if is_planeswalker_target:
+                # CR 306.6: combat damage to planeswalker reduces loyalty (not damage_marked)
+                target_perm.loyalty = max(0, target_perm.loyalty - assign.damage)
+            elif has_infect:
                 # REQ-R12: infect damage to creatures as -1/-1 counters
                 target_perm.counters["-1/-1"] = target_perm.counters.get("-1/-1", 0) + assign.damage
             else:
                 target_perm.damage_marked += assign.damage
-            if has_deathtouch and assign.damage > 0:
+            if has_deathtouch and assign.damage > 0 and not is_planeswalker_target:
                 # REQ-R10: mark for deathtouch SBA (CR 702.2b)
                 target_perm.counters["__deathtouch_damage__"] = (
                     target_perm.counters.get("__deathtouch_damage__", 0) + assign.damage

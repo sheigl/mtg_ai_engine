@@ -17,8 +17,11 @@ def initialize_triggers(game_state: GameState) -> None:
     """
     Register the zone-change listener for trigger detection.
     Call once when a game is created. CR 603.2.
+    Guard against duplicate registration (idempotent).
     """
-    register_zone_change_listener(_on_zone_change)
+    from mtg_engine.engine.zones import _zone_change_listeners
+    if _on_zone_change not in _zone_change_listeners:
+        register_zone_change_listener(_on_zone_change)
 
 
 def _on_zone_change(event: ZoneChangeEvent, game_state: GameState) -> None:
@@ -35,6 +38,8 @@ def _on_zone_change(event: ZoneChangeEvent, game_state: GameState) -> None:
             if not isinstance(ab, TriggeredAbility):
                 continue
             if _matches_zone_change(ab, event, perm, game_state):
+                # CR 603.3: "you may" triggers are optional — detect and mark
+                is_optional = ab.effect.lower().startswith("you may")
                 trigger = PendingTrigger(
                     id=str(uuid.uuid4()),
                     source_permanent_id=perm.id,
@@ -42,6 +47,7 @@ def _on_zone_change(event: ZoneChangeEvent, game_state: GameState) -> None:
                     trigger_type="zone_change",
                     effect_description=ab.effect,
                     source_card_name=card.name,
+                    is_optional=is_optional,
                 )
                 game_state.pending_triggers.append(trigger)
                 logger.debug(
@@ -108,6 +114,7 @@ def check_phase_triggers(game_state: GameState) -> GameState:
                 continue
             cond = ab.trigger_condition.lower()
             if _matches_phase_trigger(cond, current_step, current_phase, perm, game_state):
+                is_optional = ab.effect.lower().startswith("you may")
                 trigger = PendingTrigger(
                     id=str(uuid.uuid4()),
                     source_permanent_id=perm.id,
@@ -115,6 +122,7 @@ def check_phase_triggers(game_state: GameState) -> GameState:
                     trigger_type="phase_change",
                     effect_description=ab.effect,
                     source_card_name=card.name,
+                    is_optional=is_optional,
                 )
                 game_state.pending_triggers.append(trigger)
                 logger.debug(

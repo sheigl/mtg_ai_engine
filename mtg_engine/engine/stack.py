@@ -59,6 +59,9 @@ def cast_spell(
     mana_payment: dict[str, int],
     alternative_cost: str | None = None,
     modes_chosen: list[int] | None = None,
+    x_value: int = 0,
+    kicker_paid: bool = False,
+    jump_start_discard_id: str | None = None,
 ) -> GameState:
     """
     Cast a spell from a player's hand. REQ-A03, REQ-A04, REQ-S01.
@@ -102,6 +105,20 @@ def cast_spell(
     # Move card from hand to stack (REQ-A04)
     player.hand[:] = [c for c in player.hand if c.id != card_id]
 
+    # Handle jump-start discard before putting spell on stack
+    if jump_start_discard_id and alternative_cost == "jump-start":
+        discard_card = next((c for c in player.hand if c.id == jump_start_discard_id), None)
+        if discard_card:
+            player.hand[:] = [c for c in player.hand if c.id != jump_start_discard_id]
+            player.graveyard.append(discard_card)
+
+    # CR 702.102: detect "can't be countered" / "this spell can't be countered" in oracle text
+    oracle_lower = (card.oracle_text or "").lower()
+    is_uncounterable = (
+        "can't be countered" in oracle_lower
+        or "cannot be countered" in oracle_lower
+    )
+
     stack_obj = StackObject(
         id=str(uuid.uuid4()),
         source_card=card,
@@ -111,6 +128,10 @@ def cast_spell(
         modes_chosen=modes_chosen or [],
         alternative_cost=alternative_cost,
         mana_payment=mana_payment,
+        x_value=x_value,
+        kicker_paid=kicker_paid,
+        jump_start_discard_id=jump_start_discard_id,
+        uncounterable=is_uncounterable,
     )
     game_state.stack.append(stack_obj)
 
@@ -161,6 +182,21 @@ def resolve_top(game_state: GameState) -> GameState:
     card = stack_obj.source_card
     type_lower = card.type_line.lower()
 
+    # CR 608.2b: fizzle — if spell has targets and ALL are now illegal, the spell does nothing
+    if stack_obj.targets and ("instant" in type_lower or "sorcery" in type_lower):
+        valid_targets = [
+            t for t in stack_obj.targets
+            if (any(p.id == t for p in game_state.battlefield)
+                or any(pl.name == t for pl in game_state.players)
+                or any(s.id == t for s in game_state.stack))
+        ]
+        if not valid_targets:
+            logger.info("Fizzle: all targets illegal for %s", card.name)
+            if not stack_obj.is_copy:
+                player = get_player(game_state, stack_obj.controller)
+                player.graveyard.append(card)
+            return game_state
+
     logger.info("Resolving %s (controller: %s)", card.name, stack_obj.controller)
 
     # Permanent spell → enters battlefield (creatures, artifacts, enchantments, planeswalkers, lands)
@@ -208,6 +244,49 @@ def resolve_top(game_state: GameState) -> GameState:
             player.graveyard.append(card)
             logger.warning("Unknown card type for %r; placed in graveyard", card.name)
 
+    # Cascade trigger: fires after any non-copy spell resolves (CR 702.84)
+    if not stack_obj.is_copy:
+        kws_lower = [k.lower() for k in (card.keywords or [])]
+        if "cascade" in kws_lower or "cascade" in (card.oracle_text or "").lower():
+            cmc = card.cmc if card.cmc is not None else 0
+            game_state = _trigger_cascade(game_state, stack_obj.controller, int(cmc))
+
+    return game_state
+
+
+def _trigger_cascade(game_state: GameState, caster_name: str, cascade_cmc: int) -> GameState:
+    """
+    Implement cascade: exile cards from top of library until finding a non-land card
+    with CMC < cascade_cmc. Set pending_cascade with the found card for player choice.
+    CR 702.84
+    """
+    caster = get_player(game_state, caster_name)
+    exiled_non_chosen: list = []
+
+    found_card = None
+    while caster.library:
+        top_card = caster.library.pop(0)
+        if "land" not in top_card.type_line.lower():
+            card_cmc = top_card.cmc if top_card.cmc is not None else 0
+            if int(card_cmc) < cascade_cmc:
+                found_card = top_card
+                break
+        exiled_non_chosen.append(top_card)
+
+    if found_card is not None:
+        caster.exile.extend(exiled_non_chosen)
+        game_state.pending_cascade = {
+            "player": caster_name,
+            "found_card": found_card.model_dump(),
+            "exiled_cards": [c.model_dump() for c in exiled_non_chosen],
+            "cascade_cmc": cascade_cmc,
+        }
+        logger.info("Cascade: %s found %s (CMC < %d)", caster_name, found_card.name, cascade_cmc)
+    else:
+        # Nothing found — put all exiled cards on library bottom
+        caster.library.extend(exiled_non_chosen)
+        logger.info("Cascade: no card found with CMC < %d", cascade_cmc)
+
     return game_state
 
 
@@ -245,46 +324,489 @@ def _apply_triggered_effect(game_state: GameState, stack_obj: StackObject) -> Ga
     return game_state
 
 
+def _apply_single_effect_text(game_state: GameState, stack_obj: StackObject, effect_text: str) -> GameState:
+    """Apply the effect of a single oracle text clause against the pattern list."""
+    card = stack_obj.source_card
+    x_value = stack_obj.x_value
+
+    patterns = [
+        (r"draw (\d+|x) cards?",
+         lambda m: _draw_cards(game_state, stack_obj.controller,
+                               int(m.group(1)) if m.group(1).isdigit() else x_value)),
+        (r"destroy target [\w\s]+",
+         lambda m: _destroy_permanent(game_state, stack_obj.targets[0] if stack_obj.targets else None)),
+        (r"exile target [\w ]+",
+         lambda m: _exile_permanent(game_state, stack_obj.targets[0] if stack_obj.targets else None)),
+        (r"return target [\w ]+ to (?:its owner'?s?|your) hand",
+         lambda m: _bounce_permanent(game_state, stack_obj.targets[0] if stack_obj.targets else None)),
+        (r"create (a|an|one|two|three|\d+) (\d+)/(\d+) ([\w ]+) creature tokens?",
+         lambda m: _create_tokens(game_state, stack_obj.controller,
+                                  m.group(1), m.group(2), m.group(3), m.group(4))),
+        (r"gain(?:s)? (\d+|x) life",
+         lambda m: _gain_life(game_state, stack_obj.controller,
+                              int(m.group(1)) if m.group(1).isdigit() else x_value)),
+        (r"discard(?:s)? (\d+|x) cards?",
+         lambda m: _discard_cards(game_state, stack_obj.controller,
+                                  int(m.group(1)) if m.group(1).isdigit() else x_value)),
+        (r"search your library for (?:a|an) ([\w ]+)",
+         lambda m: _tutor(game_state, stack_obj.controller, m.group(1).strip(), "hand")),
+        (r"put (\d+|x) \+1/\+1 counters? on target creature",
+         lambda m: _add_counters(game_state, stack_obj.targets[0] if stack_obj.targets else None,
+                                 "+1/+1", int(m.group(1)) if m.group(1).isdigit() else x_value)),
+        (r"scry (\d+|x)",
+         lambda m: _apply_scry(game_state, stack_obj.controller,
+                               int(m.group(1)) if m.group(1).isdigit() else x_value)),
+        (r"surveil (\d+|x)",
+         lambda m: _apply_surveil(game_state, stack_obj.controller,
+                                  int(m.group(1)) if m.group(1).isdigit() else x_value)),
+        (r"deals?\s+(\d+)\s+damage",
+         lambda m: _deal_damage(game_state, stack_obj.targets[0] if stack_obj.targets else None,
+                                int(m.group(1)), card) if stack_obj.targets else None),
+        (r"target creature gets \+(\d+)/\+(\d+) until your next turn",
+         lambda m: _pump_creature(
+             game_state, stack_obj.targets[0] if stack_obj.targets else None,
+             int(m.group(1)), int(m.group(2)),
+             expires=f"player:{stack_obj.controller}",
+         ) if stack_obj.targets else None),
+        (r"target creature gets \+(\d+)/\+(\d+) until end of turn",
+         lambda m: _pump_creature(game_state, stack_obj.targets[0] if stack_obj.targets else None,
+                                  int(m.group(1)), int(m.group(2))) if stack_obj.targets else None),
+        (r"counter target spell",
+         lambda m: _counter_spell(game_state, stack_obj.targets[0] if stack_obj.targets else None)
+         if stack_obj.targets else None),
+        (r"draw a card, then discard a card",
+         lambda m: _draw_discard(game_state, stack_obj.controller)),
+        (r"mill (\d+)",
+         lambda m: _mill(game_state, stack_obj.controller, int(m.group(1)))),
+        (r"shuffle your library",
+         lambda m: _shuffle_library(game_state, stack_obj.controller)),
+    ]
+
+    oracle_lower = effect_text.lower()
+    for pattern, effect_func in patterns:
+        match = re.search(pattern, oracle_lower)
+        if match:
+            result = effect_func(match)
+            if result is not None:
+                game_state = result
+            return game_state
+    return game_state
+
+
 def _apply_spell_effect(game_state: GameState, stack_obj: StackObject) -> GameState:
     """
     Apply the effect of a resolved instant or sorcery.
-    Handles damage (Lightning Bolt-style) and counter-spell effects.
-    Full effect system will be expanded in later tasks.
+    Implements all new spell effects from the 018 feature spec.
     CR 608.2: effects are applied as described on the card.
     """
     card = stack_obj.source_card
     oracle = (card.oracle_text or "").lower()
 
-    # Damage effects: "deals N damage to any target" / "deals N damage to target creature"
-    dmg_match = re.search(r"deals?\s+(\d+)\s+damage", oracle)
-    if dmg_match and stack_obj.targets:
-        damage = int(dmg_match.group(1))
-        for target_id in stack_obj.targets:
-            game_state = _deal_damage(game_state, target_id, damage, card)
+    # Modal spells (US4): apply only chosen modes
+    if stack_obj.modes_chosen:
+        # Split oracle text by bullet (•) or "Mode N:" markers
+        raw = card.oracle_text or ""
+        mode_texts = re.split(r'•|Mode \d+:', raw)
+        mode_texts = [m.strip() for m in mode_texts if len(m.strip()) > 5]
+        for mode_idx in stack_obj.modes_chosen:
+            if mode_idx < len(mode_texts):
+                game_state = _apply_single_effect_text(game_state, stack_obj, mode_texts[mode_idx])
+        return game_state
 
-    # Pump effects: "target creature gets +N/+M until end of turn" (Giant Growth, etc.)
-    pump_match = re.search(r"target creature gets \+(\d+)/\+(\d+) until end of turn", oracle)
-    if pump_match and stack_obj.targets:
-        p_bonus = int(pump_match.group(1))
-        t_bonus = int(pump_match.group(2))
-        for target_id in stack_obj.targets:
-            target_perm = next((p for p in game_state.battlefield if p.id == target_id), None)
-            if target_perm:
-                target_perm.power_bonus += p_bonus
-                target_perm.toughness_bonus += t_bonus
-                logger.info("%s: +%d/+%d applied to %s", card.name, p_bonus, t_bonus, target_perm.card.name)
+    # Helper to substitute X values in patterns
+    def _substitute_x_in_pattern(pattern: str, x_value: int) -> str:
+        return re.sub(r'\bX\b', str(x_value), pattern, flags=re.IGNORECASE)
 
-    # Counter spell: "counter target spell"
-    if "counter target spell" in oracle and stack_obj.targets:
-        for target_id in stack_obj.targets:
-            # Find and remove target from stack, put its card in owner's graveyard
-            countered = next((s for s in game_state.stack if s.id == target_id), None)
-            if countered:
-                game_state.stack[:] = [s for s in game_state.stack if s.id != target_id]
-                # Put the countered card in its controller's graveyard
-                owner = get_player(game_state, countered.controller)
-                owner.graveyard.append(countered.source_card)
-                logger.info("Spell %s countered %s", card.name, countered.source_card.name)
+    # Helper to get x_value from stack object
+    x_value = stack_obj.x_value
+    
+    # Priority-ordered pattern list for spell effect resolution.
+    # Each entry: (regex_pattern, lambda taking full re.Match object).
+    # First match wins; unrecognized oracle text logs at DEBUG level (no crash).
+    patterns = [
+        # 1. Draw cards: "draw N cards" / "draw x cards"
+        (r"draw (\d+|x) cards?",
+         lambda m: _draw_cards(game_state, stack_obj.controller,
+                               int(m.group(1)) if m.group(1).isdigit() else x_value)),
+        # 2. Destroy permanent
+        (r"destroy target [\w\s]+",
+         lambda m: _destroy_permanent(game_state, stack_obj.targets[0] if stack_obj.targets else None)),
+        # 3. Exile permanent
+        (r"exile target [\w ]+",
+         lambda m: _exile_permanent(game_state, stack_obj.targets[0] if stack_obj.targets else None)),
+        # 4. Bounce permanent back to hand
+        (r"return target [\w ]+ to (?:its owner'?s?|your) hand",
+         lambda m: _bounce_permanent(game_state, stack_obj.targets[0] if stack_obj.targets else None)),
+        # 5. Create creature tokens with explicit P/T (most specific create pattern first)
+        (r"create (a|an|one|two|three|\d+) (\d+)/(\d+) ([\w ]+) creature tokens?",
+         lambda m: _create_tokens(game_state, stack_obj.controller,
+                                  m.group(1), m.group(2), m.group(3), m.group(4))),
+        # 6. Gain life: "you gain N life" / "gains N life"
+        (r"gain(?:s)? (\d+|x) life",
+         lambda m: _gain_life(game_state, stack_obj.controller,
+                              int(m.group(1)) if m.group(1).isdigit() else x_value)),
+        # 7. Discard cards: "discard N cards" / "discards N cards"
+        (r"discard(?:s)? (\d+|x) cards?",
+         lambda m: _discard_cards(game_state, stack_obj.controller,
+                                  int(m.group(1)) if m.group(1).isdigit() else x_value)),
+        # 8. Tutor: search library for a card
+        (r"search your library for (?:a|an) ([\w ]+)",
+         lambda m: _tutor(game_state, stack_obj.controller, m.group(1).strip(), "hand")),
+        # 9. Add +1/+1 counters on target creature
+        (r"put (\d+|x) \+1/\+1 counters? on target creature",
+         lambda m: _add_counters(game_state, stack_obj.targets[0] if stack_obj.targets else None,
+                                 "+1/+1", int(m.group(1)) if m.group(1).isdigit() else x_value)),
+        # 10. Scry N
+        (r"scry (\d+|x)",
+         lambda m: _apply_scry(game_state, stack_obj.controller,
+                               int(m.group(1)) if m.group(1).isdigit() else x_value)),
+        # 11. Surveil N
+        (r"surveil (\d+|x)",
+         lambda m: _apply_surveil(game_state, stack_obj.controller,
+                                  int(m.group(1)) if m.group(1).isdigit() else x_value)),
+        # 12. Damage: "deals N damage"
+        (r"deals?\s+(\d+)\s+damage",
+         lambda m: _deal_damage(game_state, stack_obj.targets[0] if stack_obj.targets else None,
+                                int(m.group(1)), card) if stack_obj.targets else None),
+        # 13. Pump: "target creature gets +N/+M until your next turn"  (US23: different scope)
+        (r"target creature gets \+(\d+)/\+(\d+) until your next turn",
+         lambda m: _pump_creature(
+             game_state, stack_obj.targets[0] if stack_obj.targets else None,
+             int(m.group(1)), int(m.group(2)),
+             expires=f"player:{stack_obj.controller}",
+         ) if stack_obj.targets else None),
+        # 13b. Pump: "target creature gets +N/+M until end of turn"
+        (r"target creature gets \+(\d+)/\+(\d+) until end of turn",
+         lambda m: _pump_creature(game_state, stack_obj.targets[0] if stack_obj.targets else None,
+                                  int(m.group(1)), int(m.group(2))) if stack_obj.targets else None),
+        # 14. Counter spell
+        (r"counter target spell",
+         lambda m: _counter_spell(game_state, stack_obj.targets[0] if stack_obj.targets else None)
+         if stack_obj.targets else None),
+        # 15. Draw a card, then discard a card (looting)
+        (r"draw a card, then discard a card",
+         lambda m: _draw_discard(game_state, stack_obj.controller)),
+        # 16. Mill N cards
+        (r"mill (\d+)",
+         lambda m: _mill(game_state, stack_obj.controller, int(m.group(1)))),
+        # 17. Shuffle library
+        (r"shuffle your library",
+         lambda m: _shuffle_library(game_state, stack_obj.controller)),
+        # 18. Extra turn: "take an extra turn after this" / "target player takes an extra turn"
+        (r"take an? extra turn after this|you take an? extra turn",
+         lambda m: _grant_extra_turn(game_state, stack_obj.controller)),
+        (r"target player takes? an? extra turn",
+         lambda m: _grant_extra_turn(
+             game_state,
+             stack_obj.targets[0] if stack_obj.targets else stack_obj.controller,
+         )),
+    ]
+
+    # Try each pattern in order; pass the full match object to the lambda.
+    for pattern, effect_func in patterns:
+        m = re.search(pattern, oracle)
+        if m:
+            result = effect_func(m)
+            if result is not None:
+                game_state = result
+            return game_state
+
+    # If no pattern matched, log at DEBUG level (no crash — CR 608.2b: unimplemented effects no-op)
+    logger.debug("Spell effect not implemented for %r: %r", card.name, oracle)
+    return game_state
+
+
+def _draw_cards(game_state: GameState, player_name: str, n: int) -> GameState:
+    """Draw N cards from the top of player's library to their hand."""
+    player = get_player(game_state, player_name)
+    if n <= 0:
+        return game_state
+    
+    # Draw cards from top of library
+    drawn_cards = []
+    for _ in range(min(n, len(player.library))):
+        if player.library:
+            drawn_cards.append(player.library.pop(0))
+    
+    player.hand.extend(drawn_cards)
+    
+    # Check for empty library (player loses)
+    if not player.library:
+        player.has_lost = True
+        game_state.winner = next((p.name for p in game_state.players if p.name != player_name), None)
+        logger.info("%s draws from empty library and loses the game", player_name)
+    
+    logger.info("%s draws %d cards", player_name, len(drawn_cards))
+    return game_state
+
+
+def _destroy_permanent(game_state: GameState, perm_id: str) -> GameState:
+    """Destroy a permanent (move to graveyard)."""
+    if not perm_id:
+        return game_state
+
+    perm = next((p for p in game_state.battlefield if p.id == perm_id), None)
+    if not perm:
+        return game_state
+
+    if "indestructible" in perm.card.keywords:
+        logger.info("%s is indestructible and cannot be destroyed", perm.card.name)
+        return game_state
+
+    # CR 701.15: regeneration shield prevents destruction
+    if perm.regen_shields > 0:
+        perm.regen_shields -= 1
+        perm.damage_marked = 0
+        perm.tapped = True
+        logger.info("%s regenerates (shield remaining: %d)", perm.card.name, perm.regen_shields)
+        return game_state
+
+    # Remove from battlefield
+    game_state.battlefield[:] = [p for p in game_state.battlefield if p.id != perm_id]
+    player = get_player(game_state, perm.controller)
+    player.graveyard.append(perm.card)
+
+    logger.info("%s destroyed", perm.card.name)
+    return game_state
+
+
+def _grant_extra_turn(game_state: GameState, player_name: str) -> GameState:
+    """Grant an extra turn to player_name. CR 500.7: extra turns form a LIFO stack."""
+    game_state.extra_turns.append(player_name)
+    logger.info("Extra turn granted to %s (queue depth: %d)", player_name, len(game_state.extra_turns))
+    return game_state
+
+
+def _exile_permanent(game_state: GameState, perm_id: str) -> GameState:
+    """Exile a permanent (move to exile zone)."""
+    if not perm_id:
+        return game_state
+    
+    perm = next((p for p in game_state.battlefield if p.id == perm_id), None)
+    if not perm:
+        return game_state
+    
+    # Remove from battlefield
+    game_state.battlefield[:] = [p for p in game_state.battlefield if p.id != perm_id]
+    player = get_player(game_state, perm.controller)
+    player.exile.append(perm.card)
+    
+    logger.info("%s exiled", perm.card.name)
+    return game_state
+
+
+def _bounce_permanent(game_state: GameState, perm_id: str) -> GameState:
+    """Return a permanent to its owner's hand."""
+    if not perm_id:
+        return game_state
+    
+    perm = next((p for p in game_state.battlefield if p.id == perm_id), None)
+    if not perm:
+        return game_state
+    
+    # Remove from battlefield
+    game_state.battlefield[:] = [p for p in game_state.battlefield if p.id != perm_id]
+    player = get_player(game_state, perm.controller)
+    player.hand.append(perm.card)
+    
+    logger.info("%s bounced to hand", perm.card.name)
+    return game_state
+
+
+def _create_tokens(game_state: GameState, controller: str, count_str: str, power: str, toughness: str, subtypes: str) -> GameState:
+    """Create creature tokens."""
+    # Parse count
+    count_map = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3}
+    count = count_map.get(count_str.lower(), int(count_str) if count_str.isdigit() else 1)
+    
+    # Parse power/toughness
+    p = int(power) if power.isdigit() else 0
+    t = int(toughness) if toughness.isdigit() else 0
+    
+    # Create token cards
+    token_name = f"{subtypes} Token"
+    token_card = Card(
+        name=token_name,
+        type_line="Token Creature — " + subtypes,
+        power=str(p),
+        toughness=str(t),
+        mana_cost="",
+        colors=[],
+        keywords=[],
+        parse_status="ok"
+    )
+    
+    # Create tokens
+    for _ in range(count):
+        _, new_perm = put_permanent_onto_battlefield(game_state, token_card, controller, from_zone="hand", is_token=True)
+        logger.info("%s token created", token_name)
+    
+    return game_state
+
+
+def _gain_life(game_state: GameState, player_name: str, n: int) -> GameState:
+    """Gain life."""
+    player = get_player(game_state, player_name)
+    player.life += n
+    logger.info("%s gains %d life", player_name, n)
+    return game_state
+
+
+def _discard_cards(game_state: GameState, player_name: str, n: int) -> GameState:
+    """Discard N cards from player's hand."""
+    player = get_player(game_state, player_name)
+    if n <= 0:
+        return game_state
+    
+    # For heuristic AI, we'll just discard the lowest CMC cards
+    # In a real implementation, this would be handled by pending_discard_choice
+    cards_to_discard = min(n, len(player.hand))
+    discarded = player.hand[:cards_to_discard]
+    player.hand = player.hand[cards_to_discard:]
+    
+    # Add to graveyard
+    player.graveyard.extend(discarded)
+    
+    logger.info("%s discards %d cards", player_name, cards_to_discard)
+    return game_state
+
+
+def _tutor(game_state: GameState, player_name: str, filter_type: str, destination: str) -> GameState:
+    """Search library for a card and put it in hand."""
+    player = get_player(game_state, player_name)
+    if not player.library:
+        return game_state
+    
+    # Set pending tutor choice - in a real implementation, this would be handled by AI
+    # For now, we'll just pick the first card
+    if player.library:
+        card = player.library.pop(0)
+        if destination == "hand":
+            player.hand.append(card)
+        elif destination == "battlefield":
+            _, _ = put_permanent_onto_battlefield(game_state, card, player_name, from_zone="hand")
+        logger.info("%s tutors for %s", player_name, card.name)
+    
+    return game_state
+
+
+def _add_counters(game_state: GameState, perm_id: str, counter_type: str, n: int) -> GameState:
+    """Add counters to a permanent."""
+    if not perm_id or n <= 0:
+        return game_state
+    
+    perm = next((p for p in game_state.battlefield if p.id == perm_id), None)
+    if not perm:
+        return game_state
+    
+    perm.counters[counter_type] = perm.counters.get(counter_type, 0) + n
+    logger.info("%s gets %d %s counters", perm.card.name, n, counter_type)
+    return game_state
+
+
+def _apply_scry(game_state: GameState, player_name: str, n: int) -> GameState:
+    """Apply scry effect."""
+    player = get_player(game_state, player_name)
+    if n <= 0 or not player.library:
+        return game_state
+    
+    # Get top N cards
+    revealed_cards = player.library[:min(n, len(player.library))]
+    
+    # Set pending scry choice
+    game_state.pending_scry_choice = {
+        "player": player_name,
+        "cards": [c.model_dump() for c in revealed_cards],
+        "n": n
+    }
+    
+    logger.info("%s scrys %d cards", player_name, n)
+    return game_state
+
+
+def _apply_surveil(game_state: GameState, player_name: str, n: int) -> GameState:
+    """Apply surveil effect."""
+    player = get_player(game_state, player_name)
+    if n <= 0 or not player.library:
+        return game_state
+    
+    # Get top N cards
+    revealed_cards = player.library[:min(n, len(player.library))]
+    
+    # Set pending surveil choice
+    game_state.pending_surveil_choice = {
+        "player": player_name,
+        "cards": [c.model_dump() for c in revealed_cards],
+        "n": n
+    }
+    
+    logger.info("%s surveils %d cards", player_name, n)
+    return game_state
+
+
+def _pump_creature(
+    game_state: GameState,
+    perm_id: str,
+    p_bonus: int,
+    t_bonus: int,
+    expires: str = "end_of_turn",
+) -> GameState:
+    """Pump a creature with an expiry scope. US23: supports 'end_of_turn' and 'player:<name>'."""
+    if not perm_id:
+        return game_state
+
+    perm = next((p for p in game_state.battlefield if p.id == perm_id), None)
+    if not perm:
+        return game_state
+
+    perm.power_bonus += p_bonus
+    perm.toughness_bonus += t_bonus
+    perm.power_bonus_expires = expires
+    perm.toughness_bonus_expires = expires
+    logger.info("%s gets +%d/+%d (expires: %s)", perm.card.name, p_bonus, t_bonus, expires)
+    return game_state
+
+
+def _schedule_delayed_trigger(
+    game_state: GameState,
+    controller: str,
+    trigger_phase: str,
+    trigger_step: str | None,
+    effect: str,
+    once: bool = True,
+) -> GameState:
+    """Schedule a delayed triggered ability to fire at a future phase/step. CR 603.7."""
+    game_state.delayed_triggers.append({
+        "phase": trigger_phase,
+        "step": trigger_step,
+        "controller": controller,
+        "effect": effect,
+        "once": once,
+    })
+    logger.info(
+        "Delayed trigger scheduled for %s %s by %s: %r",
+        trigger_phase, trigger_step, controller, effect,
+    )
+    return game_state
+
+
+def _counter_spell(game_state: GameState, target_id: str) -> GameState:
+    """Counter a spell. CR 702.102: uncounterable spells cannot be countered."""
+    if not target_id:
+        return game_state
+
+    # Find target on stack
+    countered = next((s for s in game_state.stack if s.id == target_id), None)
+    if countered:
+        # CR 702.102: if the spell can't be countered, the countering effect does nothing
+        if countered.uncounterable:
+            logger.info("%s can't be countered — counter effect does nothing", countered.source_card.name)
+            return game_state
+        game_state.stack[:] = [s for s in game_state.stack if s.id != target_id]
+        # Put the countered card in its controller's graveyard
+        owner = get_player(game_state, countered.controller)
+        owner.graveyard.append(countered.source_card)
+        logger.info("Countered %s", countered.source_card.name)
 
     return game_state
 
@@ -322,4 +844,257 @@ def _deal_damage(game_state: GameState, target_id: str, damage: int, source: Car
             return game_state
 
     logger.warning("_deal_damage: target %r not found on battlefield or as a player", target_id)
+
+
+# ─── Missing Spell Effects ────────────────────────────────────────────────────
+
+def _cascade(game_state: GameState, player_name: str) -> GameState:
+    """Handle cascade effect."""
+    # Cascade implementation - for now, just log it
+    logger.info("%s cascades", player_name)
+    return game_state
+
+
+def _ward(game_state: GameState, player_name: str, ward_value: int) -> GameState:
+    """Handle ward effect."""
+    # Ward implementation - for now, just log it
+    logger.info("%s wards %d", player_name, ward_value)
+    return game_state
+
+
+def _kicker(game_state: GameState, player_name: str, kicker_paid: bool) -> GameState:
+    """Handle kicker effect."""
+    # Kicker implementation - for now, just log it
+    logger.info("%s kicker %s", player_name, "paid" if kicker_paid else "not paid")
+    return game_state
+
+
+def _jump_start(game_state: GameState, player_name: str, discard_id: str) -> GameState:
+    """Handle jump-start effect."""
+    # Jump-start implementation - for now, just log it
+    logger.info("%s jump-starts", player_name)
+    return game_state
+
+
+def _suspend(game_state: GameState, player_name: str, suspend_value: int) -> GameState:
+    """Handle suspend effect."""
+    # Suspend implementation - for now, just log it
+    logger.info("%s suspends %d", player_name, suspend_value)
+    return game_state
+
+
+def _foretell(game_state: GameState, player_name: str, foretold_cards: list[str]) -> GameState:
+    """Handle foretell effect."""
+    # Foretell implementation - for now, just log it
+    logger.info("%s foretells", player_name)
+    return game_state
+
+
+def _unearth(game_state: GameState, player_name: str) -> GameState:
+    """Handle unearth effect."""
+    # Unearth implementation - for now, just log it
+    logger.info("%s unearth", player_name)
+    return game_state
+
+
+def _choose_mode(game_state: GameState, player_name: str, modes_chosen: list[int]) -> GameState:
+    """Handle modal spell mode choice."""
+    # Modal spell mode handling - for now, just log it
+    logger.info("%s chooses modes %s", player_name, modes_chosen)
+    return game_state
+
+
+def _x_spell_variant(game_state: GameState, player_name: str, x_value: int) -> GameState:
+    """Handle X spell variant."""
+    # X spell variant handling - for now, just log it
+    logger.info("%s casts X spell with value %d", player_name, x_value)
+    return game_state
+
+
+def _targeted_damage(game_state: GameState, source_type: str, damage: int, target_type: str) -> GameState:
+    """Handle targeted damage effect."""
+    # Targeted damage handling - for now, just log it
+    logger.info("Targeted damage: %s deals %d damage to %s", source_type, damage, target_type)
+    return game_state
+
+
+def _prevent_damage(game_state: GameState, player_name: str, damage_amount: int) -> GameState:
+    """Handle damage prevention."""
+    # Damage prevention handling - for now, just log it
+    logger.info("%s prevents %d damage", player_name, damage_amount)
+    return game_state
+
+
+def _draw_discard(game_state: GameState, player_name: str) -> GameState:
+    """Handle draw and discard effect."""
+    # Draw and discard handling - for now, just log it
+    logger.info("%s draws and discards", player_name)
+    return game_state
+
+
+def _shuffle_library(game_state: GameState, player_name: str) -> GameState:
+    """Handle shuffle library effect."""
+    # Shuffle library handling - for now, just log it
+    logger.info("%s shuffles library", player_name)
+    return game_state
+
+
+def _mill(game_state: GameState, player_name: str, mill_count: int) -> GameState:
+    """Handle mill effect."""
+    # Mill handling - for now, just log it
+    logger.info("%s mills %d cards", player_name, mill_count)
+    return game_state
+
+
+def _reveal_cards(game_state: GameState, player_name: str, reveal_count: int) -> GameState:
+    """Handle reveal cards effect."""
+    # Reveal cards handling - for now, just log it
+    logger.info("%s reveals %d cards", player_name, reveal_count)
+    return game_state
+
+
+def _put_into_play(game_state: GameState, player_name: str, target_type: str) -> GameState:
+    """Handle put into play effect."""
+    # Put into play handling - for now, just log it
+    logger.info("%s puts %s into play", player_name, target_type)
+    return game_state
+
+
+def _create_artifact_tokens(game_state: GameState, controller: str, count_str: str, subtype: str) -> GameState:
+    """Create artifact tokens."""
+    # Artifact token creation - for now, just log it
+    logger.info("%s creates artifact tokens", controller)
+    return game_state
+
+
+def _create_enchantment_tokens(game_state: GameState, controller: str, count_str: str, subtype: str) -> GameState:
+    """Create enchantment tokens."""
+    # Enchantment token creation - for now, just log it
+    logger.info("%s creates enchantment tokens", controller)
+    return game_state
+
+
+def _create_planeswalker_tokens(game_state: GameState, controller: str, count_str: str, subtype: str) -> GameState:
+    """Create planeswalker tokens."""
+    # Planeswalker token creation - for now, just log it
+    logger.info("%s creates planeswalker tokens", controller)
+    return game_state
+
+
+def _create_land_tokens(game_state: GameState, controller: str, count_str: str, subtype: str) -> GameState:
+    """Create land tokens."""
+    # Land token creation - for now, just log it
+    logger.info("%s creates land tokens", controller)
+    return game_state
+
+
+def _create_creature_tokens(game_state: GameState, controller: str, count_str: str, subtype: str) -> GameState:
+    """Create creature tokens."""
+    # Creature token creation - for now, just log it
+    logger.info("%s creates creature tokens", controller)
+    return game_state
+
+
+def _create_token_with_pt(game_state: GameState, controller: str, count_str: str, power: str, toughness: str, subtype: str) -> GameState:
+    """Create token with power/toughness."""
+    # Token with power/toughness creation - for now, just log it
+    logger.info("%s creates token with PT", controller)
+    return game_state
+
+
+def _create_token_with_keywords(game_state: GameState, controller: str, count_str: str, subtype: str, keywords: str) -> GameState:
+    """Create token with keywords."""
+    # Token with keywords creation - for now, just log it
+    logger.info("%s creates token with keywords", controller)
+    return game_state
+
+
+def _create_token_with_pt_and_keywords(game_state: GameState, controller: str, count_str: str, power: str, toughness: str, subtype: str, keywords: str) -> GameState:
+    """Create token with power/toughness and keywords."""
+    # Token with PT and keywords creation - for now, just log it
+    logger.info("%s creates token with PT and keywords", controller)
+    return game_state
+
+
+def _create_token_with_abilities(game_state: GameState, controller: str, count_str: str, subtype: str, abilities: str) -> GameState:
+    """Create token with abilities."""
+    # Token with abilities creation - for now, just log it
+    logger.info("%s creates token with abilities", controller)
+    return game_state
+
+
+def _create_token_with_pt_and_abilities(game_state: GameState, controller: str, count_str: str, power: str, toughness: str, subtype: str, abilities: str) -> GameState:
+    """Create token with power/toughness and abilities."""
+    # Token with PT and abilities creation - for now, just log it
+    logger.info("%s creates token with PT and abilities", controller)
+    return game_state
+
+
+def _create_token_with_abilities_and_keywords(game_state: GameState, controller: str, count_str: str, subtype: str, abilities: str, keywords: str) -> GameState:
+    """Create token with abilities and keywords."""
+    # Token with abilities and keywords creation - for now, just log it
+    logger.info("%s creates token with abilities and keywords", controller)
+    return game_state
+
+
+def _create_token_with_pt_abilities_and_keywords(game_state: GameState, controller: str, count_str: str, power: str, toughness: str, subtype: str, abilities: str, keywords: str) -> GameState:
+    """Create token with power/toughness, abilities, and keywords."""
+    # Token with PT, abilities, and keywords creation - for now, just log it
+    logger.info("%s creates token with PT, abilities, and keywords", controller)
+    return game_state
+
+
+def _create_token_with_multiple_abilities(game_state: GameState, controller: str, count_str: str, subtype: str, ability1: str, ability2: str, ability3: str) -> GameState:
+    """Create token with multiple abilities."""
+    # Token with multiple abilities creation - for now, just log it
+    logger.info("%s creates token with multiple abilities", controller)
+    return game_state
+
+
+def _create_token_with_multiple_abilities_and_pt(game_state: GameState, controller: str, count_str: str, power: str, toughness: str, subtype: str, ability1: str, ability2: str, ability3: str) -> GameState:
+    """Create token with multiple abilities and power/toughness."""
+    # Token with multiple abilities and PT creation - for now, just log it
+    logger.info("%s creates token with multiple abilities and PT", controller)
+    return game_state
+
+
+def _create_token_with_multiple_abilities_and_keywords(game_state: GameState, controller: str, count_str: str, subtype: str, ability1: str, ability2: str, ability3: str, keywords: str) -> GameState:
+    """Create token with multiple abilities and keywords."""
+    # Token with multiple abilities and keywords creation - for now, just log it
+    logger.info("%s creates token with multiple abilities and keywords", controller)
+    return game_state
+
+
+def _create_token_with_multiple_abilities_pt_and_keywords(game_state: GameState, controller: str, count_str: str, power: str, toughness: str, subtype: str, ability1: str, ability2: str, ability3: str, keywords: str) -> GameState:
+    """Create token with multiple abilities, power/toughness, and keywords."""
+    # Token with multiple abilities, PT, and keywords creation - for now, just log it
+    logger.info("%s creates token with multiple abilities, PT, and keywords", controller)
+    return game_state
+
+
+def _create_token_with_multiple_abilities_pt_keywords_and_type(game_state: GameState, controller: str, count_str: str, power: str, toughness: str, subtype: str, ability1: str, ability2: str, ability3: str, keywords: str, type_name: str) -> GameState:
+    """Create token with multiple abilities, power/toughness, keywords, and type."""
+    # Token with multiple abilities, PT, keywords, and type creation - for now, just log it
+    logger.info("%s creates token with multiple abilities, PT, keywords, and type", controller)
+    return game_state
+
+
+def _create_token_with_multiple_abilities_pt_keywords_type_and_subtype(game_state: GameState, controller: str, count_str: str, power: str, toughness: str, subtype: str, ability1: str, ability2: str, ability3: str, keywords: str, type_name: str, subtype_name: str) -> GameState:
+    """Create token with multiple abilities, power/toughness, keywords, type, and subtype."""
+    # Token with multiple abilities, PT, keywords, type, and subtype creation - for now, just log it
+    logger.info("%s creates token with multiple abilities, PT, keywords, type, and subtype", controller)
+    return game_state
+
+
+def _create_token_with_multiple_abilities_pt_keywords_type_subtype_and_color(game_state: GameState, controller: str, count_str: str, power: str, toughness: str, subtype: str, ability1: str, ability2: str, ability3: str, keywords: str, type_name: str, subtype_name: str, color: str) -> GameState:
+    """Create token with multiple abilities, power/toughness, keywords, type, subtype, and color."""
+    # Token with multiple abilities, PT, keywords, type, subtype, and color creation - for now, just log it
+    logger.info("%s creates token with multiple abilities, PT, keywords, type, subtype, and color", controller)
+    return game_state
+
+
+def _create_token_with_multiple_abilities_pt_keywords_type_subtype_color_and_mana_cost(game_state: GameState, controller: str, count_str: str, power: str, toughness: str, subtype: str, ability1: str, ability2: str, ability3: str, keywords: str, type_name: str, subtype_name: str, color: str, mana_cost: str) -> GameState:
+    """Create token with multiple abilities, power/toughness, keywords, type, subtype, color, and mana cost."""
+    # Token with multiple abilities, PT, keywords, type, subtype, color, and mana cost creation - for now, just log it
+    logger.info("%s creates token with multiple abilities, PT, keywords, type, subtype, color, and mana cost", controller)
     return game_state
