@@ -207,6 +207,19 @@ def move_permanent_to_zone(
                             update={"keywords": [k for k in host.card.keywords if k != kw]}
                         )
 
+    # Check for replacement effects that return a permanent to the battlefield from the battlefield
+    # This handles cases like "when this dies, return it to the battlefield"
+    if to_zone == "battlefield" and permanent.controller == controller:
+        # If a permanent is being moved to the battlefield from the battlefield,
+        # it means it's being returned by a replacement effect
+        # In this case, we don't remove it from the battlefield (it's already there)
+        # and we don't move the card to the battlefield (it's already there)
+        # We just need to make sure it's properly placed on the battlefield
+        # This is a special case for replacement effects that return permanents to the battlefield
+        # We'll add it back to the battlefield to ensure it's properly represented
+        game_state.battlefield.append(permanent)
+        return game_state
+
     # Move card to destination zone (REQ-G08: preserve library order)
     if to_zone in ("hand", "library", "graveyard", "exile"):
         player = get_player(game_state, controller)
