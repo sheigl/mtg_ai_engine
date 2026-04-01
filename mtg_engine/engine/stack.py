@@ -119,6 +119,24 @@ def cast_spell(
         or "cannot be countered" in oracle_lower
     )
 
+    # US7: Detect buyback (CR 702.27) — buyback allows returning spell to hand from graveyard
+    has_buyback = "buyback" in (card.keywords or []) or "buyback" in oracle_lower
+
+    # US7: Detect replicate (CR 702.87) — replicate creates copies for additional cost
+    has_replicate = "replicate" in (card.keywords or []) or "replicate" in oracle_lower
+    replicate_count = 0
+    if has_replicate:
+        # Extract replicate count from oracle text (e.g., "replicate {2}" → 2 additional mana → 1 copy)
+        import re as _re
+        replicate_match = _re.search(r"replicate\s+(\{[^}]+\})", oracle_lower)
+        if replicate_match:
+            # For now, set a default replicate count of 1 (will be adjusted by player input)
+            replicate_count = 1
+
+    # US8: Detect flashback and escape from alternative_cost
+    is_flashback = alternative_cost == "flashback"
+    is_escape = alternative_cost == "escape"
+
     stack_obj = StackObject(
         id=str(uuid.uuid4()),
         source_card=card,
@@ -132,6 +150,10 @@ def cast_spell(
         kicker_paid=kicker_paid,
         jump_start_discard_id=jump_start_discard_id,
         uncounterable=is_uncounterable,
+        buyback_paid=has_buyback,  # US7: Mark if buyback cost was paid (set by API)
+        replicate_count=replicate_count,  # US7: Number of replicates to create
+        flashback=is_flashback,  # US8: Whether cast via flashback from graveyard
+        escape=is_escape,  # US8: Whether cast via escape from graveyard
     )
     game_state.stack.append(stack_obj)
 
@@ -182,6 +204,17 @@ def resolve_top(game_state: GameState) -> GameState:
     card = stack_obj.source_card
     type_lower = card.type_line.lower()
 
+    # CR 702.40: Storm — before resolving a spell with storm, create copies equal to spells cast this turn - 1
+    # US6, 019-rules-engine-gap-closure
+    kws_lower = [k.lower() for k in (card.keywords or [])]
+    oracle_lower = (card.oracle_text or "").lower()
+    if "storm" in kws_lower or "storm" in oracle_lower:
+        storm_count = max(0, game_state.spells_cast_this_turn - 1)
+        if storm_count > 0:
+            logger.info("Storm: %s creates %d copy/copies", card.name, storm_count)
+            for _ in range(storm_count):
+                game_state = copy_spell_on_stack(game_state, stack_obj.id, stack_obj.targets)
+
     # CR 608.2b: fizzle — if spell has targets and ALL are now illegal, the spell does nothing
     if stack_obj.targets and ("instant" in type_lower or "sorcery" in type_lower):
         valid_targets = [
@@ -204,6 +237,17 @@ def resolve_top(game_state: GameState) -> GameState:
         game_state, perm = put_permanent_onto_battlefield(
             game_state, card, stack_obj.controller, from_zone="stack"
         )
+        
+        # TASK-019-027: Grant haste if metadata indicates grant_haste=True (e.g., suspended creatures)
+        if stack_obj.metadata and stack_obj.metadata.get("grant_haste", False):
+            if "creature" in type_lower and "haste" not in perm.card.keywords:
+                # Add haste to the creature
+                perm.card = perm.card.model_copy(
+                    update={"keywords": list(perm.card.keywords or []) + ["haste"]}
+                )
+                perm.summoning_sick = False  # Haste also removes summoning sickness
+                logger.info("Granted haste to %s (from suspend)", card.name)
+        
         # CR 303.4: Aura enters the battlefield attached to its target
         oracle = (card.oracle_text or "").lower()
         if "enchant" in oracle and "aura" in type_lower and stack_obj.targets:
@@ -228,12 +272,29 @@ def resolve_top(game_state: GameState) -> GameState:
                             update={"keywords": list(target_perm.card.keywords) + [kw]}
                         )
     elif "instant" in type_lower or "sorcery" in type_lower:
+        # US7: Handle replicate before resolving (CR 702.87)
+        if stack_obj.replicate_count > 0 and not stack_obj.is_copy:
+            for _ in range(stack_obj.replicate_count):
+                game_state = copy_spell_on_stack(game_state, stack_obj.id, stack_obj.targets)
+                logger.info("Replicate: created copy of %s", card.name)
+        
         # Non-permanent spell → resolve effect
         game_state = _apply_spell_effect(game_state, stack_obj)
+        
         # CR 706.10: copies of spells cease to exist (don't go to graveyard)
         if not stack_obj.is_copy:
             player = get_player(game_state, stack_obj.controller)
-            player.graveyard.append(card)
+            
+            # US7: Buyback (CR 702.27) — return to hand instead of graveyard if buyback cost paid
+            if stack_obj.buyback_paid:
+                player.hand.append(card)
+                logger.info("Buyback: %s returned to hand", card.name)
+            # US8: Flashback/Escape (CR 702.32, CR 702.132) — exile instead of graveyard
+            elif stack_obj.flashback or stack_obj.escape:
+                player.exile.append(card)
+                logger.info("Flashback/Escape: %s exiled instead of going to graveyard", card.name)
+            else:
+                player.graveyard.append(card)
     elif stack_obj.effects:
         # Triggered or activated ability resolving — execute the effect
         game_state = _apply_triggered_effect(game_state, stack_obj)
@@ -511,9 +572,61 @@ def _apply_spell_effect(game_state: GameState, stack_obj: StackObject) -> GameSt
                 game_state = result
             return game_state
 
+    # US13 (T030): Proliferate — detect and set pending proliferate choice
+    if re.search(r'\bproliferate\b', oracle, re.IGNORECASE):
+        game_state = _trigger_proliferate(game_state, stack_obj.controller)
+        return game_state
+
+    # US20 (T047): "Each opponent" pattern — apply effect to all opponents
+    each_opp_m = re.search(r'each opponent (loses? \d+ life|discards? \d+ cards?|draws? \d+ cards?)', oracle, re.IGNORECASE)
+    if each_opp_m:
+        effect_text = each_opp_m.group(0)
+        for opp in get_opponents(game_state, stack_obj.controller):
+            opp_stack_obj = stack_obj.model_copy(update={"controller": opp.name})
+            game_state = _apply_single_effect_text(game_state, opp_stack_obj, effect_text)
+        return game_state
+
     # If no pattern matched, log at DEBUG level (no crash — CR 608.2b: unimplemented effects no-op)
     logger.debug("Spell effect not implemented for %r: %r", card.name, oracle)
     return game_state
+
+
+def _trigger_proliferate(game_state: GameState, controller: str) -> GameState:
+    """
+    Set pending_proliferate_choice for the controller. US13 (T030).
+    Collects all permanents and players with at least one counter.
+    """
+    eligible = []
+    for perm in game_state.battlefield:
+        if perm.counters:
+            eligible.append({
+                "id": perm.id,
+                "name": perm.card.name,
+                "counters": dict(perm.counters),
+                "type": "permanent",
+            })
+    for player in game_state.players:
+        if player.poison_counters > 0:
+            eligible.append({
+                "id": player.name,
+                "name": player.name,
+                "counters": {"poison": player.poison_counters},
+                "type": "player",
+            })
+    game_state.pending_proliferate_choice = {
+        "player": controller,
+        "eligible": eligible,
+    }
+    logger.info("Proliferate: %d eligible targets for %s", len(eligible), controller)
+    return game_state
+
+
+def get_opponents(game_state: GameState, player_name: str):
+    """
+    Return all players who are opponents of player_name. US20 (T046).
+    In a 2-player game this is just the other player.
+    """
+    return [p for p in game_state.players if p.name != player_name]
 
 
 def _draw_cards(game_state: GameState, player_name: str, n: int) -> GameState:

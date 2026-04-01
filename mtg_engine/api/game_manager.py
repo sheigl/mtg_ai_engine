@@ -72,11 +72,11 @@ class GameManager:
             if commander1_card is not None:
                 p1.commander_name = commander1_card.name
                 p1.command_zone = [commander1_card]
-                p1.commander_cast_count = 0
+                p1.commander_cast_counts = {}
             if commander2_card is not None:
                 p2.commander_name = commander2_card.name
                 p2.command_zone = [commander2_card]
-                p2.commander_cast_count = 0
+                p2.commander_cast_counts = {}
 
         gs = GameState(
             game_id=game_id,

@@ -40,6 +40,12 @@ class CastRequest(BaseModel):
     x_value: int = 0                          # X value chosen for {X} mana cost
     kicker_paid: bool = False                  # Whether to pay kicker cost
     jump_start_discard_id: Optional[str] = None   # Card to discard for jump-start
+    # New fields for 019 feature (keyword mana cost modifiers)
+    convoke_creature_ids: list[str] = Field(default_factory=list)  # Creatures to tap for Convoke
+    delve_card_ids: list[str] = Field(default_factory=list)        # Cards to exile from graveyard for Delve
+    improvise_artifact_ids: list[str] = Field(default_factory=list)  # Artifacts to tap for Improvise
+    emerge_sacrifice_id: Optional[str] = None                       # Creature to sacrifice for Emerge
+    opponent_target: Optional[str] = None                           # Disambiguate "target opponent" in 3+ player games
 
 
 class ActivateRequest(BaseModel):

@@ -204,6 +204,7 @@ def apply_damage_event(
     target_id: str,
     damage: int,
     is_combat: bool = False,
+    redirect_to_planeswalker_id: str | None = None,
 ) -> GameState:
     """
     Apply damage through the replacement effect system. REQ-R07, REQ-R08.
@@ -231,18 +232,23 @@ def apply_damage_event(
                     )
                     return game_state
 
+    # US17 (T043): Damage redirect to planeswalker — route damage to a planeswalker
+    # instead of the player (CR 306.7: attackers may attack planeswalkers)
+    effective_target = redirect_to_planeswalker_id if redirect_to_planeswalker_id else target_id
+
     event = GameEvent(
         event_type="damage",
         source_id=source_card_name,
-        target_id=target_id,
+        target_id=effective_target,
         amount=damage,
+        redirect_target_id=redirect_to_planeswalker_id,
     )
     event, game_state = process_event(event, game_state)
     if event.cancelled:
         return game_state
 
     final_damage = event.modified_amount if event.modified_amount is not None else event.amount
-    redirect = event.redirect_target_id or target_id
+    redirect = event.redirect_target_id or effective_target
 
     has_deathtouch = "deathtouch" in source_keywords
     has_lifelink   = "lifelink" in source_keywords
@@ -252,7 +258,14 @@ def apply_damage_event(
 
     # Apply damage to target
     target_perm = next((p for p in game_state.battlefield if p.id == redirect), None)
-    if target_perm:
+    if target_perm and "planeswalker" in target_perm.card.type_line.lower():
+        # Damage to a planeswalker reduces its loyalty (CR 306.7)
+        target_perm.loyalty = max(0, target_perm.loyalty - final_damage)
+        logger.info(
+            "Planeswalker %s took %d damage (loyalty now %d)",
+            target_perm.card.name, final_damage, target_perm.loyalty,
+        )
+    elif target_perm:
         if has_infect:
             # REQ-R12: infect damage to creatures as -1/-1 counters
             target_perm.counters["-1/-1"] = target_perm.counters.get("-1/-1", 0) + final_damage

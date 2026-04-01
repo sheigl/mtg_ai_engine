@@ -149,6 +149,17 @@ def move_permanent_to_zone(
     Remove permanent from battlefield and move its underlying card to to_zone.
     Tokens cease to exist when leaving the battlefield (CR 704.5d).
     """
+    # US16: Unearth replacement — unearthed creatures that would go to non-exile zones
+    # are redirected to exile instead (CR 702.83b)
+    if permanent.unearthed and to_zone not in ("exile",):
+        to_zone = "exile"
+        logger.debug("Unearth replacement: redirecting %s to exile", permanent.card.name)
+
+    # US16: Unearth clear on bounce — bouncing an unearthed permanent removes unearthed flag
+    if to_zone == "hand" and permanent.unearthed:
+        permanent.unearthed = False
+        logger.debug("Unearth cleared on bounce for %s", permanent.card.name)
+
     # Remove from battlefield (REQ-G07: atomic)
     game_state.battlefield[:] = [p for p in game_state.battlefield if p.id != permanent.id]
 
@@ -207,7 +218,27 @@ def move_permanent_to_zone(
                             update={"keywords": [k for k in host.card.keywords if k != kw]}
                         )
 
+    # Persist/Undying replacement: before sending creature to graveyard, check keywords (CR 702.76, CR 702.93)
+    if to_zone == "graveyard" and "creature" in (card.type_line or "").lower():
+        # Persist: return with -1/-1 counter if no -1/-1 counter currently
+        if "persist" in (card.keywords or []) and permanent.counters.get("-1/-1", 0) == 0:
+            game_state.battlefield.append(permanent)
+            permanent.counters["-1/-1"] = permanent.counters.get("-1/-1", 0) + 1
+            logger.debug("Persist: %s returned to battlefield with -1/-1 counter", card.name)
+            return game_state
+        # Undying: return with +1/+1 counter if no +1/+1 counter currently
+        if "undying" in (card.keywords or []) and permanent.counters.get("+1/+1", 0) == 0:
+            game_state.battlefield.append(permanent)
+            permanent.counters["+1/+1"] = permanent.counters.get("+1/+1", 0) + 1
+            logger.debug("Undying: %s returned to battlefield with +1/+1 counter", card.name)
+            return game_state
+
     # Move card to destination zone (REQ-G08: preserve library order)
+    if to_zone == "battlefield":
+        # Re-entering the battlefield (replacement effect scenario) — put back on battlefield
+        game_state.battlefield.append(permanent)
+        return game_state
+
     if to_zone in ("hand", "library", "graveyard", "exile"):
         player = get_player(game_state, controller)
 
@@ -273,7 +304,40 @@ def put_permanent_onto_battlefield(
         "permanent_id": perm.id,
     }
     _emit_zone_change(event, game_state)
+
+    # US14 (T032): Saga ETB — add one lore counter and queue chapter I trigger
+    if "saga" in card.type_line.lower():
+        perm.counters["lore"] = 1
+        from mtg_engine.models.game import PendingTrigger
+        import uuid as _uuid
+        trigger = PendingTrigger(
+            id=str(_uuid.uuid4()),
+            source_permanent_id=perm.id,
+            controller=controller,
+            trigger_type="saga_chapter",
+            effect_description=f"Saga chapter I: {_get_saga_chapter_text(card, 1)}",
+            source_card_name=card.name,
+        )
+        game_state.pending_triggers.append(trigger)
+        logger.debug("Saga ETB: %s entered with 1 lore counter, chapter I queued", card.name)
+
     return game_state, perm
+
+
+def _get_saga_chapter_text(card: Card, chapter: int) -> str:
+    """Extract the ability text for a given Saga chapter number."""
+    import re as _re
+    oracle = card.oracle_text or ""
+    # Roman numerals for chapters 1-10
+    _ROMAN = {1: "I", 2: "II", 3: "III", 4: "IV", 5: "V",
+               6: "VI", 7: "VII", 8: "VIII", 9: "IX", 10: "X"}
+    roman = _ROMAN.get(chapter, str(chapter))
+    # Pattern: "I — effect text" or "I, II — effect text"
+    pattern = _re.compile(rf"(?:^|(?<=\n)){roman}(?:,\s*[IVX]+)*\s*—\s*(.*?)(?=\n[IVX]|\Z)", _re.DOTALL)
+    m = pattern.search(oracle)
+    if m:
+        return m.group(1).strip()
+    return f"chapter {roman}"
 
 
 def draw_card(game_state: GameState, player_name: str) -> tuple[GameState, Card | None]:

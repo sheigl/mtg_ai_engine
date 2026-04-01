@@ -637,7 +637,7 @@ class TestCastCommander:
             name="p1", life=40,
             mana_pool=pool or ManaPool(),
             commander_name="Llanowar Elves",
-            commander_cast_count=cast_count,
+            commander_cast_counts={"Llanowar Elves": cast_count} if cast_count else {},
             command_zone=[commander],
         )
         p2 = PlayerState(name="p2", life=40)
@@ -786,7 +786,7 @@ class TestCommanderFormat:
             mana_pool=p1_pool or ManaPool(),
             lands_played_this_turn=p1_lands_played,
             commander_name="Omnath",
-            commander_cast_count=0,
+            commander_cast_counts={},
             command_zone=[commander],
         )
         p2 = PlayerState(name="p2", life=40)

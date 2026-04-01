@@ -103,3 +103,22 @@ def test_permanent_enters_battlefield_summoning_sick():
     card = Card(name="Grizzly Bears", type_line="Creature — Bear", power="2", toughness="2")
     gs, perm = put_permanent_onto_battlefield(gs, card, "p1")
     assert perm.summoning_sick is True
+
+
+def test_move_permanent_to_battlefield_from_battlefield():
+    """Test that moving a permanent to battlefield from battlefield works correctly (replacement effects)."""
+    gs = _make_game()
+    card = Card(name="Grizzly Bears", type_line="Creature — Bear", power="2", toughness="2")
+    gs, perm = put_permanent_onto_battlefield(gs, card, "p1")
+    
+    # Verify the permanent is on the battlefield
+    assert len(gs.battlefield) == 1
+    assert gs.battlefield[0].card.name == "Grizzly Bears"
+    
+    # Move the permanent back to the battlefield (simulating a replacement effect)
+    # This should not remove it from the battlefield but should add it back
+    gs = move_permanent_to_zone(gs, perm, "battlefield")
+    
+    # Should still be on the battlefield (no duplicate)
+    assert len(gs.battlefield) == 1
+    assert gs.battlefield[0].card.name == "Grizzly Bears"
