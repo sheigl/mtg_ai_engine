@@ -113,6 +113,22 @@ class StackObject(BaseModel):
     kicker_paid: bool = False                  # Whether kicker cost was paid
     jump_start_discard_id: Optional[str] = None   # Card discarded for jump-start cost
     uncounterable: bool = False               # CR 702.102: spell cannot be countered
+    # New fields for 019 feature (stack mechanics)
+    buyback_paid: bool = False                 # CR 702.27: Whether buyback cost was paid
+    replicate_count: int = 0                   # CR 702.87: Number of times to replicate
+    flashback: bool = False                    # CR 702.32: Whether cast via flashback from graveyard
+    escape: bool = False                       # CR 702.132: Whether cast via escape from graveyard
+    metadata: dict = Field(default_factory=dict)  # Arbitrary per-spell metadata (e.g. grant_haste)
+
+
+class Emblem(BaseModel):
+    """
+    A planeswalker emblem. CR 113.
+    """
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    controller: str  # Player name who controls this emblem
+    source_planeswalker: str  # Name of planeswalker that created this emblem
+    abilities: list[str] = Field(default_factory=list)  # Ability text lines
 
 
 class PlayerState(BaseModel):
@@ -130,7 +146,7 @@ class PlayerState(BaseModel):
     # Commander format
     command_zone: list[Card] = Field(default_factory=list)
     commander_name: Optional[str] = None
-    commander_cast_count: int = 0
+    commander_cast_counts: dict[str, int] = Field(default_factory=dict)  # keyed by card name (partner support)
     # New fields for 018 feature
     suspended_cards: list[Card] = Field(default_factory=list)   # Cards exiled via Suspend (with time_counters)
     foretold_cards: list[Card] = Field(default_factory=list)    # Cards exiled face-down via Foretell
@@ -233,6 +249,10 @@ class GameState(BaseModel):
     # Format: {"player": str, "count": int}
     pending_ward_payment: Optional[dict] = None
     # Format: {"player": str, "ward_cost": str, "targeting_spell_id": str}
+    pending_dredge_choice: Optional[dict] = None
+    # Format: {"player": str, "dredgeable_cards": [Card], "n": int} (n = dredge number)
+    pending_proliferate_choice: Optional[dict] = None
+    # Format: {"player": str, "eligible": [{"id": str, "name": str, "counters": dict}]}
     # Transform tracking
     spells_cast_this_turn: int = 0    # Reset each turn; checked for werewolf conditions
     spells_cast_last_turn: int = 0    # Snapshot of previous turn's count
@@ -241,6 +261,8 @@ class GameState(BaseModel):
     # Delayed triggered abilities (CR 603.7): fire at a future phase/step
     # Each entry: {"phase": str, "step": str|None, "controller": str, "effect": str, "once": bool}
     delayed_triggers: list[dict] = Field(default_factory=list)
+    # Planeswalker emblems (CR 113)
+    emblems: list[Emblem] = Field(default_factory=list)
 
     def compute_hash(self) -> str:
         """Compute deterministic hash of state, excluding state_hash itself. REQ-API05"""

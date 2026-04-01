@@ -128,6 +128,13 @@ def check_phase_triggers(game_state: GameState) -> GameState:
     current_step = game_state.step.value
     current_phase = game_state.phase.value
 
+    # US17 (T042): Also check emblems for phase triggers
+    emblem_sources = []
+    for emblem in game_state.emblems:
+        for ability_text in emblem.abilities:
+            # Create a minimal fake Card-like oracle text holder
+            emblem_sources.append((emblem.id, emblem.controller, ability_text, emblem.source_planeswalker))
+
     for perm in game_state.battlefield:
         card = perm.card
         abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
@@ -150,6 +157,31 @@ def check_phase_triggers(game_state: GameState) -> GameState:
                 logger.debug(
                     "Phase trigger queued: %r from %s", ab.trigger_condition, card.name
                 )
+
+    # US17 (T042): Check emblem phase triggers
+    for emblem_id, controller, ability_text, source_name in emblem_sources:
+        cond_lower = ability_text.lower()
+        # Simple phase match for emblems using the same logic
+        step_match = False
+        if "beginning of your upkeep" in cond_lower and current_step == "upkeep":
+            step_match = (controller == game_state.active_player)
+        elif "beginning of each upkeep" in cond_lower and current_step == "upkeep":
+            step_match = True
+        elif "beginning of your end step" in cond_lower and current_step == "end":
+            step_match = (controller == game_state.active_player)
+        elif "beginning of each end step" in cond_lower and current_step == "end":
+            step_match = True
+        if step_match:
+            trigger = PendingTrigger(
+                id=str(uuid.uuid4()),
+                source_permanent_id=emblem_id,
+                controller=controller,
+                trigger_type="phase_change",
+                effect_description=ability_text,
+                source_card_name=source_name,
+            )
+            game_state.pending_triggers.append(trigger)
+            logger.debug("Emblem phase trigger queued from %s (controller: %s)", source_name, controller)
 
     return game_state
 
@@ -590,4 +622,72 @@ def put_trigger_on_stack(
         trigger.source_card_name,
         trigger.controller,
     )
+    return game_state
+
+
+def check_cycle_triggers(
+    game_state: GameState,
+    card_name: str,
+    card_type_line: str,
+) -> GameState:
+    """
+    Check for "whenever you cycle" triggers.
+    Called from the cycle endpoint after cycling a card.
+    US9: Cycling mechanics with triggered abilities.
+    """
+    from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    # Get the cycling player (usually the active player)
+    # For now, assume it's the player who just cycled (priority_holder)
+    cycler = game_state.priority_holder
+
+    # Check all permanents for cycle triggers
+    all_permanents = list(game_state.battlefield)
+
+    for perm in all_permanents:
+        card = perm.card
+        abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+        for ab in abilities:
+            if not isinstance(ab, TriggeredAbility):
+                continue
+            cond = ab.trigger_condition.lower()
+
+            # Check for "whenever you cycle" triggers
+            if "whenever you cycle" in cond:
+                # Check if the cycling player matches the trigger controller
+                if cycler == perm.controller:
+                    is_optional = ab.effect.lower().startswith("you may")
+                    trigger = PendingTrigger(
+                        id=str(uuid.uuid4()),
+                        source_permanent_id=perm.id,
+                        controller=perm.controller,
+                        trigger_type="cycle",
+                        effect_description=ab.effect,
+                        source_card_name=card.name,
+                        is_optional=is_optional,
+                    )
+                    game_state.pending_triggers.append(trigger)
+                    logger.debug(
+                        "Cycle trigger queued: %r from %s (controller: %s)",
+                        ab.trigger_condition, card.name, perm.controller,
+                    )
+
+            # Check for "whenever a player cycles" triggers
+            elif "whenever a player cycles" in cond or "whenever you cycle" in cond:
+                is_optional = ab.effect.lower().startswith("you may")
+                trigger = PendingTrigger(
+                    id=str(uuid.uuid4()),
+                    source_permanent_id=perm.id,
+                    controller=perm.controller,
+                    trigger_type="cycle",
+                    effect_description=ab.effect,
+                    source_card_name=card.name,
+                    is_optional=is_optional,
+                )
+                game_state.pending_triggers.append(trigger)
+                logger.debug(
+                    "Cycle trigger queued: %r from %s (controller: %s)",
+                    ab.trigger_condition, card.name, perm.controller,
+                )
+
     return game_state

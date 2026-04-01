@@ -6,7 +6,7 @@ import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from mtg_engine.models.game import GameState, Permanent
+from mtg_engine.models.game import GameState, Permanent, Step
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +187,32 @@ def _check_once(game_state: GameState) -> tuple[GameState, list[SBAEvent]]:
                 perm.attached_to = None
                 events.append(SBAEvent("equipment_detach", f"{perm.card.name} detached", [perm.id]))
 
+    # CR 704.5k: World enchantment rule — if 2+ world permanents exist, keep the newest (US15)
+    world_perms = [p for p in game_state.battlefield if "world" in p.card.type_line.lower()]
+    if len(world_perms) > 1:
+        # Keep the one entered most recently (highest timestamp)
+        world_perms.sort(key=lambda p: p.timestamp)
+        for perm in world_perms[:-1]:
+            if any(p.id == perm.id for p in game_state.battlefield):
+                game_state = _move_to_graveyard(game_state, perm)
+                events.append(SBAEvent(
+                    "world_enchantment",
+                    f"World rule: {perm.card.name} put in graveyard",
+                    [perm.id],
+                ))
+
+    # Unearth SBA: exile unearthed permanents at end step (US16, CR 702.83)
+    if game_state.step == Step.END:
+        to_exile = [p for p in game_state.battlefield if p.unearthed]
+        for perm in to_exile:
+            if any(p.id == perm.id for p in game_state.battlefield):
+                game_state = _move_to_exile(game_state, perm)
+                events.append(SBAEvent(
+                    "unearth_exile",
+                    f"Unearth: {perm.card.name} exiled at end of turn",
+                    [perm.id],
+                ))
+
     # CR 704.5q: +1/+1 and -1/-1 counters annihilate each other (REQ-R14)
     for perm in game_state.battlefield:
         plus = perm.counters.get("+1/+1", 0)
@@ -260,3 +286,9 @@ def _move_to_graveyard(game_state: GameState, perm: Permanent) -> GameState:
     """Move permanent to its controller's graveyard (non-destruction, e.g., SBA)."""
     from mtg_engine.engine.zones import move_permanent_to_zone
     return move_permanent_to_zone(game_state, perm, "graveyard")
+
+
+def _move_to_exile(game_state: GameState, perm: Permanent) -> GameState:
+    """Move permanent directly to exile (e.g., unearth SBA)."""
+    from mtg_engine.engine.zones import move_permanent_to_zone
+    return move_permanent_to_zone(game_state, perm, "exile")

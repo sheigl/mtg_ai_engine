@@ -49,6 +49,8 @@ def begin_step(game_state: GameState) -> GameState:
             if perm.controller == game_state.active_player:
                 perm.tapped = False
                 perm.summoning_sick = False  # remove summoning sickness at start of turn
+                # US17 (T041): Reset loyalty_activated_this_turn flag at start of turn
+                perm.loyalty_activated_this_turn = False
         # Reset lands played this turn
         active = get_player(game_state, game_state.active_player)
         active.lands_played_this_turn = 0
@@ -69,49 +71,151 @@ def begin_step(game_state: GameState) -> GameState:
                     tc_match = 0
             remaining = (tc_match or 0) - 1
             if remaining <= 0:
-                # Cast for free — move from suspended_cards to hand then stack
+                # Cast for free — TASK-019-026: auto-cast suspended card
                 logger.info("Suspend: %s time counters exhausted — casting for free", card.name)
+                from mtg_engine.engine.stack import cast_spell
+                
+                # Add card to hand temporarily so cast_spell can find it
                 ready = card.model_copy(update={"parse_status": "ok"})
                 active.hand.append(ready)
-                # Trigger a zero-cost cast by putting it on the stack via pending trigger
-                # (Full implementation: cast for free. Simplified: return to hand for AI to cast.)
+                
+                try:
+                    # Cast with empty mana payment (it's free under suspend)
+                    game_state = cast_spell(
+                        game_state,
+                        game_state.active_player,
+                        ready.id,
+                        targets=[],
+                        mana_payment={}
+                    )
+                    # If it's a creature, grant haste (TASK-019-027)
+                    if "creature" in ready.type_line.lower():
+                        # Mark that haste should be granted when creature enters
+                        # This is handled in put_permanent_onto_battlefield via metadata
+                        for stack_obj in game_state.stack:
+                            if stack_obj.source_card.id == ready.id:
+                                if not stack_obj.metadata:
+                                    stack_obj.metadata = {}
+                                stack_obj.metadata["grant_haste"] = True
+                                break
+                except ValueError as e:
+                    # If cast fails, put it back on suspended_cards
+                    active.hand[:] = [c for c in active.hand if c.id != ready.id]
+                    still_suspended.append(card)
+                    logger.debug("Suspend cast failed for %s: %s", card.name, e)
             else:
                 updated = card.model_copy(update={"parse_status": f"suspended:{remaining}"})
                 still_suspended.append(updated)
                 logger.debug("Suspend: %s now has %d time counter(s)", card.name, remaining)
         active.suspended_cards = still_suspended
 
+        # US14 (T033): Saga upkeep — increment lore counter and queue chapter ability
+        from mtg_engine.models.game import PendingTrigger
+        import uuid as _uuid
+        import re as _re_saga
+        _ROMAN_MAX = {1: "I", 2: "II", 3: "III", 4: "IV", 5: "V",
+                      6: "VI", 7: "VII", 8: "VIII", 9: "IX", 10: "X"}
+        for perm in list(game_state.battlefield):
+            if perm.controller != game_state.active_player:
+                continue
+            if "saga" not in perm.card.type_line.lower():
+                continue
+            # Increment lore counter
+            current_lore = perm.counters.get("lore", 0) + 1
+            perm.counters["lore"] = current_lore
+            logger.debug("Saga upkeep: %s now has %d lore counter(s)", perm.card.name, current_lore)
+
+            # Determine max chapters from oracle text
+            oracle = perm.card.oracle_text or ""
+            roman_nums = _re_saga.findall(r'\b(I{1,3}|IV|V|VI{0,3}|IX|X)\b(?:\s*[,—])', oracle)
+            max_chapter = 0
+            _ROMAN_TO_INT = {"I": 1, "II": 2, "III": 3, "IV": 4, "V": 5,
+                             "VI": 6, "VII": 7, "VIII": 8, "IX": 9, "X": 10}
+            for r in roman_nums:
+                max_chapter = max(max_chapter, _ROMAN_TO_INT.get(r, 0))
+            if max_chapter == 0:
+                max_chapter = 3  # default to 3 chapters if we can't parse
+
+            from mtg_engine.engine.zones import _get_saga_chapter_text
+            trigger = PendingTrigger(
+                id=str(_uuid.uuid4()),
+                source_permanent_id=perm.id,
+                controller=perm.controller,
+                trigger_type="saga_chapter",
+                effect_description=f"Saga chapter {_ROMAN_MAX.get(current_lore, str(current_lore))}: {_get_saga_chapter_text(perm.card, current_lore)}",
+                source_card_name=perm.card.name,
+            )
+            game_state.pending_triggers.append(trigger)
+
+            # US14 (T034): Saga sacrifice logic — sacrifice after final chapter resolves
+            if current_lore >= max_chapter:
+                # Schedule a delayed trigger to sacrifice at next priority
+                game_state.delayed_triggers.append({
+                    "phase": game_state.phase.value,
+                    "step": None,  # fire at next step change
+                    "controller": perm.controller,
+                    "effect": f"sacrifice_saga:{perm.id}",
+                    "once": True,
+                })
+                logger.debug("Saga: %s at final chapter, sacrifice scheduled", perm.card.name)
+
+        return game_state
+
     elif step == Step.DRAW:
         # REQ-T04: active player draws one card (first-player first-turn exception
         # is handled at game creation, not here)
+        # US10: Check for dredge before drawing
+        import re as _re_dredge
+        player = get_player(game_state, game_state.active_player)
+        dredgeable_cards = []
+        
+        # Check graveyard for cards with dredge ability
+        if player.graveyard:
+            _DREDGE_RE = _re_dredge.compile(r'[Dd]redge (\d+)', _re_dredge.IGNORECASE)
+            for card in player.graveyard:
+                dredge_match = _DREDGE_RE.search(card.oracle_text or "")
+                if dredge_match:
+                    dredge_n = int(dredge_match.group(1))
+                    # Check if graveyard has enough cards to dredge
+                    if len(player.graveyard) >= dredge_n:
+                        dredgeable_cards.append((card, dredge_n))
+        
+        # If dredge is available, set pending dredge choice instead of drawing immediately
+        if dredgeable_cards:
+            game_state.pending_dredge_choice = {
+                "player": game_state.active_player,
+                "dredgeable_cards": [c[0] for c in dredgeable_cards],
+                "dredge_numbers": {c[0].id: c[1] for c in dredgeable_cards},
+            }
+            # Return current game state without drawing
+            return game_state
+        
+        # No dredge available, draw normally
         game_state, _ = draw_card(game_state, game_state.active_player)
+        return game_state
 
-    elif step == Step.CLEANUP:
-        # REQ-T05: discard to max hand size, remove damage, end "until end of turn" effects
-        active = get_player(game_state, game_state.active_player)
-        while len(active.hand) > active.max_hand_size:
-            active.hand.pop()  # simplified: discard last card (full impl requires player choice)
-        for perm in game_state.battlefield:
-            perm.damage_marked = 0
-            # US23: Only clear P/T bonuses that expire this cleanup
-            # "end_of_turn" expires at active player's cleanup; "player:<name>" expires at that player's cleanup
-            expires_p = perm.power_bonus_expires
-            expires_t = perm.toughness_bonus_expires
-            if expires_p in (None, "end_of_turn") or expires_p == f"player:{game_state.active_player}":
-                perm.power_bonus = 0
-                perm.power_bonus_expires = None
-            if expires_t in (None, "end_of_turn") or expires_t == f"player:{game_state.active_player}":
-                perm.toughness_bonus = 0
-                perm.toughness_bonus_expires = None
-        # Clear mana pools at cleanup
-        for p in game_state.players:
-            p.mana_pool = ManaPool()
-        # US4: Clear damage prevention effects and Fog flag at end of turn
-        game_state.prevention_effects.clear()
-        game_state.prevent_all_combat_damage = False
-        # US6: Clear per-turn combat constraints at end of turn
-        game_state.attack_constraints.clear()
-        game_state.block_constraints.clear()
+    elif step == Step.FIRST_STRIKE_DAMAGE:
+        # US3: Handle first-strike damage step
+        # Apply first-strike damage to creatures with first strike or double strike
+        from mtg_engine.engine.combat import assign_combat_damage
+        game_state = assign_combat_damage(game_state, first_strike_only=True)
+        # Run SBAs after first-strike damage resolution
+        from mtg_engine.engine.sba import _check_once
+        game_state, _ = _check_once(game_state)
+        # Grant priority to active player
+        game_state.priority_holder = game_state.active_player
+        return game_state
+
+    elif step == Step.COMBAT_DAMAGE:
+        # US3: Handle regular combat damage step
+        # Apply regular combat damage to creatures without first strike or double strike
+        from mtg_engine.engine.combat import assign_combat_damage
+        game_state = assign_combat_damage(game_state, first_strike_only=False)
+        # Run SBAs after regular damage resolution
+        from mtg_engine.engine.sba import _check_once
+        game_state, _ = _check_once(game_state)
+        # Grant priority to active player
+        game_state.priority_holder = game_state.active_player
         return game_state
 
     # US18: Check delayed triggers — move matching ones into pending_triggers (CR 603.7)

@@ -232,3 +232,128 @@ def add_mana(pool: ManaPool, symbol: str, amount: int = 1) -> ManaPool:
 def empty_pool(pool: ManaPool) -> ManaPool:
     """Return an empty mana pool (all zeros)."""
     return ManaPool()
+
+
+def apply_keyword_cost_reductions(
+    base_cost: str,
+    cast_request,
+    game_state,
+    player_name: str,
+) -> dict[str, int]:
+    """
+    Apply keyword cost modifiers (Convoke, Delve, Improvise, Affinity, Emerge)
+    to the base mana cost and return the effective cost dict.
+    
+    Args:
+        base_cost: Card's original mana cost string (e.g., "{2}{R}")
+        cast_request: CastRequest with creature/artifact/card IDs for cost reduction
+        game_state: GameState for permanents and card data lookup
+        player_name: Player casting the spell
+    
+    Returns:
+        Effective cost dict {symbol: count} after applying reductions
+    """
+    import re
+    from mtg_engine.engine.zones import get_player
+    
+    # Start with base cost
+    cost = parse_mana_cost(base_cost)
+    generic_reduction = 0
+    
+    # CR 702.50: Convoke — tap creatures to reduce cost by {1} per creature tapped
+    if cast_request.convoke_creature_ids:
+        generic_reduction += len(cast_request.convoke_creature_ids)
+    
+    # CR 702.65: Delve — exile cards from graveyard to reduce generic cost by {1} per card
+    if cast_request.delve_card_ids:
+        generic_reduction += len(cast_request.delve_card_ids)
+    
+    # CR 702.113: Improvise — tap artifacts to reduce generic cost by {1} per artifact
+    if cast_request.improvise_artifact_ids:
+        generic_reduction += len(cast_request.improvise_artifact_ids)
+    
+    # CR 702.142: Affinity — reduce cost by {1} for each permanent on battlefield of the type
+    # (Check oracle_text for affinity pattern "affinity for [type]")
+    from mtg_engine.models.game import Card  # Import here to avoid circular imports
+    
+    card = next((c for p in game_state.players for c in p.hand if c.id == cast_request.card_id), None)
+    if card:
+        affinity_match = re.search(r"affinity for (.*?)(?:\.|$)", card.oracle_text or "", re.IGNORECASE)
+        if affinity_match:
+            affinity_type = affinity_match.group(1).strip()
+            # Count matching permanents on battlefield
+            for perm in game_state.battlefield:
+                if perm.controller == player_name and affinity_type.lower() in perm.card.type_line.lower():
+                    generic_reduction += 1
+    
+    # CR 702.38: Emerge — sacrifice a creature to reduce cost by that creature's mana value
+    if cast_request.emerge_sacrifice_id:
+        emerge_perm = next(
+            (p for p in game_state.battlefield if p.id == cast_request.emerge_sacrifice_id),
+            None
+        )
+        if emerge_perm:
+            # Mana value = total generic + colored pips in mana cost
+            emerge_card_cost = parse_mana_cost(emerge_perm.card.mana_cost or "{0}")
+            mana_value = emerge_card_cost.get("generic", 0)
+            for sym, count in emerge_card_cost.items():
+                if sym not in ("generic", "X"):
+                    mana_value += count if isinstance(count, int) else 0
+            generic_reduction += mana_value
+    
+    # Apply the reduction to generic cost
+    cost["generic"] = max(0, cost.get("generic", 0) - generic_reduction)
+    
+    return cost
+
+
+def add_generic_to_cost(cost: dict[str, int], amount: int) -> dict[str, int]:
+    """
+    Add generic mana to a cost dict.
+    
+    Args:
+        cost: Cost dict {symbol: count}
+        amount: Number of generic mana to add
+    
+    Returns:
+        Updated cost dict
+    """
+    new_cost = dict(cost)
+    new_cost["generic"] = new_cost.get("generic", 0) + amount
+    return new_cost
+
+
+def format_cost_dict_to_string(cost: dict[str, int]) -> str:
+    """
+    Convert a cost dict back to a mana cost string.
+    
+    Args:
+        cost: Cost dict {symbol: count} (e.g., {"generic": 2, "R": 1})
+    
+    Returns:
+        Mana cost string (e.g., "{2}{R}")
+    """
+    result = []
+    
+    # Format generic mana first
+    if cost.get("generic", 0) > 0:
+        result.append(f"{{{cost['generic']}}}")
+    
+    # Format X value if present
+    if cost.get("X", 0) > 0:
+        for _ in range(cost["X"]):
+            result.append("{X}")
+    
+    # Format colored and special mana symbols
+    for symbol in ("W", "U", "B", "R", "G", "C", "S"):
+        count = cost.get(symbol, 0)
+        for _ in range(count):
+            result.append(f"{{{symbol}}}")
+    
+    # Format hybrid and Phyrexian symbols
+    for symbol, count in sorted(cost.items()):
+        if "/" in symbol:
+            for _ in range(count):
+                result.append(f"{{{symbol}}}")
+    
+    return "".join(result)

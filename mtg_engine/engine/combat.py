@@ -11,6 +11,7 @@ from mtg_engine.models.actions import (
     AttackDeclaration, BlockDeclaration, DamageAssignment
 )
 from mtg_engine.engine.zones import get_player
+from mtg_engine.engine.turn_manager import begin_step
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +152,12 @@ def declare_attackers(
             perm.tapped = True
 
     game_state.combat = CombatState(attackers=infos)
+
+    # After attackers are declared, advance to DECLARE_BLOCKERS step.
+    # (First-strike check happens in declare_blockers, after blockers are known.)
+    game_state.step = Step.DECLARE_BLOCKERS
+    game_state = begin_step(game_state)
+
     return game_state
 
 
@@ -249,6 +256,15 @@ def declare_blockers(
         game_state.combat.blocker_assignments[blocker.id] = decl.attacker_id
 
     game_state.combat.blockers_declared = True
+
+    # US3 (T008): After blockers are declared, check for first-strike combatants
+    # and transition to the appropriate damage step.
+    if has_first_strike_combatants(game_state):
+        game_state.step = Step.FIRST_STRIKE_DAMAGE
+    else:
+        game_state.step = Step.COMBAT_DAMAGE
+    game_state = begin_step(game_state)
+
     return game_state
 
 
@@ -334,10 +350,13 @@ def _validate_damage_assignments(
                     )
 
 
-def _auto_assign_damage(game_state: GameState) -> list[DamageAssignment]:
+def _auto_assign_damage(game_state: GameState, first_strike_only: bool = False) -> list[DamageAssignment]:
     """
     Auto-generate damage assignments for the current combat state.
     Used when no explicit assignments are provided (e.g. simple cases).
+    
+    When first_strike_only=True: only creatures with first strike or double strike deal damage
+    When first_strike_only=False: only creatures WITHOUT first-strike-only deal damage
     """
     if game_state.combat is None:
         return []
@@ -349,6 +368,16 @@ def _auto_assign_damage(game_state: GameState) -> list[DamageAssignment]:
             attacker = _get_perm(game_state, attacker_info.permanent_id)
         except ValueError:
             continue
+
+        # Filter attackers based on first_strike_only parameter
+        if first_strike_only:
+            # Only include attackers with first strike or double strike
+            if not (_has_keyword(attacker, "first strike") or _has_keyword(attacker, "double strike")):
+                continue
+        else:
+            # Only include attackers without first strike or double strike
+            if _has_keyword(attacker, "first strike") or _has_keyword(attacker, "double strike"):
+                continue
 
         power = _effective_power(attacker)
         has_trample = _has_keyword(attacker, "trample")
@@ -405,13 +434,22 @@ def _auto_assign_damage(game_state: GameState) -> list[DamageAssignment]:
 def assign_combat_damage(
     game_state: GameState,
     assignments: list[DamageAssignment] | None = None,
+    first_strike_only: bool = False,
 ) -> GameState:
     """
     REQ-A14, REQ-A15. Apply combat damage step. CR 510.
     If assignments is None, auto-assigns damage.
     Handles first/double strike (CR 510.4).
+    
+    When first_strike_only=True: only creatures with first strike or double strike deal damage
+    When first_strike_only=False: only creatures WITHOUT first-strike-only deal damage
     """
     if game_state.combat is None:
+        return game_state
+
+    # Idempotent guard: if damage was already assigned this step, skip
+    # (prevents double-damage when begin_step auto-assigns and API calls again)
+    if game_state.combat.damage_assigned:
         return game_state
 
     # US4: Fog-style prevention — prevent all combat damage this turn
@@ -423,7 +461,7 @@ def assign_combat_damage(
 
     # Auto-assign if not provided or empty (engine handles CR 510.1 automatically)
     if not assignments:
-        assignments = _auto_assign_damage(game_state)
+        assignments = _auto_assign_damage(game_state, first_strike_only)
     else:
         _validate_damage_assignments(game_state, assignments)
 
