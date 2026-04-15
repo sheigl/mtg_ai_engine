@@ -400,18 +400,18 @@
   - Map errors to requirement numbers (REQ-D01, REQ-S02, REQ-R01)
 
   ### Done when:
-  - [x] Pydantic models for `DeckImportRequest`, `DeckPreview`, `CardPreview` are defined
-  - [x] Archidekt JSON parser works with real Archidekt deck URLs
-  - [x] Text format parser handles standard decklist formats
-  - [x] Deck validation enforces 60-card minimum, 4-copy limit
-  - [x] Security validation rejects malicious file uploads
-  - [x] Rate limiting prevents abuse (10 imports/minute/IP)
-  - [x] API endpoints return correct HTTP status codes and error messages
-  - [x] Preview workflow completes in under 30 seconds for valid decks
-  - [x] Performance benchmarks: 100+ card deck loads in under 5s
-  - [x] Integration tests pass for all edge cases (REQ-T01 to REQ-T04)
-  - [x] Clear error messages displayed for invalid deck formats
-  - [x] Progress indicators shown for large file uploads
+  - [ ] Pydantic models for `DeckImportRequest`, `DeckPreview`, `CardPreview` are defined
+  - [ ] Archidekt JSON parser works with real Archidekt deck URLs
+  - [ ] Text format parser handles standard decklist formats
+  - [ ] Deck validation enforces 60-card minimum, 4-copy limit
+  - [ ] Security validation rejects malicious file uploads
+  - [ ] Rate limiting prevents abuse (10 imports/minute/IP)
+  - [ ] API endpoints return correct HTTP status codes and error messages
+  - [ ] Preview workflow completes in under 30 seconds for valid decks
+  - [ ] Performance benchmarks: 100+ card deck loads in under 5s
+  - [ ] Integration tests pass for all edge cases (REQ-T01 to REQ-T04)
+  - [ ] Clear error messages displayed for invalid deck formats
+  - [ ] Progress indicators shown for large file uploads
 
   ### Testing Requirements
   - Unit tests for all parser functions
@@ -446,3 +446,240 @@
   - Follow project coding conventions (type hints, Pydantic v2)
   - Reference CR numbers in comments for rules-related validation
 
+---
+
+## User Stories by Priority
+
+### P0 - Critical Requirements (Must Have)
+- [ ] US-P0-01: As a game engine, I must enforce all core game rules to ensure valid game states
+- [ ] US-P0-02: As an AI agent, I must be able to query legal actions to make valid moves
+- [ ] US-P0-03: As a trainer, I must receive complete training data exports for every game
+- [ ] US-P0-04: As a developer, I must have a REST API that supports full game lifecycle management
+- [ ] US-P0-05: As a user, I must be able to import decks from Archidekt format for game setup
+
+### P1 - Important Requirements (Should Have)
+- [ ] US-P1-01: As a game engine, I must correctly handle layer resolution and replacement effects
+- [ ] US-P1-02: As a game engine, I must enforce state-based actions consistently
+- [ ] US-P1-03: As a game engine, I must support full combat mechanics including damage assignment
+- [ ] US-P1-04: As a game engine, I must handle complex interaction scenarios like Humility + Opalescence
+- [ ] US-P1-05: As a game engine, I must correctly validate targeting and prevent illegal actions
+
+### P2 - Nice to Have Requirements (Could Have)
+- [ ] US-P2-01: As a game engine, I must support performance targets with sub-200ms latency
+- [ ] US-P2-02: As a game engine, I must support concurrent game sessions
+- [ ] US-P2-03: As a game engine, I must provide detailed rule explanations for illegal actions
+- [ ] US-P2-04: As a developer, I must have comprehensive test coverage for game rules
+- [ ] US-P2-05: As a user, I must see clear error messages when decks are invalid
+
+### P3 - Future Enhancement Requirements (Won't Have)
+- [s] US-P3-01: As a game engine, I must support multi-player games
+- [s] US-P3-02: As a game engine, I must support Commander-specific rules
+- [s] US-P3-03: As a game engine, I must support digital-only mechanics
+- [s] US-P3-04: As a game engine, I must support GUI or human-facing interface
+- [s] US-P3-05: As a game engine, I must support draft or sealed deck simulation
+
+---
+
+## Requirements Coverage by Category
+
+### 1. Game Management (REQ-G01 - REQ-G05)
+- [ ] REQ-G01: POST /game creates a new game, accepts two player configs
+- [ ] REQ-G02: GET /game/{game_id} returns the full current game state
+- [ ] REQ-G03: DELETE /game/{game_id} ends and archives a game, triggering data export
+- [ ] REQ-G04: Each game is assigned a random seed at creation
+- [ ] REQ-G05: Game state includes: turn number, active player, phase, step, priority holder, etc.
+
+### 2. Turn Structure (REQ-T01 - REQ-T05)
+- [ ] REQ-T01: Full turn structure is enforced in order
+- [ ] REQ-T02: POST /game/{game_id}/pass advances priority to the next player
+- [ ] REQ-T03: Untap step does not use the stack
+- [ ] REQ-T04: Active player draws one card at the start of their Draw step
+- [ ] REQ-T05: Cleanup step discards to hand size, removes damage from creatures
+
+### 3. Actions (REQ-A01 - REQ-A16)
+- [ ] REQ-A01: POST /game/{game_id}/play-land accepts card_id
+- [ ] REQ-A02: Playing a land does not use the stack
+- [ ] REQ-A03: POST /game/{game_id}/cast accepts card_id, mana_payment, targets
+- [ ] REQ-A04: Casting a spell moves it to the stack
+- [ ] REQ-A05: Alternative costs are accepted via alternative_cost field
+- [ ] REQ-A06: POST /game/{game_id}/activate accepts permanent_id and ability_index
+- [ ] REQ-A07: Mana abilities resolve immediately without using the stack
+- [ ] REQ-A08: Engine automatically detects and generates triggered ability objects
+- [ ] REQ-A09: GET /game/{game_id}/pending-triggers returns triggers waiting to be put on the stack
+- [ ] REQ-A10: POST /game/{game_id}/put-trigger puts a pending trigger on the stack
+- [ ] REQ-A11: POST /game/{game_id}/declare-attackers accepts array of attack declarations
+- [ ] REQ-A12: POST /game/{game_id}/declare-blockers accepts array of blocker declarations
+- [ ] REQ-A13: POST /game/{game_id}/order-blockers handles multiple blockers
+- [ ] REQ-A14: First strike and double strike damage are handled as two separate combat damage steps
+- [ ] REQ-A15: POST /game/{game_id}/assign-combat-damage validates minimum lethal damage assignment rules
+- [ ] REQ-A16: POST /game/{game_id}/special-action handles special actions
+
+### 4. Stack and Priority (REQ-S01 - REQ-S05)
+- [ ] REQ-S01: Priority is granted to the active player after each spell/ability placed on the stack
+- [ ] REQ-S02: The top of the stack resolves only when all players pass priority
+- [ ] REQ-S03: Split-second spells prevent any player from casting spells/activating abilities
+- [ ] REQ-S04: APNAP ordering for simultaneous triggers
+- [ ] REQ-S05: GET /game/{game_id}/legal-actions returns complete set of legal actions
+
+### 5. Rules Engine Coverage (REQ-R01 - REQ-R20)
+- [ ] REQ-R01: State-based actions are checked and applied continuously
+- [ ] REQ-R02: Continuous effects are applied in correct layer order
+- [ ] REQ-R03: Dependency between effects within a layer is computed correctly
+- [ ] REQ-R04: Timestamp ordering is used when no dependency exists
+- [ ] REQ-R05: Replacement effects modify events before they occur
+- [ ] REQ-R06: When multiple replacement effects apply, player chooses order of application
+- [ ] REQ-R07: Damage to creatures uses damage-marked system
+- [ ] REQ-R08: Damage to players reduces life total
+- [ ] REQ-R09: Trample damage: excess damage beyond lethal to blockers is assigned to defending player
+- [ ] REQ-R10: Deathtouch: any amount of damage from a deathtouch source is considered lethal for SBA purposes
+- [ ] REQ-R11: Lifelink: damage dealt by a lifelink creature causes its controller to gain that much life
+- [ ] REQ-R12: Infect: damage to creatures is dealt as -1/-1 counters; damage to players is poison counters
+- [ ] REQ-R13: Counter types are tracked as key-value pairs
+- [ ] REQ-R14: +1/+1 and -1/-1 counters annihilate each other as an SBA
+- [ ] REQ-R15: Copying a spell or permanent copies copiable values but not choices, counters, or damage
+- [ ] REQ-R16: A token created as a copy of a permanent copies current copiable values at creation
+- [ ] REQ-R17: Token creation instantiates a permanent with specified characteristics
+- [ ] REQ-R18: Targets are validated at casting/activation and resolution
+- [ ] REQ-R19: Protection, shroud, and hexproof are correctly enforced
+- [ ] REQ-R20: All keyword abilities listed are fully implemented
+
+### 6. REST API (REQ-API01 - REQ-API05)
+- [ ] REQ-API01: All responses are JSON
+- [ ] REQ-API02: Successful responses return HTTP 200 with a data key
+- [ ] REQ-API03: Illegal actions return HTTP 422 with error key
+- [ ] REQ-API04: Unknown game IDs return HTTP 404
+- [ ] REQ-API05: All game state objects include a state_hash field
+
+### 7. Training Data Export (REQ-D01 - REQ-D10)
+- [ ] REQ-D01: A snapshot is recorded at every point priority is granted
+- [ ] REQ-D02: Each snapshot contains full serialized game state, legal actions, and action taken
+- [ ] REQ-D03: Schema for game state snapshots
+- [ ] REQ-D04: One transcript per game with every action, trigger, SBA, and resolution
+- [ ] REQ-D05: Each transcript entry includes sequence number, event type, description, and structured data
+- [ ] REQ-D06: Transcript is suitable for conversion into Q&A training pairs
+- [ ] REQ-D07: Q&A pairs generated during complex rule interactions
+- [ ] REQ-D08: Q&A schema with question, answer, game_id, turn, etc.
+- [ ] REQ-D09: Q&A questions are templated from actual game context
+- [ ] REQ-D10: One outcome record per game with winner, win condition, etc.
+
+### 8. Card Resolution (REQ-C01 - REQ-C05)
+- [ ] REQ-C01: Card abilities are parsed from Scryfall oracle text into structured effect objects
+- [ ] REQ-C02: Ability parser handles triggered, activated, static, and spell effects
+- [ ] REQ-C03: Unsupported cards are flagged with parse_status: "unsupported"
+- [ ] REQ-C04: Scryfall responses are cached locally
+- [ ] REQ-C05: Engine supports double-faced, adventure, split, and modal double-faced cards
+
+### 9. Performance and Reliability (REQ-P01 - REQ-P05)
+- [ ] REQ-P01: GET /game/{game_id}/legal-actions must respond in under 200ms
+- [ ] REQ-P02: Engine must handle at least 10 concurrent games
+- [ ] REQ-P03: All game state is stored in memory during play
+- [ ] REQ-P04: Unhandled exceptions return HTTP 500 with error details
+- [ ] REQ-P05: Engine supports dry_run flag on action endpoints
+
+---
+
+## Implementation Tasks by Feature Area
+
+### Core Engine Logic
+- [ ] Implement full layer system with dependency resolution and timestamp ordering (REQ-R02, REQ-R03, REQ-R04)
+- [ ] Implement replacement effects system with multiple effect handling (REQ-R05, REQ-R06)
+- [ ] Implement comprehensive combat system with first/double strike, trample, deathtouch, lifelink, infect (REQ-A14, REQ-R09, REQ-R10, REQ-R11, REQ-R12)
+- [ ] Implement complete targeting validation system (REQ-R18, REQ-R19)
+- [ ] Implement comprehensive state-based action system (REQ-R01)
+- [ ] Implement mana system with complex mana types (hybrid, Phyrexian, snow, colorless) (REQ-A03)
+- [ ] Implement complete trigger system with APNAP ordering (REQ-A08, REQ-S04)
+
+### Game State Management
+- [ ] Implement comprehensive game state models with all required fields (REQ-G05)
+- [ ] Implement zone management with atomic operations and library ordering (REQ-G06, REQ-G07, REQ-G08)
+- [ ] Implement turn structure with all phases and steps (REQ-T01)
+- [ ] Implement priority system with proper granting and passing logic (REQ-S01, REQ-S02)
+- [ ] Implement comprehensive card parsing for all card types and keywords (REQ-C01, REQ-C02, REQ-C05)
+
+### API Integration
+- [ ] Implement full REST API with all required endpoints (REQ-API01 - REQ-API05)
+- [ ] Implement legal actions endpoint with full action computation (REQ-S05)
+- [ ] Implement dry_run functionality for all action endpoints (REQ-P05)
+- [ ] Implement complete deck import functionality with Archidekt and Scryfall formats (REQ-P01, REQ-P02, REQ-P03)
+- [ ] Implement all data export endpoints with proper JSON schemas (REQ-D01 - REQ-D10)
+
+### Training Data Generation
+- [ ] Implement snapshot recording with proper action tracking (REQ-D01, REQ-D02, REQ-D03)
+- [ ] Implement transcript generation with full event logging (REQ-D04, REQ-D05, REQ-D06)
+- [ ] Implement rules Q&A generation with context-based templating (REQ-D07, REQ-D08, REQ-D09)
+- [ ] Implement outcome recording with win/loss tracking (REQ-D10)
+- [ ] Implement complete data export pipeline with MongoDB integration
+
+### Security and Performance
+- [ ] Implement rate limiting for deck imports (REQ-S03)
+- [ ] Implement file upload validation for security (REQ-S01, REQ-S02)
+- [ ] Implement performance optimization for large deck loading (REQ-P01)
+- [ ] Implement concurrent game handling with no state bleed (REQ-P02)
+- [ ] Implement error handling with structured responses (REQ-P04)
+
+---
+
+## Testing Requirements
+
+### Unit Tests
+- [ ] Test all Pydantic models for serialization/deserialization
+- [ ] Test core engine logic functions (zones, turn management, SBA, mana)
+- [ ] Test layer system with complex interactions
+- [ ] Test replacement effects with multiple applications
+- [ ] Test combat mechanics with various damage types
+- [ ] Test targeting validation and protection rules
+- [ ] Test deck import parsers with various formats
+- [ ] Test security validation for file uploads
+
+### Integration Tests
+- [ ] Test complete game lifecycle from creation to deletion
+- [ ] Test all API endpoints with valid and invalid requests
+- [ ] Test legal actions computation under various game states
+- [ ] Test concurrent game sessions
+- [ ] Test deck import workflow from URL to game creation
+- [ ] Test data export endpoints with complete game state
+
+### Performance Tests
+- [ ] Benchmark legal actions endpoint latency with complex game states
+- [ ] Test concurrent game handling with 10+ simultaneous games
+- [ ] Test large deck loading times (100+ cards)
+- [ ] Test API latency under load conditions
+
+### Edge Case Tests
+- [ ] Test malformed deck files and invalid formats
+- [ ] Test large file uploads (>10MB) with rate limiting
+- [ ] Test concurrent imports with rate limiting
+- [ ] Test complex rule interactions (Humility + Opalescence, etc.)
+- [ ] Test error responses with correct HTTP status codes
+
+---
+
+## Performance and Quality Requirements
+
+### Performance Targets
+- [ ] All core API endpoints must respond in under 200ms (REQ-P01)
+- [ ] Engine must handle at least 10 concurrent games without state bleed (REQ-P02)
+- [ ] Deck import must complete under 5s for decks with 100+ cards (REQ-P01)
+- [ ] API latency must remain under 200ms for all actions (REQ-P01)
+- [ ] Support 100+ concurrent game sessions (REQ-P03)
+
+### Quality Assurance
+- [ ] All game state must be fully serializable to JSON (REQ-API05)
+- [ ] Engine must be deterministic given a fixed random seed (REQ-G04)
+- [ ] All rules must be enforced consistently (REQ-R01, REQ-R02, etc.)
+- [ ] Error responses must include proper HTTP status codes and error messages (REQ-API03, REQ-API04)
+- [ ] All data exports must conform to defined schemas (REQ-D03, REQ-D08, REQ-D10)
+
+### Security
+- [ ] All file uploads must be validated for malicious content (REQ-S01)
+- [ ] Content-type validation must be enforced for uploaded files (REQ-S02)
+- [ ] Rate limiting must be implemented for file upload endpoints (REQ-S03)
+- [ ] Input sanitization must prevent injection attacks
+- [ ] All endpoints must validate request parameters and return appropriate error codes
+
+### Reliability
+- [ ] Engine must handle unhandled exceptions gracefully (REQ-P04)
+- [ ] Game state must be preserved at last valid checkpoint during errors
+- [ ] All game actions must be validated before execution
+- [ ] All game lifecycle events must be logged appropriately
+- [ ] Data export must be triggered correctly on game deletion

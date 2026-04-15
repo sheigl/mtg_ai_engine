@@ -5,6 +5,18 @@ from typing import Optional, Any
 from pydantic import BaseModel, Field
 
 
+class DamageModifier(BaseModel):
+    """A damage multiplication replacement effect (CR 614.1a)."""
+    source_permanent_id: str        # Permanent providing the effect
+    controller: str                 # Controller of the source permanent
+    multiplier: int = 2             # 2 = double, 3 = triple
+    applies_to: str = "all"         # "all" | "sources_you_control" | "combat_only"
+    timestamp: float = 0.0          # For ordering when multiple modifiers apply
+
+class ManaPoolPersistence(BaseModel):
+    """Tracks which mana colors persist across step/phase transitions."""
+    colors: list[str] = Field(default_factory=list)  # ["G"] for Omnath, ["W","U","B","R","G","C"] for Upwelling
+    convert_to_colorless: bool = False                # True for Kruphix (unused mana becomes colorless)
 
 class Phase(str, Enum):
     BEGINNING = "beginning"
@@ -13,13 +25,12 @@ class Phase(str, Enum):
     POSTCOMBAT_MAIN = "postcombat_main"
     ENDING = "ending"
 
-
 class Step(str, Enum):
     UNTAP = "untap"
-    UPKEEP = "upkeep"
-    DRAW = "draw"
-    MAIN = "main"
-    BEGINNING_OF_COMBAT = "beginning_of_combat"
+    UPKEEP = "upkeep
+    DRAW = "draw
+    MAIN = "main
+    BEGINNING_OF_COMBAT = "beginning_of_combat
     DECLARE_ATTACKERS = "declare_attackers"
     DECLARE_BLOCKERS = "declare_blockers"
     FIRST_STRIKE_DAMAGE = "first_strike_damage"
@@ -56,6 +67,7 @@ class Card(BaseModel):
     faces: Optional[list[CardFace]] = None
     cmc: float = 0.0
     parse_status: str = "ok"  # "ok" | "unsupported"
+    card_layout: str = "normal" # "normal", "split", "mdfc", "adventure", "aftermath", "transform"
 
 
 class ManaPool(BaseModel):
@@ -65,6 +77,9 @@ class ManaPool(BaseModel):
     R: int = 0
     G: int = 0
     C: int = 0  # generic colorless
+    # US23: Snow mana tracking for {S} costs
+    snow: int = 0
+    snow_by_color: dict[str, int] = Field(default_factory=dict)
 
 
 class Permanent(BaseModel):
@@ -96,6 +111,19 @@ class Permanent(BaseModel):
     time_counters: int = 0      # Used for suspended cards in exile zone
     foretold: bool = False      # True if exiled face-down via Foretell
     regen_shields: int = 0      # CR 701.15: active regeneration shields
+    # US15: Phasing
+    phased_out: bool = False
+    # US16: Vehicles
+    crewed_until_end_of_turn: bool = False
+    # US15: Phasing
+    has_phasing: bool = False
+    # US27: Echo
+    echo_paid: bool = False
+    echo_cost: Optional[str] = None
+    # US30: Mutate
+    mutated_cards: list[Card] = Field(default_factory=list)
+    # US19: Mana persistence
+    mana_doesnt_empty: Optional[ManaPoolPersistence] = None
 
 
 class StackObject(BaseModel):

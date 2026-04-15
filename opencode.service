@@ -1,0 +1,14 @@
+[Unit]
+Description=llamacpp LLM Server with %i
+After=network.target
+
+[Service]
+Type=simple
+User=sheigl
+WorkingDirectory=/mnt/1TB/AI/llama.cpp
+ExecStart=/mnt/1TB/AI/llama.cpp/run-qwen.sh /mnt/1TB/AI/chat_models/Qwen3-Coder-30B-A3B-Instruct-Q6_K.gguf qwen3-coder:30b-a3b 8080 SYCL
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
