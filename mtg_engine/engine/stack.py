@@ -62,9 +62,17 @@ def cast_spell(
     x_value: int = 0,
     kicker_paid: bool = False,
     jump_start_discard_id: str | None = None,
+    face_index: int = 0,
+    fuse: bool = False,
+    as_face_down: bool = False,
+    foretell: bool = False,
+    mutate_target_id: str | None = None,
+    mutate_on_top: bool = True,
+    from_graveyard: bool = False,
 ) -> GameState:
     """
-    Cast a spell from a player's hand. REQ-A03, REQ-A04, REQ-S01.
+    Cast a spell from a player's hand (or graveyard for aftermath cards).
+    REQ-A03, REQ-A04, REQ-S01. CR 709: split cards.
     Validates timing, mana, targets; moves card to stack.
     Returns updated game_state.
     """
@@ -79,10 +87,24 @@ def cast_spell(
 
     player = get_player(game_state, player_name)
 
-    # Find card in hand
+    # Find card in hand (or graveyard for aftermath from_graveyard)
     card = next((c for c in player.hand if c.id == card_id), None)
     if card is None:
-        raise ValueError(f"Card {card_id!r} not found in {player_name}'s hand")
+        if from_graveyard:
+            card = next((c for c in player.graveyard if c.id == card_id), None)
+            if card is None:
+                raise ValueError(f"Card {card_id!r} not found in {player_name}'s graveyard")
+        else:
+            raise ValueError(f"Card {card_id!r} not found in {player_name}'s hand")
+
+    # US4: Handle multi-face cards (split cards, MDFCs, aftermath)
+    if card.faces and len(card.faces) > 1 and face_index >= 0:
+        card_face = card.faces[face_index]
+        card = _apply_face_to_card(card, card_face)
+
+    # US4: Handle fuse for split cards
+    if fuse and card.faces and len(card.faces) >= 2:
+        card = _fuse_split_card(card)
 
     # Timing validation REQ-A03
     if _is_sorcery_speed(card):
@@ -102,8 +124,11 @@ def cast_spell(
     # Pay cost — deducts mana from player's pool
     player.mana_pool = pay_cost(player.mana_pool, cost, mana_payment)
 
-    # Move card from hand to stack (REQ-A04)
-    player.hand[:] = [c for c in player.hand if c.id != card_id]
+    # Move card from hand (or graveyard) to stack
+    if from_graveyard:
+        player.graveyard[:] = [c for c in player.graveyard if c.id != card_id]
+    else:
+        player.hand[:] = [c for c in player.hand if c.id != card_id]
 
     # Handle jump-start discard before putting spell on stack
     if jump_start_discard_id and alternative_cost == "jump-start":
@@ -154,6 +179,12 @@ def cast_spell(
         replicate_count=replicate_count,  # US7: Number of replicates to create
         flashback=is_flashback,  # US8: Whether cast via flashback from graveyard
         escape=is_escape,  # US8: Whether cast via escape from graveyard
+        face_index=face_index,
+        is_face_down=as_face_down,
+        is_adventure=foretell or (card.card_layout == "adventure" and face_index == 1),
+        is_fused=fuse,
+        mutate_target_id=mutate_target_id,
+        mutate_on_top=mutate_on_top,
     )
     game_state.stack.append(stack_obj)
 
@@ -1211,3 +1242,67 @@ def _create_token_with_multiple_abilities_pt_keywords_type_subtype_color_and_man
     # Token with multiple abilities, PT, keywords, type, subtype, color, and mana cost creation - for now, just log it
     logger.info("%s creates token with multiple abilities, PT, keywords, type, subtype, color, and mana cost", controller)
     return game_state
+
+
+def _apply_face_to_card(card: Card, card_face) -> Card:
+    """Apply a CardFace's properties to a copy of the parent card. CR 709.3."""
+    from copy import deepcopy
+    new_card = deepcopy(card)
+    new_card.name = card_face.name
+    new_card.mana_cost = card_face.mana_cost
+    new_card.type_line = card_face.type_line
+    new_card.oracle_text = card_face.oracle_text
+    new_card.power = card_face.power
+    new_card.toughness = card_face.toughness
+    new_card.loyalty = card_face.loyalty
+    if card_face.colors:
+        new_card.colors = list(card_face.colors)
+    return new_card
+
+
+def _fuse_split_card(card: Card) -> Card:
+    """Fuse both halves of a split card into a single spell. CR 709.4.
+    
+    When cast with fuse, the card is treated as if it were two spells
+    cast at the same time. The fused spell has combined mana cost,
+    combined type line, and combined oracle text.
+    """
+    from copy import deepcopy
+    new_card = deepcopy(card)
+    if not card.faces or len(card.faces) < 2:
+        return new_card
+    
+    face0 = card.faces[0]
+    face1 = card.faces[1]
+    
+    # Combined mana cost: both halves' costs
+    cost_parts = []
+    if face0.mana_cost:
+        cost_parts.append(face0.mana_cost)
+    if face1.mana_cost:
+        cost_parts.append(face1.mana_cost)
+    new_card.mana_cost = " ".join(cost_parts)
+    
+    # Combined type line: both faces' types
+    type_parts = []
+    if face0.type_line:
+        type_parts.append(face0.type_line)
+    if face1.type_line:
+        type_parts.append(face1.type_line)
+    new_card.type_line = " — ".join(type_parts)
+    
+    # Combined oracle text: both faces' text
+    text_parts = []
+    if face0.oracle_text:
+        text_parts.append(face0.oracle_text)
+    if face1.oracle_text:
+        text_parts.append(face1.oracle_text)
+    new_card.oracle_text = "\n\n".join(text_parts)
+    
+    # CMC = total combined cost
+    from mtg_engine.engine.mana import parse_mana_cost
+    combined_cost = new_card.mana_cost or ""
+    parsed = parse_mana_cost(combined_cost)
+    new_card.cmc = sum(parsed.values())
+    
+    return new_card

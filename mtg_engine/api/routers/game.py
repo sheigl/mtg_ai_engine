@@ -563,6 +563,13 @@ def cast(game_id: str, req: CastRequest) -> dict:
             raise _err(f"Card {req.card_id!r} not found in graveyard", "INVALID_ACTION")
         player_gs.graveyard[:] = [c for c in player_gs.graveyard if c.id != req.card_id]
         player_gs.hand.append(_graveyard_card)
+    elif req.from_graveyard and req.alternative_cost is None:
+        # Aftermath (CR 702.125): cast second half from graveyard
+        _graveyard_card = next((c for c in player_gs.graveyard if c.id == req.card_id), None)
+        if _graveyard_card is None:
+            raise _err(f"Card {req.card_id!r} not found in graveyard", "INVALID_ACTION")
+        player_gs.graveyard[:] = [c for c in player_gs.graveyard if c.id != req.card_id]
+        player_gs.hand.append(_graveyard_card)
 
     card_obj = next((c for c in player_gs.hand if c.id == req.card_id), None)
     card_name = card_obj.name if card_obj else req.card_id
@@ -598,6 +605,13 @@ def cast(game_id: str, req: CastRequest) -> dict:
             x_value=req.x_value,
             kicker_paid=req.kicker_paid,
             jump_start_discard_id=req.jump_start_discard_id,
+            face_index=req.face_index,
+            fuse=req.fuse,
+            as_face_down=req.as_face_down,
+            foretell=req.foretell,
+            mutate_target_id=req.mutate_target_id,
+            mutate_on_top=req.mutate_on_top,
+            from_graveyard=req.from_graveyard,
         )
         gs = _run_sbas(gs)
     except ValueError as e:
@@ -656,6 +670,10 @@ def cast(game_id: str, req: CastRequest) -> dict:
             # Unearth: exile at end of turn is handled via cleanup; for now just track it
             # The card should already have been placed on battlefield by cast_spell for creatures
             pass
+        elif req.from_graveyard:
+            # Aftermath (CR 702.125): card cast from graveyard is exiled instead of going to graveyard
+            player_gs2.graveyard[:] = [c for c in player_gs2.graveyard if c.id != req.card_id]
+            player_gs2.exile.append(_graveyard_card)
 
     if not req.dry_run:
         mgr.update(game_id, gs)
