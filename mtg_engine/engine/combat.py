@@ -74,6 +74,103 @@ def _has_protection(perm: Permanent, from_keyword: str) -> bool:
     return any(f"protection from {from_keyword}" in kw.lower() for kw in perm.card.keywords)
 
 
+def _has_protection_from(perm: Permanent, quality: str) -> bool:
+    """
+    Check if a permanent has protection from a specific quality.
+    Quality can be: color (W/U/B/R/G), type (creature/enchantment/etc), 
+    CMC number, controller, or "everything".
+    """
+    if not quality:
+        return False
+    
+    quality_lower = quality.lower()
+    
+    # "Protection from everything"
+    if quality_lower == "everything":
+        return any("protection from everything" in kw.lower() for kw in perm.card.keywords)
+    
+    # Color protection
+    if quality_lower in {"white", "blue", "black", "red", "green", "w", "u", "b", "r", "g"}:
+        color_map = {
+            "white": "white", "w": "white",
+            "blue": "blue", "u": "blue",
+            "black": "black", "b": "black",
+            "red": "red", "r": "red",
+            "green": "green", "g": "green",
+        }
+        color = color_map.get(quality_lower)
+        if color:
+            return any(f"protection from {color}" in kw.lower() for kw in perm.card.keywords)
+    
+    # Type protection (creature, enchantment, land, etc.)
+    return any(f"protection from {quality_lower}" in kw.lower() for kw in perm.card.keywords)
+
+
+def _get_protection_qualities(perm: Permanent) -> list[str]:
+    """
+    Extract all qualities from a permanent's protection keywords.
+    Returns a list of qualities like ["white", "creature", "everything"].
+    """
+    qualities = []
+    for kw in perm.card.keywords:
+        kw_lower = kw.lower()
+        if kw_lower.startswith("protection from "):
+            quality = kw_lower.replace("protection from ", "")
+            if quality:
+                qualities.append(quality)
+    return qualities
+
+
+def _get_source_qualities(
+    source_card: Any,
+    source_controller: str,
+    target_controller: str,
+) -> list[str]:
+    """
+    Determine what qualities a source has for protection targeting checks (CR 702.16).
+    
+    Returns a list of qualities that the source has:
+    - Colors from mana cost
+    - Types from type line
+    - Controller if source is a player's permanent
+    - CMC if relevant
+    """
+    qualities = []
+    
+    # Color qualities from mana cost
+    if source_card.mana_cost:
+        colors = []
+        mana_lower = source_card.mana_cost.lower()
+        if "w" in mana_lower or "{w}" in mana_lower:
+            colors.append("white")
+        if "u" in mana_lower or "{u}" in mana_lower:
+            colors.append("blue")
+        if "b" in mana_lower or "{b}" in mana_lower:
+            colors.append("black")
+        if "r" in mana_lower or "{r}" in mana_lower:
+            colors.append("red")
+        if "g" in mana_lower or "{g}" in mana_lower:
+            colors.append("green")
+        qualities.extend(colors)
+    
+    # Type qualities from type line
+    if source_card.type_line:
+        type_line_lower = source_card.type_line.lower()
+        # Check if it's a spell/ability from a creature
+        if "creature" in type_line_lower:
+            qualities.append("creature")
+        # Check for other types that could be protection targets
+        for card_type in ["enchantment", "artifact", "land", "planeswalker"]:
+            if card_type in type_line_lower:
+                qualities.append(card_type)
+    
+    # Source controller as a quality (for "protection from opponents" etc.)
+    if source_controller != target_controller:
+        qualities.append("opponent")
+    
+    return qualities
+
+
 # Landwalk keyword → land subtype mapping (CR 702.11)
 _LANDWALK_MAP = {
     "islandwalk": "island",

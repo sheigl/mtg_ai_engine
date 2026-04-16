@@ -100,6 +100,49 @@ def _get_recorder_safe(game_id: str, mgr=None):
         return None
 
 
+def _validate_targets(
+    game_state: GameState,
+    targets: list[str],
+    source_card: Any,
+    controller: str,
+) -> None:
+    """
+    Validate that all targets are legal per CR 702.11 (hexproof), 702.18 (shroud),
+    and 702.16 (protection). Raises ValueError if any target is illegal.
+    """
+    from mtg_engine.engine.combat import (
+        _has_hexproof_or_shroud, _has_protection_from, _get_source_qualities
+    )
+
+    for target_id in targets:
+        # Check if target is a permanent
+        target_perm = next((p for p in game_state.battlefield if p.id == target_id), None)
+        if target_perm:
+            # Hexproof: opponents cannot target
+            if target_perm.controller != controller and _has_hexproof_or_shroud(target_perm):
+                raise ValueError(
+                    f"{target_perm.card.name} has hexproof or shroud — "
+                    f"cannot be targeted by {controller}"
+                )
+            
+            # Protection quality matching (CR 702.16)
+            source_qualities = _get_source_qualities(source_card, controller, target_perm.controller)
+            
+            for quality in source_qualities:
+                if _has_protection_from(target_perm, quality):
+                    raise ValueError(
+                        f"{target_perm.card.name} has protection from {quality} — "
+                        f"cannot be targeted by {source_card.name}"
+                    )
+        else:
+            # Check if target is a player
+            target_player = next((p for p in game_state.players if p.name == target_id), None)
+            if target_player:
+                # Protection from players doesn't exist in current MTG rules
+                # But we should still validate hexproof/shroud if they could apply
+                pass
+
+
 def _record_transition_events(
     recorder,
     gs_after: GameState,
@@ -523,6 +566,12 @@ def cast(game_id: str, req: CastRequest) -> dict:
         )
         effective_cost_str = format_cost_dict_to_string(effective_cost_dict)
 
+    # T009: Validate targets before casting
+    if req.targets:
+        card_obj = next((c for c in player_gs.hand if c.id == req.card_id), None)
+        if card_obj:
+            _validate_targets(gs, req.targets, card_obj, caster)
+
     try:
         gs = cast_spell(
             gs,
@@ -822,6 +871,10 @@ def activate(game_id: str, req: ActivateRequest) -> dict:
 
         ability = activated[req.ability_index]
         ability_text_for_log = ability.raw_text
+
+        # T010: Validate targets for activated abilities
+        if req.targets:
+            _validate_targets(gs, req.targets, perm.card, gs.priority_holder)
 
         # US20 T162: Enforce timing_restriction on activated abilities (CR 602.1)
         if ability.timing_restriction:
