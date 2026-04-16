@@ -111,21 +111,21 @@ def _validate_targets(
     and 702.16 (protection). Raises ValueError if any target is illegal.
     """
     from mtg_engine.engine.combat import (
-        _has_hexproof_or_shroud, _has_protection_from, _get_source_qualities
+        _has_hexproof_or_shroud, _has_protection_from, _get_source_qualities, _has_keyword
     )
 
     for target_id in targets:
         # Check if target is a permanent
         target_perm = next((p for p in game_state.battlefield if p.id == target_id), None)
         if target_perm:
-            # Hexproof: opponents cannot target
-            if target_perm.controller != controller and _has_hexproof_or_shroud(target_perm):
+            # Check protection from everything first (CR 702.16) - blocks all targeting
+            if any("protection from everything" in kw.lower() for kw in target_perm.card.keywords):
                 raise ValueError(
-                    f"{target_perm.card.name} has hexproof or shroud — "
-                    f"cannot be targeted by {controller}"
+                    f"{target_perm.card.name} has protection from everything — "
+                    f"cannot be targeted by {source_card.name}"
                 )
             
-            # Protection quality matching (CR 702.16)
+            # Check other protection qualities (CR 702.16) - before hexproof/shroud
             source_qualities = _get_source_qualities(source_card, controller, target_perm.controller)
             
             for quality in source_qualities:
@@ -134,6 +134,20 @@ def _validate_targets(
                         f"{target_perm.card.name} has protection from {quality} — "
                         f"cannot be targeted by {source_card.name}"
                     )
+            
+            # Hexproof: opponents cannot target (CR 702.11)
+            if target_perm.controller != controller and _has_hexproof_or_shroud(target_perm):
+                raise ValueError(
+                    f"{target_perm.card.name} has hexproof or shroud — "
+                    f"cannot be targeted by {controller}"
+                )
+            
+            # Shroud: no player (including controller) can target (CR 702.18)
+            if _has_keyword(target_perm, "shroud"):
+                raise ValueError(
+                    f"{target_perm.card.name} has hexproof or shroud — "
+                    f"cannot be targeted by {controller}"
+                )
         else:
             # Check if target is a player
             target_player = next((p for p in game_state.players if p.name == target_id), None)

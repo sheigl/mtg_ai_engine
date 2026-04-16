@@ -271,12 +271,19 @@ def _has_protection_from_aura(game_state: GameState, aura: Permanent, target: Pe
     """
     Check if an Aura's target has protection from a matching quality (CR 702.16).
     Returns True if the Aura should fall off due to protection.
+    
+    Note: Protection doesn't cause your own Auras to fall off - only opposing
+    players' Auras are affected by protection (CR 702.16e).
     """
     from mtg_engine.engine.combat import _has_protection_from, _get_source_qualities
 
-    # Protection from everything
+    # Protection from everything always causes Auras to fall off
     if "protection from everything" in target.card.keywords:
         return True
+
+    # Same controller - protection doesn't affect own attachments
+    if aura.controller == target.controller:
+        return False
 
     # Get qualities that the Aura has (from its mana cost and type line)
     aura_controller = aura.controller

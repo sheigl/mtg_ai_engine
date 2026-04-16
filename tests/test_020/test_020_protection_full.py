@@ -72,7 +72,7 @@ class TestProtectionAuraSBA:
         # Aura should be in graveyard
         assert any(e.sba_type == "protection_aura" for e in events)
         assert aura not in gs.battlefield
-        assert any(aura.id == c.id for c in gs.players[1].graveyard)
+        assert any(aura.card.id == c.id for c in gs.players[0].graveyard)
 
     def test_aura_falls_off_protection_from_type(self, game_with_two_players):
         """Scenario 2: Aura from creature type falls off creature with protection from creatures."""
@@ -103,7 +103,7 @@ class TestProtectionAuraSBA:
             card=Card(
                 name="Giant Growth",
                 mana_cost="{R}",
-                type_line="Enchantment — Aura",
+                type_line="Enchantment — Aura Creature",
                 subtypes=["Aura", "Creature"],
             ),
             controller="player_1",
@@ -121,6 +121,7 @@ class TestProtectionAuraSBA:
         # Aura should fall off
         assert any(e.sba_type == "protection_aura" for e in events)
         assert creature_aura not in gs.battlefield
+        assert any(creature_aura.card.id == c.id for c in gs.players[0].graveyard)
 
     def test_aura_stays_if_no_matching_protection(self, game_with_two_players):
         """Scenario 3: Aura stays if target's protection doesn't match."""

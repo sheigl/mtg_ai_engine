@@ -273,7 +273,7 @@ class TestTargetingProtection:
         creature_spell_card = Card(
             name="Giant Growth",
             mana_cost="{R}",
-            type_line="Instant",
+            type_line="Creature — Beast",
         )
         
         from mtg_engine.api.routers.game import _validate_targets
