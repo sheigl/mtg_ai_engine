@@ -176,6 +176,18 @@ def _check_once(game_state: GameState) -> tuple[GameState, list[SBAEvent]]:
         game_state = _move_to_graveyard(game_state, perm)
         events.append(SBAEvent("aura_illegal", f"{perm.card.name} aura has no legal enchanted object", [perm.id]))
 
+    # CR 704.5m: Aura attached to permanent with protection from matching quality → graveyard
+    for perm in game_state.battlefield:
+        if "aura" in perm.card.type_line.lower() and perm.attached_to:
+            target_perm = next((p for p in game_state.battlefield if p.id == perm.attached_to), None)
+            if target_perm and _has_protection_from_aura(game_state, perm, target_perm):
+                game_state = _move_to_graveyard(game_state, perm)
+                events.append(SBAEvent(
+                    "protection_aura",
+                    f"{perm.card.name} falls off due to protection",
+                    [perm.id],
+                ))
+
     # CR 704.5n: Equipment attached to illegal permanent → becomes unattached (stays on battlefield)
     for perm in game_state.battlefield:
         if "equipment" in perm.card.type_line.lower() and perm.attached_to:
@@ -186,6 +198,18 @@ def _check_once(game_state: GameState) -> tuple[GameState, list[SBAEvent]]:
             if not target_exists:
                 perm.attached_to = None
                 events.append(SBAEvent("equipment_detach", f"{perm.card.name} detached", [perm.id]))
+
+    # CR 704.5n: Equipment attached to permanent with protection from matching quality → unattach
+    for perm in game_state.battlefield:
+        if "equipment" in perm.card.type_line.lower() and perm.attached_to:
+            target_perm = next((p for p in game_state.battlefield if p.id == perm.attached_to), None)
+            if target_perm and _has_protection_from_aura(game_state, perm, target_perm):
+                perm.attached_to = None
+                events.append(SBAEvent(
+                    "protection_equipment",
+                    f"{perm.card.name} unattached due to protection",
+                    [perm.id],
+                ))
 
     # CR 704.5k: World enchantment rule — if 2+ world permanents exist, keep the newest (US15)
     world_perms = [p for p in game_state.battlefield if "world" in p.card.type_line.lower()]
@@ -241,7 +265,31 @@ def _check_once(game_state: GameState) -> tuple[GameState, list[SBAEvent]]:
     return game_state, events
 
 
-# --- Helpers ---
+  # --- Helpers ---
+
+def _has_protection_from_aura(game_state: GameState, aura: Permanent, target: Permanent) -> bool:
+    """
+    Check if an Aura's target has protection from a matching quality (CR 702.16).
+    Returns True if the Aura should fall off due to protection.
+    """
+    from mtg_engine.engine.combat import _has_protection_from, _get_source_qualities
+
+    # Protection from everything
+    if "protection from everything" in target.card.keywords:
+        return True
+
+    # Get qualities that the Aura has (from its mana cost and type line)
+    aura_controller = aura.controller
+    target_controller = target.controller
+    qualities = _get_source_qualities(aura.card, aura_controller, target_controller)
+
+    # Check if target has protection from any of these qualities
+    for quality in qualities:
+        if _has_protection_from(target, quality):
+            return True
+
+    return False
+
 
 def _is_creature(perm: Permanent) -> bool:
     """Return True if the permanent is a creature."""
