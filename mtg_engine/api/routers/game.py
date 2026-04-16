@@ -693,7 +693,7 @@ def cycle(game_id: str, req: CastRequest) -> dict:
         raise _err(f"{card.name} doesn't have cycling", "INVALID_ACTION")
 
     cycling_cost = cycling_match.group(1)
-    from mtg_engine.engine.mana import can_pay_cost
+    from mtg_engine.engine.mana import can_pay_cost, is_mana_ability
     if not can_pay_cost(player.mana_pool, cycling_cost):
         raise _err(f"Cannot pay cycling cost {cycling_cost}", "INVALID_ACTION")
 
@@ -869,7 +869,7 @@ def activate(game_id: str, req: ActivateRequest) -> dict:
 
     try:
         from mtg_engine.card_data.ability_parser import parse_oracle_text, ActivatedAbility
-        from mtg_engine.engine.mana import pay_cost, add_mana
+        from mtg_engine.engine.mana import pay_cost, add_mana, is_mana_ability, resolve_mana_ability
 
         perm = next((p for p in gs.battlefield if p.id == req.permanent_id), None)
         if perm is None:
@@ -908,6 +908,13 @@ def activate(game_id: str, req: ActivateRequest) -> dict:
                     f"{perm.card.name}: ability can only be activated during your turn"
                 )
 
+        # US32 T179: Enforce split second on activated abilities (CR 702.61b)
+        # Mana abilities bypass the stack and are unaffected by split second.
+        from mtg_engine.engine.stack import _has_split_second
+        is_split_second_active = _has_split_second(gs)
+        if is_split_second_active and not is_mana_ability(ability_text_for_log, is_loyalty=False):
+            raise ValueError("Cannot activate non-mana abilities while a split-second spell is on the stack")
+
         # Pay tap cost
         player = get_player(gs, gs.priority_holder)
         if "{T}" in ability.cost:
@@ -921,13 +928,18 @@ def activate(game_id: str, req: ActivateRequest) -> dict:
         if mana_cost_part:
             player.mana_pool = pay_cost(player.mana_pool, mana_cost_part, req.mana_payment)
 
-        # Apply mana ability effects immediately (REQ-A07: mana abilities bypass stack)
-        import re as _re
-        mana_add = _re.search(r"add\s+(\{[WUBRGC]\})", ability.effect, _re.IGNORECASE)
-        if mana_add:
-            sym = mana_add.group(1).strip("{}")
-            player.mana_pool = add_mana(player.mana_pool, sym.upper())
-
+        # Check if this is a mana ability per CR 605 (T014, T015)
+        # Mana abilities resolve immediately without going on the stack
+        if is_mana_ability(ability_text_for_log, is_loyalty=False):
+            # Resolve immediately - bypass stack (CR 605.3b)
+            gs = resolve_mana_ability(gs, req.permanent_id, ability_text_for_log)
+        else:
+            # Apply non-mana ability effects
+            import re as _re
+            mana_add = _re.search(r"add\s+(\{[WUBRGC]\})", ability.effect, _re.IGNORECASE)
+            if mana_add:
+                sym = mana_add.group(1).strip("{}")
+                player.mana_pool = add_mana(player.mana_pool, sym.upper())
         # T128: Regeneration ability — add a regen shield to target permanent (CR 701.15a)
         regen_match = _re.search(r"regenerate (target|this|~)", ability.effect, _re.IGNORECASE)
         if regen_match:
@@ -1196,8 +1208,8 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
             ward_cost = gs.pending_ward_payment.get("ward_cost", "")
             payer_name = gs.pending_ward_payment.get("player", gs.priority_holder)
             payer = get_player(gs, payer_name)
-            from mtg_engine.engine.mana import can_pay_cost as _cpc_w, pay_cost as _pc_w
-            if ward_cost and _cpc_w(payer.mana_pool, ward_cost):
+            from mtg_engine.engine.mana import can_pay_cost, pay_cost as _pc_w
+            if ward_cost and can_pay_cost(payer.mana_pool, ward_cost):
                 # Auto-pay from pool
                 from mtg_engine.engine.mana import parse_mana_cost as _pmc_w
                 cost_dict = _pmc_w(ward_cost)
@@ -1298,8 +1310,8 @@ def special_action(game_id: str, req: SpecialActionRequest) -> dict:
             raise _err(f"{card.name} does not have suspend", "INVALID_ACTION")
         n_counters = int(suspend_match.group(1))
         suspend_cost = suspend_match.group(2)
-        from mtg_engine.engine.mana import can_pay_cost as _cpc
-        if not _cpc(player.mana_pool, suspend_cost):
+        from mtg_engine.engine.mana import can_pay_cost
+        if not can_pay_cost(player.mana_pool, suspend_cost):
             raise _err(f"Insufficient mana to suspend {card.name}", "INSUFFICIENT_MANA")
         # Auto-pay suspend cost from pool
         from mtg_engine.engine.mana import parse_mana_cost as _pmc, pay_cost as _pc
@@ -1327,9 +1339,9 @@ def special_action(game_id: str, req: SpecialActionRequest) -> dict:
         if "foretell" not in kws_lower and "foretell" not in oracle_lower:
             raise _err(f"{card.name} does not have foretell", "INVALID_ACTION")
         # Pay {2}
-        from mtg_engine.engine.mana import can_pay_cost as _cpc, pay_cost as _pc
+        from mtg_engine.engine.mana import can_pay_cost, pay_cost as _pc
         foretell_cost = "{2}"
-        if not _cpc(player.mana_pool, foretell_cost):
+        if not can_pay_cost(player.mana_pool, foretell_cost):
             raise _err("Insufficient mana for foretell ({2})", "INSUFFICIENT_MANA")
         mana_payment = {}
         available = player.mana_pool
@@ -1570,7 +1582,7 @@ def cascade_choice(game_id: str, req: dict) -> dict:
 def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
     """Compute all legal actions for the priority holder."""
     from mtg_engine.card_data.ability_parser import parse_oracle_text, ActivatedAbility
-    from mtg_engine.engine.mana import can_pay_cost
+    from mtg_engine.engine.mana import can_pay_cost, is_mana_ability
 
     # Mulligan phase: mulligan actions + pass offered
     if gs.mulligan_phase_active:
@@ -2217,13 +2229,31 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                     )
                 if not has_sac_target:
                     continue
-            actions.append(LegalAction(
-                action_type="activate",
-                permanent_id=perm.id,
-                card_name=perm.card.name,
-                ability_index=idx,
-                description=f"Activate {perm.card.name}: {ab.raw_text}",
-            ))
+             # US32 T179: Tag mana abilities (CR 605.3b)
+            if is_mana_ability(ab.raw_text, is_loyalty=False):
+                # Include both action types for backward compatibility
+                actions.append(LegalAction(
+                    action_type="activate_mana_ability",
+                    permanent_id=perm.id,
+                    card_name=perm.card.name,
+                    ability_index=idx,
+                    description=f"Activate {perm.card.name}: {ab.raw_text}",
+                ))
+                actions.append(LegalAction(
+                    action_type="activate",
+                    permanent_id=perm.id,
+                    card_name=perm.card.name,
+                    ability_index=idx,
+                    description=f"Activate {perm.card.name}: {ab.raw_text}",
+                ))
+            else:
+                actions.append(LegalAction(
+                    action_type="activate",
+                    permanent_id=perm.id,
+                    card_name=perm.card.name,
+                    ability_index=idx,
+                    description=f"Activate {perm.card.name}: {ab.raw_text}",
+                ))
 
     # Planeswalker loyalty abilities (US4, T021)
     if is_active and is_main and stack_empty:
@@ -2252,7 +2282,7 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
     if is_active and gs.step == Step.DECLARE_ATTACKERS and gs.combat is None:
         # US6: Derive and enforce attack constraints
         from mtg_engine.engine.constraints import derive_combat_constraints
-        from mtg_engine.engine.mana import can_pay_cost as _can_pay_attack
+        from mtg_engine.engine.mana import can_pay_cost
         atk_constraints, blk_constraints = derive_combat_constraints(gs)
         gs.attack_constraints = atk_constraints
         gs.block_constraints = blk_constraints
@@ -2276,7 +2306,7 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                     can_attack = False
                     break
                 if con.constraint_type == "cost_to_attack" and con.cost:
-                    if not _can_pay_attack(player.mana_pool, con.cost):
+                    if not can_pay_cost(player.mana_pool, con.cost):
                         can_attack = False
                         break
             if can_attack:
@@ -2429,13 +2459,13 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
 
     # Commander: cast commander from command zone
     if gs.format == "commander" and is_active and is_main and stack_empty:
-        from mtg_engine.engine.mana import can_pay_cost as _can_pay
+        from mtg_engine.engine.mana import can_pay_cost
         for cmd_card in player.command_zone:
             base_cost = cmd_card.mana_cost or ""
             tax = 2 * player.commander_cast_counts.get(cmd_card.name, 0)
             # Build taxed cost string: append {tax} generic if tax > 0
             taxed_cost = base_cost if tax == 0 else f"{{{tax}}}{base_cost}"
-            if _can_pay(player.mana_pool, taxed_cost):
+            if can_pay_cost(player.mana_pool, taxed_cost):
                 tax_str = f" + {{{tax}}} tax" if tax > 0 else ""
                 actions.append(LegalAction(
                     action_type="cast_commander",

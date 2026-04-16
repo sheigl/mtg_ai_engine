@@ -5,7 +5,7 @@ Also supports hybrid, Phyrexian, and snow mana symbols.
 """
 import re
 
-from mtg_engine.models.game import ManaPool
+from mtg_engine.models.game import GameState, ManaPool
 
 
 # Regex to parse mana symbols from a mana cost string like "{2}{R}{U}"
@@ -357,3 +357,181 @@ def format_cost_dict_to_string(cost: dict[str, int]) -> str:
                 result.append(f"{{{symbol}}}")
     
     return "".join(result)
+
+
+# ─── Mana Ability Detection (CR 605) ──────────────────────────────────────────
+
+def is_mana_ability(oracle_text: str, is_loyalty: bool = False) -> bool:
+    """
+    Determine if an ability is a mana ability per CR 605.
+    
+    A mana ability must meet ALL of the following criteria (CR 605.1a):
+    1. It doesn't require a target (no "target" keyword in text)
+    2. It could add mana to a player's mana pool when it resolves
+    3. It's not a loyalty ability
+    
+    CR 605.1b: Triggered mana abilities also don't require targets, 
+    but this function primarily checks activated abilities.
+    
+    Examples of mana abilities:
+      - "{T}: Add {G}" (Forest)
+      - "{T}: Add {G} or {U}" (dual land)
+      - "{1}, {T}: Add {C}" (man land)
+    
+    Examples of non-mana abilities:
+      - "{T}: Draw a card" (has effect other than mana)
+      - "{1}: Add {G}, target creature gets +2/+2" (has target)
+      - "+1: Draw a card" (loyalty ability)
+      - "{T}: Scry 1, add {G}" (has non-mana effect)
+    
+    Note: The ability is a mana ability even if it can't produce mana
+    in the current game state (CR 605.2).
+    """
+    # Rule: Not a loyalty ability
+    if is_loyalty:
+        return False
+    
+    text = oracle_text or ""
+    text_lower = text.lower()
+    
+    # Rule: Must not have "target" in text (CR 605.5a)
+    # Check for "target" keyword as a standalone word
+    if re.search(r'\btarget\b', text_lower):
+        return False
+    
+    # Extract the effect part (after the first ":") to avoid matching activation costs
+    if ":" in text:
+        effect = text.split(":", 1)[1]
+        effect_lower = effect.lower()
+    else:
+        effect = text
+        effect_lower = text_lower
+    
+    # Rule: Must be capable of adding mana
+    # Look for mana production patterns in the effect part:
+    # - "add {color}" where color is W, U, B, R, G, or C
+    # - "add {X}{Y}" pattern (hybrid mana)
+    # - "add [number] mana"
+    # - "add {C}" (colorless mana)
+    
+    # Pattern 1: "add {X}" where X is a mana symbol (use case-insensitive flag)
+    if re.search(r'\badd\s+\{[wubrg]/[wubrg]\}', effect_lower):
+        return True
+    if re.search(r'\badd\s+\{[wubrgcs]\}', effect_lower):
+        return True
+    if re.search(r'\badd\s+\{[0-9]/[wubrgcs]\}', effect_lower):
+        return True
+    if re.search(r'\badd\s+\{[wubrgcs]/[0-9]\}', effect_lower):
+        return True
+    
+    # Pattern 3: "add {N} mana" or "add N mana"
+    if re.search(r'\badd\s+[0-9]+\s+mana\b', effect_lower):
+        return True
+    
+    # Pattern 4: "add one mana"
+    if re.search(r'\badd\s+one\s+mana\b', effect_lower):
+        return True
+    
+    # Pattern 5: "add {X} mana"
+    if re.search(r'\badd\s+\{x\}\s+mana\b', effect_lower):
+        return True
+    if re.search(r'\badd\s+mana\b', effect_lower):
+        return True
+    
+    # Pattern 6: "produce {color} mana"
+    if re.search(r'\bproduce\s+\{[wubrg]\}\s+mana\b', effect_lower):
+        return True
+    
+    return False
+
+
+def resolve_mana_ability(game_state: GameState, permanent_id: str, ability_text: str) -> GameState:
+    """
+    Resolve a mana ability immediately (bypassing the stack per CR 605.3b).
+    
+    This function extracts mana production from the ability text and adds it
+    to the active player's mana pool. The ability resolves immediately without
+    going on the stack.
+    
+    Args:
+        game_state: Current game state
+        permanent_id: ID of the permanent with the ability
+        ability_text: The full text of the ability being resolved
+    
+    Returns:
+        Updated game state with mana added to pool
+    """
+    import logging
+    import re
+    
+    logger = logging.getLogger(__name__)
+    
+    # Extract the effect part (after the first ":") to avoid matching activation costs
+    if ":" in ability_text:
+        effect = ability_text.split(":", 1)[1]
+        effect_lower = effect.lower()
+    else:
+        effect = ability_text
+        effect_lower = ability_text.lower()
+    
+    # Find the permanent
+    permanent = next((p for p in game_state.battlefield if p.id == permanent_id), None)
+    if permanent is None:
+        logger.warning("Permanent %r not found for mana ability resolution", permanent_id)
+        return game_state
+    
+    # Determine controller (who gets the mana)
+    controller_name = permanent.controller
+    player = next((p for p in game_state.players if p.name == controller_name), None)
+    if player is None:
+        logger.warning("Player %r not found for mana ability resolution", controller_name)
+        return game_state
+    
+    # Parse mana production from ability text
+    mana_added = []
+    
+    # Pattern: "add {X} or {Y}" - choice (check before single pattern)
+    choice_match = re.search(r'\badd\s+(\{[wubrgcs]\})\s+or\s+(\{[wubrgcs]\})', effect_lower)
+    if choice_match:
+        # For deterministic behavior, choose first option
+        symbol = choice_match.group(1).strip('{}').upper()
+        if symbol in ('W', 'U', 'B', 'R', 'G', 'C'):
+            mana_added.append(symbol)
+    
+    # Pattern: "add {X}" - single mana symbol (use finditer for multiple occurrences)
+    if not choice_match:
+        for match in re.finditer(r'\badd\s+(\{[wubrgcs]\})', effect_lower):
+            symbol = match.group(1).strip('{}').upper()
+            if symbol in ('W', 'U', 'B', 'R', 'G', 'C'):
+                mana_added.append(symbol)
+    
+    # Pattern: "add {N} mana" - generic mana (convert to colorless)
+    generic_match = re.search(r'\badd\s+(\d+)\s+mana\b', effect_lower)
+    if generic_match:
+        amount = int(generic_match.group(1))
+        mana_added.extend(['C'] * amount)
+    
+    # Pattern: "add one mana" - single mana
+    if re.search(r'\badd\s+one\s+mana\b', effect_lower):
+        # Default to colorless for "add one mana"
+        mana_added.append('C')
+    
+    # Pattern: "add {X} mana" - X variable
+    x_match = re.search(r'\badd\s+\{x\}\s+mana\b', effect_lower)
+    if x_match:
+        # For {X} without value, default to one colorless
+        mana_added.append('C')
+    
+    # Pattern: "produce {X} mana"
+    for match in re.finditer(r'\bproduce\s+(\{[wubrgcs]\})\s+mana\b', effect_lower):
+        symbol = match.group(1).strip('{}').upper()
+        if symbol in ('W', 'U', 'B', 'R', 'G', 'C'):
+            mana_added.append(symbol)
+    
+    # Add mana to player's pool
+    for symbol in mana_added:
+        player.mana_pool = add_mana(player.mana_pool, symbol, 1)
+        logger.debug("Mana ability resolved: %s added %s to %s's mana pool", 
+                     permanent.card.name, symbol, controller_name)
+    
+    return game_state
