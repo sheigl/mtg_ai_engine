@@ -335,6 +335,85 @@ def _advance_turn(game_state: GameState) -> GameState:
     return game_state
 
 
+def process_cleanup_step(game_state: GameState) -> GameState:
+    """
+    Process the cleanup step per CR 514.
+    
+    Actions:
+    1. Discard to hand size: if active player's hand > max_hand_size, set pending_discard_choice
+    2. Remove damage: iterate battlefield, reset damage_marked = 0 on all permanents
+    3. Expire "until end of turn" effects: reset power_bonus, toughness_bonus where expires == "end_of_turn";
+       clear crewed_until_end_of_turn
+    4. Priority check: call check_sba() and check_triggers(); if anything fires, set priority and loop back
+    
+    Returns GameState with pending choices set or priority granted for further processing.
+    """
+    from mtg_engine.engine.zones import get_player
+    from mtg_engine.engine.sba import _check_once
+    
+    active = get_player(game_state, game_state.active_player)
+    
+    # 1. Discard to hand size
+    if len(active.hand) > active.max_hand_size:
+        from mtg_engine.models.game import PendingTrigger
+        import uuid as _uuid
+        
+        excess_cards = active.hand[active.max_hand_size:]
+        game_state.pending_discard_choice = {
+            "player": game_state.active_player,
+            "cards": excess_cards,
+        }
+        logger.info("Cleanup: %s has %d cards (max %d), setting discard choice",
+                   game_state.active_player, len(active.hand), active.max_hand_size)
+    
+    # 2. Remove damage from all permanents
+    for perm in game_state.battlefield:
+        perm.damage_marked = 0
+    
+    # 3. Expire "until end of turn" effects
+    for perm in game_state.battlefield:
+        # Clear power/toughness bonuses expiring at end of turn
+        if perm.power_bonus_expires == "end_of_turn":
+            perm.power_bonus = 0
+            perm.power_bonus_expires = None
+        if perm.toughness_bonus_expires == "end_of_turn":
+            perm.toughness_bonus = 0
+            perm.toughness_bonus_expires = None
+        
+        # Clear crew status
+        if perm.crewed_until_end_of_turn:
+            perm.crewed_until_end_of_turn = False
+            # Remove "Creature" from type_line
+            if "creature" in perm.card.type_line.lower():
+                # Already a creature, no change needed
+                pass
+            else:
+                # Remove creature type
+                words = perm.card.type_line.split()
+                new_words = [w for w in words if w.lower() != "creature"]
+                perm.card = perm.card.model_copy(update={
+                    "type_line": " ".join(new_words),
+                })
+    
+    # 4. Check SBAs and triggers - if anything fires, we need to loop back
+    game_state, sba_fired = _check_once(game_state)
+    
+    # Check for triggers (simplified - just check if pending_triggers has anything)
+    trigger_fired = len(game_state.pending_triggers) > 0
+    
+    if sba_fired or trigger_fired:
+        # Grant priority to active player and loop back to cleanup
+        logger.info("Cleanup: SBA/triggers fired, granting priority to %s", game_state.active_player)
+        game_state.priority_holder = game_state.active_player
+        # Note: The game loop should call process_cleanup_step again if pending choices exist
+        # or advance_step when both players pass
+    else:
+        # No SBAs or triggers - grant priority to move to end step
+        game_state.priority_holder = game_state.active_player
+    
+    return game_state
+
+
 def pass_priority(game_state: GameState, player_name: str) -> GameState:
     """
     Handle priority passing. REQ-S01, REQ-S02.

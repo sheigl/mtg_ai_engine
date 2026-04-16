@@ -44,6 +44,11 @@ class ContinuousEffect:
 
     # Which permanents this applies to: None = all applicable, or list of IDs
     affected_ids: list[str] | None = None
+    # US14, US22, US28: New operation types
+    type_operation: str = "add"  # "add", "remove", "overwrite"
+    remove_abilities: bool = False
+    grant_abilities: list[str] = field(default_factory=list)
+    switch_pt: bool = False
 
 
 def _get_effects_for_layer(

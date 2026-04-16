@@ -30,11 +30,11 @@
 
 **⚠️ CRITICAL**: All user story phases depend on these model changes. Complete before any implementation phase.
 
-- [ ] T002 Add `DamageModifier` model and `ManaPoolPersistence` model to `mtg_engine/models/game.py` (new top-level Pydantic classes per data-model.md)
-- [ ] T003 [P] Add new fields to `Card`, `StackObject`, `Permanent`, `ManaPool`, `PlayerState`, and `GameState` in `mtg_engine/models/game.py` — all fields listed in data-model.md with their specified defaults
-- [ ] T004 [P] Add `face_index`, `fuse`, `as_face_down`, `foretell`, `cast_foretold`, `mutate_target_id`, `mutate_on_top` fields to `CastRequest` in `mtg_engine/models/actions.py`; add new `LegalAction` `action_type` string literals (`"crew"`, `"turn_face_up"`, `"foretell"`, `"cast_foretold"`, `"cast_adventure"`, `"activate_mana_ability"`, `"mutate"`, `"cast_split_left"`, `"cast_split_right"`, `"cast_fuse"`, `"play_mdfc_land"`)
-- [ ] T005 [P] Add `CrewRequest` and `TurnFaceUpRequest` request models to `mtg_engine/models/actions.py` per contracts/api-changes.md
-- [ ] T006 [P] Add `type_operation`, `remove_abilities`, `grant_abilities`, `switch_pt` fields to `ContinuousEffect` in `mtg_engine/engine/layers.py`
+- [x] T002 Add `DamageModifier` model and `ManaPoolPersistence` model to `mtg_engine/models/game.py` (new top-level Pydantic classes per data-model.md)
+- [x] T003 [P] Add new fields to `Card`, `StackObject`, `Permanent`, `ManaPool`, `PlayerState`, and `GameState` in `mtg_engine/models/game.py` — all fields listed in data-model.md with their specified defaults
+- [x] T004 [P] Add `face_index`, `fuse`, `as_face_down`, `foretell`, `cast_foretold`, `mutate_target_id`, `mutate_on_top` fields to `CastRequest` in `mtg_engine/models/actions.py`; add new `LegalAction` `action_type` string literals (`"crew"`, `"turn_face_up"`, `"foretell"`, `"cast_foretold"`, `"cast_adventure"`, `"activate_mana_ability"`, `"mutate"`, `"cast_split_left"`, `"cast_split_right"`, `"cast_fuse"`, `"play_mdfc_land"`)
+- [x] T005 [P] Add `CrewRequest` and `TurnFaceUpRequest` request models to `mtg_engine/models/actions.py` per contracts/api-changes.md
+- [x] T006 [P] Add `type_operation`, `remove_abilities`, `grant_abilities`, `switch_pt` fields to `ContinuousEffect` in `mtg_engine/engine/layers.py`
 
 **Checkpoint**: `python -m pytest tests/ -v` — all 447 existing tests pass with no regressions
 

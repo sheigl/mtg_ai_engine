@@ -27,10 +27,10 @@ class Phase(str, Enum):
 
 class Step(str, Enum):
     UNTAP = "untap"
-    UPKEEP = "upkeep
-    DRAW = "draw
-    MAIN = "main
-    BEGINNING_OF_COMBAT = "beginning_of_combat
+    UPKEEP = "upkeep"
+    DRAW = "draw"
+    MAIN = "main"
+    BEGINNING_OF_COMBAT = "beginning_of_combat"
     DECLARE_ATTACKERS = "declare_attackers"
     DECLARE_BLOCKERS = "declare_blockers"
     FIRST_STRIKE_DAMAGE = "first_strike_damage"
@@ -147,6 +147,13 @@ class StackObject(BaseModel):
     flashback: bool = False                    # CR 702.32: Whether cast via flashback from graveyard
     escape: bool = False                       # CR 702.132: Whether cast via escape from graveyard
     metadata: dict = Field(default_factory=dict)  # Arbitrary per-spell metadata (e.g. grant_haste)
+    # US4, US17, US18, US30: Multi-face and special cast types
+    face_index: int = 0
+    is_face_down: bool = False
+    is_adventure: bool = False
+    is_fused: bool = False
+    mutate_target_id: Optional[str] = None
+    mutate_on_top: bool = True
 
 
 class Emblem(BaseModel):
@@ -178,6 +185,10 @@ class PlayerState(BaseModel):
     # New fields for 018 feature
     suspended_cards: list[Card] = Field(default_factory=list)   # Cards exiled via Suspend (with time_counters)
     foretold_cards: list[Card] = Field(default_factory=list)    # Cards exiled face-down via Foretell
+    # US19: Mana persistence
+    mana_persistence: ManaPoolPersistence = Field(default_factory=ManaPoolPersistence)
+    # US29: Foretell tracking
+    exile_by: str = ""  # Track how card entered exile ("foretell", "adventure", etc.)
 
 
 class PendingTrigger(BaseModel):
@@ -291,6 +302,18 @@ class GameState(BaseModel):
     delayed_triggers: list[dict] = Field(default_factory=list)
     # Planeswalker emblems (CR 113)
     emblems: list[Emblem] = Field(default_factory=list)
+    # US10: Additional combat phases
+    additional_combat_phases: int = 0
+    # US11: Step skipping
+    step_skip_flags: dict[str, bool] = Field(default_factory=dict)
+    # US14: Damage modifiers
+    damage_modifiers: list[DamageModifier] = Field(default_factory=list)
+    # US7: Legend rule choice
+    pending_legend_choice: Optional[dict] = None
+    # US17: Morph payment
+    pending_morph_payment: Optional[dict] = None
+    # US27: Echo payment
+    pending_echo_payment: Optional[dict] = None
 
     def compute_hash(self) -> str:
         """Compute deterministic hash of state, excluding state_hash itself. REQ-API05"""

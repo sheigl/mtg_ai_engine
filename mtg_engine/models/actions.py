@@ -46,6 +46,14 @@ class CastRequest(BaseModel):
     improvise_artifact_ids: list[str] = Field(default_factory=list)  # Artifacts to tap for Improvise
     emerge_sacrifice_id: Optional[str] = None                       # Creature to sacrifice for Emerge
     opponent_target: Optional[str] = None                           # Disambiguate "target opponent" in 3+ player games
+    # US4, US17, US18, US29, US30: Multi-face and special cast types
+    face_index: int = 0
+    fuse: bool = False
+    as_face_down: bool = False
+    foretell: bool = False
+    cast_foretold: bool = False
+    mutate_target_id: Optional[str] = None
+    mutate_on_top: bool = True
 
 
 class ActivateRequest(BaseModel):
@@ -105,6 +113,25 @@ class SpecialActionRequest(BaseModel):
     dry_run: bool = False
 
 
+# --- New request models for US16, US17, US29 ---
+
+class CrewRequest(BaseModel):
+    """Request to crew a vehicle. US16."""
+    permanent_id: str  # Vehicle permanent ID
+    creature_ids: list[str]  # Untapped creatures to tap as crew
+
+
+class TurnFaceUpRequest(BaseModel):
+    """Request to turn a morph face up. US17."""
+    permanent_id: str
+    mana_payment: dict[str, int] = Field(default_factory=dict)
+
+
+class ForetellRequest(BaseModel):
+    """Request to foretell a card. US29."""
+    card_id: str
+
+
 # --- Response models ---
 
 class LegalAction(BaseModel):
@@ -123,6 +150,10 @@ class LegalAction(BaseModel):
     # New fields for 018 feature
     x_value: Optional[int] = None         # For X spell variants
     kicker_paid: Optional[bool] = None    # For kicker variants
+    # US4, US16, US17, US18, US29, US30, US3: New action types
+    face_index: Optional[int] = None      # cast_split_left/right, cast_adventure
+    fuse: Optional[bool] = None           # cast_fuse
+    new_action_type: Optional[str] = None # "crew", "turn_face_up", "foretell", "cast_foretold", "cast_adventure", "activate_mana_ability", "mutate"
 
 
 # --- New request models for Forge AI parity (017) ---
