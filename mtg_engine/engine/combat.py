@@ -4,6 +4,7 @@ CR 508-511: declare attackers, declare blockers, combat damage.
 CR 702.19: trample. CR 702.2: deathtouch. REQ-R09–REQ-R12.
 """
 import logging
+from typing import Any
 from mtg_engine.models.game import (
     GameState, Permanent, AttackerInfo, CombatState, Step, Phase
 )
