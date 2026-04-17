@@ -264,6 +264,99 @@ def move_permanent_to_zone(
     return game_state
 
 
+def _parse_enters_tapped(oracle_text: str) -> bool:
+    """Parse 'enters tapped' replacement effect from oracle text."""
+    if not oracle_text:
+        return False
+    import re as _re
+    text_lower = oracle_text.lower()
+    if _re.search(r'enters (the )?battlefield tapped', text_lower):
+        return True
+    return False
+
+
+def _parse_enters_with_counters(oracle_text: str) -> dict[str, int]:
+    """Parse 'enters with X counters' replacement effect from oracle text."""
+    counters: dict[str, int] = {}
+    if not oracle_text:
+        return counters
+
+    import re as _re
+
+    word_to_num = {
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    }
+
+    counter_type_patterns = [
+        (r'\+1/\+1', "+1/+1"),
+        (r'charge', "charge"),
+        (r'spore', "spore"),
+        (r'faith', "faith"),
+        (r'mine', "mine"),
+        (r'doom', "doom"),
+        (r'wind', "wind"),
+        (r'strife', "strife"),
+        (r'lore', "lore"),
+        (r'ice', "ice"),
+        (r'fade', "fade"),
+        (r'verse', "verse"),
+        (r'velocity', "velocity"),
+    ]
+
+    etb_pattern = _re.compile(r'enters battlefield (?:tapped )?with (\w+) (.*?) counters?', _re.IGNORECASE)
+    match = etb_pattern.search(oracle_text)
+    if match:
+        num_str = match.group(1).lower()
+        num = word_to_num.get(num_str)
+        if num is None:
+            try:
+                num = int(num_str)
+            except ValueError:
+                return counters
+
+        rest = match.group(2).lower()
+        counter_type = None
+        for pattern, ctype in counter_type_patterns:
+            if _re.search(pattern, rest):
+                counter_type = ctype
+                break
+
+        if counter_type is None:
+            for pattern, ctype in counter_type_patterns:
+                if _re.search(pattern, rest):
+                    counter_type = ctype
+                    break
+
+        if counter_type is None:
+            words = rest.split()
+            if words:
+                candidate = words[0].rstrip('s')
+                if candidate not in ("a", "an", "the", "with"):
+                    counter_type = candidate
+
+        if counter_type:
+            counters[counter_type] = num
+        return counters
+
+    return counters
+
+
+def _has_counter_doubling_on_battlefield(game_state: GameState) -> bool:
+    """Check if any permanent on battlefield doubles counters on ETB."""
+    import re as _re
+    for perm in game_state.battlefield:
+        if perm.card and perm.card.oracle_text:
+            text = perm.card.oracle_text.lower()
+            if _re.search(r'if.*enter.*battlefield.*with.*counters.*instead.*double', text):
+                return True
+            if 'double the number of each counter' in text:
+                return True
+            if 'enters the battlefield with twice' in text:
+                return True
+    return False
+
+
 def put_permanent_onto_battlefield(
     game_state: GameState,
     card: Card,
@@ -274,13 +367,20 @@ def put_permanent_onto_battlefield(
     from_zone: str = "unknown",
 ) -> tuple[GameState, Permanent]:
     """Create a Permanent from a Card and add it to the battlefield."""
-    # Initialize planeswalker loyalty from card data (CR 306.5b)
     init_loyalty = 0
     if "planeswalker" in card.type_line.lower() and card.loyalty:
         try:
             init_loyalty = int(card.loyalty)
         except (ValueError, TypeError):
             init_loyalty = 0
+
+    oracle_text = card.oracle_text or ""
+
+    etb_counter_doubling = _has_counter_doubling_on_battlefield(game_state)
+
+    if not tapped and _parse_enters_tapped(oracle_text):
+        tapped = True
+
     perm = Permanent(
         id=str(uuid.uuid4()),
         card=card,
@@ -292,6 +392,13 @@ def put_permanent_onto_battlefield(
         timestamp=time.time(),
         loyalty=init_loyalty,
     )
+
+    etb_counters = _parse_enters_with_counters(oracle_text)
+    for counter_type, count in etb_counters.items():
+        if etb_counter_doubling:
+            count *= 2
+        perm.counters[counter_type] = count
+
     game_state.battlefield.append(perm)
 
     event: ZoneChangeEvent = {
