@@ -39,7 +39,7 @@ def begin_step(game_state: GameState) -> GameState:
     Apply start-of-step effects for the current phase/step.
     REQ-T03: Untap, REQ-T04: Draw, REQ-T05: Cleanup.
     """
-    from mtg_engine.engine.zones import get_player, draw_card
+    from mtg_engine.engine.zones import get_player, draw_card, move_permanent_to_zone
 
     step = game_state.step
 
@@ -109,6 +109,27 @@ def begin_step(game_state: GameState) -> GameState:
                 logger.debug("Suspend: %s now has %d time counter(s)", card.name, remaining)
         active.suspended_cards = still_suspended
 
+        # US26 (T058): Fading upkeep — remove one fade counter from each fading permanent;
+        # sacrifice when last counter is removed (CR 702.67)
+        import re as _re_fading
+        _FADING_RE = _re_fading.compile(r'Fading\s+(\d+)')
+        for perm in list(game_state.battlefield):
+            if perm.controller != game_state.active_player:
+                continue
+            # Check if permanent has fade counters (meaning it has the Fading keyword)
+            if perm.counters.get("fade", 0) <= 0:
+                # No fade counters — either never had Fading or already sacrificed
+                continue
+            # Remove one fade counter
+            perm.counters["fade"] = perm.counters["fade"] - 1
+            logger.debug("Fading upkeep: %s now has %d fade counter(s)", perm.card.name, perm.counters["fade"])
+            if perm.counters["fade"] <= 0:
+                # No more counters — sacrifice the permanent
+                game_state = move_permanent_to_zone(game_state, perm, "graveyard")
+                logger.info("Fading: %s has no fade counters — sacrificed to graveyard", perm.card.name)
+                # Remove from battlefield (moved_permanent already did this, but be safe)
+                game_state.battlefield[:] = [p for p in game_state.battlefield if p.id != perm.id]
+
         # US14 (T033): Saga upkeep — increment lore counter and queue chapter ability
         from mtg_engine.models.game import PendingTrigger
         import uuid as _uuid
@@ -158,6 +179,34 @@ def begin_step(game_state: GameState) -> GameState:
                     "once": True,
                 })
                 logger.debug("Saga: %s at final chapter, sacrifice scheduled", perm.card.name)
+
+        # US27 (T059): Echo upkeep — set pending_echo_payment for echo permanents that
+        # entered previous turn and weren't controlled at start of previous upkeep
+        import uuid as _uuid
+        for perm in list(game_state.battlefield):
+            if perm.controller != game_state.active_player:
+                continue
+            if perm.echo_paid:
+                continue
+            if perm.turn_entered_battlefield >= game_state.turn:
+                # Entered this turn — no echo this upkeep
+                continue
+            # Check if permanent has echo keyword
+            import re as _re_echo
+            _ECHO_RE = _re_echo.compile(r'Echo\s+(\{[^}]*\})')
+            echo_match = _ECHO_RE.search(perm.card.oracle_text or "")
+            if not echo_match:
+                continue
+            echo_cost = echo_match.group(1)
+            # Set pending echo payment
+            game_state.pending_echo_payment = {
+                "player": game_state.active_player,
+                "permanent_id": perm.id,
+                "echo_cost": echo_cost,
+            }
+            logger.info("Echo: %s triggers — pending echo payment of %s for %s",
+                       perm.card.name, echo_cost, game_state.active_player)
+            break  # Only one pending_echo_payment at a time
 
         return game_state
 

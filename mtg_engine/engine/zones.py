@@ -321,6 +321,15 @@ def put_permanent_onto_battlefield(
         game_state.pending_triggers.append(trigger)
         logger.debug("Saga ETB: %s entered with 1 lore counter, chapter I queued", card.name)
 
+    # US26 (T058): Fading — parse "Fading N" from oracle text and add fade counters
+    import re as _re_fading
+    _FADING_RE = _re_fading.compile(r'Fading\s+(\d+)')
+    fading_match = _FADING_RE.search(card.oracle_text or "")
+    if fading_match:
+        fade_count = int(fading_match.group(1))
+        perm.counters["fade"] = fade_count
+        logger.debug("Fading: %s entered with %d fade counter(s)", card.name, fade_count)
+
     return game_state, perm
 
 

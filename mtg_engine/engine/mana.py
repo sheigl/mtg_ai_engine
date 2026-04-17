@@ -148,6 +148,20 @@ def _can_pay_simple(pool: ManaPool, cost: dict[str, int], player_life: int = 999
         return False
     temp["C"] -= needed_c
 
+    # Pay snow mana cost {S}: any snow_by_color entry > 0 satisfies it
+    s_needed = cost.get("S", 0)
+    total_snow = sum(pool.snow_by_color.values())
+    if total_snow < s_needed:
+        return False
+    # Deduct from snow_by_color (greedy: take from first available color)
+    remaining_s = s_needed
+    for color in pool.snow_by_color:
+        if remaining_s <= 0:
+            break
+        take = min(pool.snow_by_color[color], remaining_s)
+        temp[color] = temp.get(color, 0) - take  # deduct from temp pool too
+        remaining_s -= take
+
     # Pay generic cost with any remaining mana
     generic = cost.get("generic", 0)
     remaining = sum(temp.values())
@@ -191,6 +205,17 @@ def _validate_payment(pool: ManaPool, cost: dict[str, int], payment: dict[str, i
         return False
     temp_payment["C"] = temp_payment.get("C", 0) - needed_c
 
+    # Verify {S} cost: snow mana must come from snow_by_color
+    s_needed = cost.get("S", 0)
+    if s_needed > 0:
+        # Check that the payment for {S} uses snow mana
+        s_paid = 0
+        for color, amount in temp_payment.items():
+            if color in pool.snow_by_color and pool.snow_by_color[color] > 0:
+                s_paid += amount
+        if s_paid < s_needed:
+            return False
+
     # Verify generic requirement is covered by remaining payment
     generic = cost.get("generic", 0)
     remaining = sum(v for v in temp_payment.values() if v > 0)
@@ -207,21 +232,33 @@ def pay_cost(pool: ManaPool, mana_cost: str, payment: dict[str, int]) -> ManaPoo
         raise ValueError(
             f"Payment {payment} cannot satisfy cost {mana_cost!r} from pool {pool}"
         )
-    new_pool = pool.model_copy()
+    new_pool = pool.model_copy(deep=True)
     for color, amount in payment.items():
-        current = getattr(new_pool, color, 0)
-        setattr(new_pool, color, current - amount)
+        if color in ("W", "U", "B", "R", "G", "C"):
+            current = getattr(new_pool, color, 0)
+            setattr(new_pool, color, current - amount)
+            # Also decrement snow tracking if this color has snow mana
+            if color in new_pool.snow_by_color and new_pool.snow_by_color[color] > 0:
+                new_pool.snow_by_color[color] = max(0, new_pool.snow_by_color[color] - amount)
+                new_pool.snow = max(0, new_pool.snow - amount)
+    # Clean up zero entries in snow_by_color
+    new_pool.snow_by_color = {k: v for k, v in new_pool.snow_by_color.items() if v > 0}
     return new_pool
 
 
-def add_mana(pool: ManaPool, symbol: str, amount: int = 1) -> ManaPool:
+def add_mana(pool: ManaPool, symbol: str, amount: int = 1, is_snow: bool = False) -> ManaPool:
     """
     Add mana to pool. symbol must be one of: W, U, B, R, G, C.
     Returns a new ManaPool with the added mana.
+    If is_snow=True, also tracks mana in snow and snow_by_color fields.
     """
     new_pool = pool.model_copy()
     if symbol in ("W", "U", "B", "R", "G", "C"):
         setattr(new_pool, symbol, getattr(new_pool, symbol) + amount)
+        if is_snow:
+            new_pool.snow += amount
+            color_key = symbol if symbol != "C" else "C"
+            new_pool.snow_by_color[color_key] = new_pool.snow_by_color.get(color_key, 0) + amount
     else:
         # Unknown symbol — log and ignore
         import logging
@@ -529,9 +566,11 @@ def resolve_mana_ability(game_state: GameState, permanent_id: str, ability_text:
             mana_added.append(symbol)
     
     # Add mana to player's pool
+    # US23: Check if this is a snow permanent (has "Snow" supertype)
+    is_snow = "Snow" in permanent.card.supertypes
     for symbol in mana_added:
-        player.mana_pool = add_mana(player.mana_pool, symbol, 1)
-        logger.debug("Mana ability resolved: %s added %s to %s's mana pool", 
-                     permanent.card.name, symbol, controller_name)
+        player.mana_pool = add_mana(player.mana_pool, symbol, 1, is_snow=is_snow)
+        logger.debug("Mana ability resolved: %s added %s to %s's mana pool (is_snow=%s)", 
+                     permanent.card.name, symbol, controller_name, is_snow)
     
     return game_state

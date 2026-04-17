@@ -68,6 +68,8 @@ class Card(BaseModel):
     cmc: float = 0.0
     parse_status: str = "ok"  # "ok" | "unsupported"
     card_layout: str = "normal" # "normal", "split", "mdfc", "adventure", "aftermath", "transform"
+    # US23: Snow supertype for snow mana tracking
+    supertypes: list[str] = Field(default_factory=list)
 
 
 class ManaPool(BaseModel):
@@ -152,6 +154,7 @@ class StackObject(BaseModel):
     is_face_down: bool = False
     is_adventure: bool = False
     is_fused: bool = False
+    is_foretold: bool = False
     mutate_target_id: Optional[str] = None
     mutate_on_top: bool = True
 
@@ -189,6 +192,9 @@ class PlayerState(BaseModel):
     mana_persistence: ManaPoolPersistence = Field(default_factory=ManaPoolPersistence)
     # US29: Foretell tracking
     exile_by: str = ""  # Track how card entered exile ("foretell", "adventure", etc.)
+    foretold_turns: dict[str, int] = Field(default_factory=dict)  # card_id -> turn when foretold
+    # US18: Adventure — exiled adventure spell cards whose creature half can be cast
+    adventure_cards: list[Card] = Field(default_factory=list)
 
 
 class PendingTrigger(BaseModel):

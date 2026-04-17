@@ -14,6 +14,7 @@ from mtg_engine.models.actions import (
     PutTriggerRequest, SpecialActionRequest,
     MulliganRequest, ActivateLoyaltyRequest, CascadeChoiceRequest,
     LegalAction, LegalActionsResponse, ErrorResponse,
+    ForetellRequest,
 )
 from mtg_engine.engine.sba import check_and_apply_sbas
 from mtg_engine.engine.turn_manager import pass_priority
@@ -557,6 +558,7 @@ def cast(game_id: str, req: CastRequest) -> dict:
 
     # Graveyard cast (US11, T039): temporarily move card to hand for cast_spell
     _graveyard_card = None
+    _foretold_card = None
     if req.from_graveyard and req.alternative_cost in {"flashback", "escape", "unearth", "disturb"}:
         _graveyard_card = next((c for c in player_gs.graveyard if c.id == req.card_id), None)
         if _graveyard_card is None:
@@ -570,6 +572,19 @@ def cast(game_id: str, req: CastRequest) -> dict:
             raise _err(f"Card {req.card_id!r} not found in graveyard", "INVALID_ACTION")
         player_gs.graveyard[:] = [c for c in player_gs.graveyard if c.id != req.card_id]
         player_gs.hand.append(_graveyard_card)
+
+    # US29: Cast from foretell exile — move card from foretold_cards to hand
+    if req.alternative_cost == "foretell":
+        _foretold_card = next((c for c in player_gs.foretold_cards if c.id == req.card_id), None)
+        if _foretold_card is None:
+            raise _err(f"Card {req.card_id!r} not found in foretold exile", "FORETELL_NOT_IN_EXILE")
+        # Validate: cannot cast on the same turn the card was foretold
+        foretold_on_turn = player_gs.foretold_turns.get(req.card_id)
+        if foretold_on_turn is not None and foretold_on_turn == gs.turn:
+            raise _err("Cannot cast a foretold card on the same turn it was foretold", "FORETELL_SAME_TURN")
+        player_gs.foretold_cards[:] = [c for c in player_gs.foretold_cards if c.id != req.card_id]
+        player_gs.foretold_turns.pop(req.card_id, None)
+        player_gs.hand.append(_foretold_card)
 
     card_obj = next((c for c in player_gs.hand if c.id == req.card_id), None)
     card_name = card_obj.name if card_obj else req.card_id
@@ -620,6 +635,11 @@ def cast(game_id: str, req: CastRequest) -> dict:
             player_gs2 = get_player(gs, caster)
             player_gs2.hand[:] = [c for c in player_gs2.hand if c.id != req.card_id]
             player_gs2.graveyard.append(_graveyard_card)
+        # Rollback foretold card move if cast fails
+        if _foretold_card is not None:
+            player_gs2 = get_player(gs, caster)
+            player_gs2.hand[:] = [c for c in player_gs2.hand if c.id != req.card_id]
+            player_gs2.foretold_cards.append(_foretold_card)
         raise _err(str(e), "INVALID_ACTION")
 
     # T051: Ward cost check — if any target has ward, set pending_ward_payment
@@ -1182,6 +1202,7 @@ def do_assign_combat_damage(game_id: str, req: AssignCombatDamageRequest) -> dic
 @router.post("/{game_id}/choice")
 def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
     """POST /game/{game_id}/choice — player makes a pending choice."""
+    from mtg_engine.engine.zones import move_permanent_to_zone
     mgr = get_manager()
     gs = _get_gs(game_id)
     choice_id = req.choice_id
@@ -1252,6 +1273,30 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
                     owner.graveyard.append(countered.source_card)
                 logger.info("Ward: %s countered for non-payment", countered.source_card.name)
             gs.pending_ward_payment = None
+            mgr.update(game_id, gs)
+
+    elif choice_id == "echo_pay":
+        # US27 (T059): Player pays echo cost — permanent is marked as paid
+        if gs.pending_echo_payment:
+            echo_cost = gs.pending_echo_payment.get("echo_cost", "")
+            payer_name = gs.pending_echo_payment.get("player", gs.priority_holder)
+            permanent_id = gs.pending_echo_payment.get("permanent_id", "")
+            perm = next((p for p in gs.battlefield if p.id == permanent_id), None)
+            if perm:
+                perm.echo_paid = True
+            gs.pending_echo_payment = None
+            mgr.update(game_id, gs)
+
+    elif choice_id == "echo_decline":
+        # US27 (T059): Player declines to pay echo cost — permanent is sacrificed
+        if gs.pending_echo_payment:
+            permanent_id = gs.pending_echo_payment.get("permanent_id", "")
+            perm = next((p for p in gs.battlefield if p.id == permanent_id), None)
+            if perm:
+                gs = move_permanent_to_zone(gs, perm, "graveyard")
+                gs.battlefield[:] = [p for p in gs.battlefield if p.id != perm.id]
+                logger.info("Echo: %s sacrificed for non-payment", perm.card.name)
+            gs.pending_echo_payment = None
             mgr.update(game_id, gs)
 
     elif choice_id == "tutor_pick":
@@ -1374,7 +1419,8 @@ def special_action(game_id: str, req: SpecialActionRequest) -> dict:
         # Move card from hand to foretold_cards exile zone
         player.hand[:] = [c for c in player.hand if c.id != req.card_id]
         player.foretold_cards.append(card)
-        logger.info("%s foretold", card.name)
+        player.foretold_turns[card.id] = gs.turn
+        logger.info("%s foretold (turn %d)", card.name, gs.turn)
         gs = _run_sbas(gs)
 
     else:
@@ -1386,6 +1432,54 @@ def special_action(game_id: str, req: SpecialActionRequest) -> dict:
 
     if not req.dry_run:
         mgr.update(game_id, gs)
+    return _ok(gs)
+
+
+@router.post("/{game_id}/foretell")
+def foretell_card(game_id: str, req: ForetellRequest) -> dict:
+    """POST /game/{game_id}/foretell — Exile a card face-down from hand for {2}. US29."""
+    from mtg_engine.engine.mana import can_pay_cost
+    mgr = get_manager()
+    gs = _get_gs(game_id)
+    player_name = gs.priority_holder
+    player = get_player(gs, player_name)
+    is_active = gs.active_player == player_name
+    is_main = gs.phase == Phase.GAME_PLAY and gs.step in (Step.MAIN_FIRST, Step.MAIN_SECOND)
+
+    if not is_active or not is_main:
+        raise _err("Can only foretell on your turn during your main phase", "INVALID_ACTION")
+
+    card = next((c for c in player.hand if c.id == req.card_id), None)
+    if card is None:
+        raise _err(f"Card {req.card_id!r} not in hand", "INVALID_ACTION")
+
+    kws_lower = {k.lower() for k in (card.keywords or [])}
+    oracle_lower = (card.oracle_text or "").lower()
+    if "foretell" not in kws_lower and "foretell" not in oracle_lower:
+        raise _err(f"{card.name} does not have foretell", "INVALID_ACTION")
+
+    foretell_cost = "{2}"
+    if not can_pay_cost(player.mana_pool, foretell_cost):
+        raise _err("Insufficient mana for foretell ({2})", "INSUFFICIENT_MANA")
+
+    from mtg_engine.engine.mana import pay_cost as _pc
+    mana_payment = {}
+    generic_needed = 2
+    for color in ("W", "U", "B", "R", "G", "C"):
+        have = getattr(player.mana_pool, color, 0)
+        if have > 0 and generic_needed > 0:
+            use = min(have, generic_needed)
+            mana_payment[color] = use
+            generic_needed -= use
+
+    player.mana_pool = _pc(player.mana_pool, foretell_cost, mana_payment)
+    player.hand[:] = [c for c in player.hand if c.id != req.card_id]
+    player.foretold_cards.append(card)
+    player.foretold_turns[card.id] = gs.turn
+    logger.info("%s foretold (turn %d)", card.name, gs.turn)
+    gs = _run_sbas(gs)
+
+    mgr.update(game_id, gs)
     return _ok(gs)
 
 
@@ -1705,6 +1799,25 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
             card_name="ward_counter",
             description=f"Don't pay ward {ward_cost} (targeting spell is countered)",
             valid_targets=[targeting_spell_id],
+        ))
+        return actions
+
+    if gs.pending_echo_payment and gs.pending_echo_payment.get("player") == player_name:
+        echo_cost = gs.pending_echo_payment.get("echo_cost", "")
+        permanent_id = gs.pending_echo_payment.get("permanent_id", "")
+        permanent = next((p for p in gs.battlefield if p.id == permanent_id), None)
+        permanent_name = permanent.card.name if permanent else "unknown"
+        actions.append(LegalAction(
+            action_type="choice",
+            card_name="echo_pay",
+            description=f"Pay echo {echo_cost} for {permanent_name}",
+            valid_targets=[permanent_id],
+        ))
+        actions.append(LegalAction(
+            action_type="choice",
+            card_name="echo_decline",
+            description=f"Don't pay echo {echo_cost} ({permanent_name} is sacrificed)",
+            valid_targets=[permanent_id],
         ))
         return actions
 
@@ -2113,7 +2226,7 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                         action_type="special",
                         card_id=card.id,
                         card_name=card.name,
-                        alternative_cost="foretell",
+                        new_action_type="foretell",
                         mana_options=[{"mana_cost": foretell_cost}],
                         description=f"Foretell {card.name} ({foretell_cost})",
                     ))
@@ -2132,10 +2245,41 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                     action_type="cast",
                     card_id=card.id,
                     card_name=card.name,
-                    alternative_cost="foretell",
+                    new_action_type="cast_foretold",
                     mana_options=[{"mana_cost": foretell_alt_cost}],
                     description=f"Cast {card.name} (foretold, {foretell_alt_cost})",
                 ))
+
+    # Mutate (US30) — creatures with mutate targeting non-Human creatures controlled by caster
+    if is_active and is_main and stack_empty and not _has_split_second(gs):
+        _MUTATE_KW = {"mutate"}
+        for card in player.hand:
+            if "creature" not in card.type_line.lower():
+                continue
+            kws_lower = {k.lower() for k in (card.keywords or [])}
+            oracle_lower = (card.oracle_text or "").lower()
+            if not ("mutate" in kws_lower or "mutate" in oracle_lower):
+                continue
+            valid_targets = []
+            for perm in gs.battlefield:
+                if perm.controller != player_name:
+                    continue
+                if "creature" not in perm.card.type_line.lower():
+                    continue
+                if "human" in perm.card.type_line.lower():
+                    continue
+                valid_targets.append(perm.id)
+            if not valid_targets:
+                continue
+            actions.append(LegalAction(
+                action_type="cast",
+                card_id=card.id,
+                card_name=card.name,
+                new_action_type="mutate",
+                valid_targets=valid_targets,
+                mana_options=[{"mana_cost": card.mana_cost or ""}],
+                description=f"Mutate {card.name} on target non-Human creature",
+            ))
 
     # Graveyard casting (US11, T038) — flashback, escape, unearth, disturb
     _GRAVEYARD_CAST_KW = {"flashback", "escape", "unearth", "disturb"}
@@ -2164,6 +2308,25 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                 valid_targets=[],
                 mana_options=[{"mana_cost": mana_cost}],
                 description=f"Cast {card.name} ({alt_cost}) from graveyard",
+            ))
+
+    # US18: Adventure creature half cast from exile (CR 702.61)
+    if _can_cast_at_sorcery_speed(gs, player_name) and not _has_split_second(gs):
+        for card in player.adventure_cards:
+            if card.card_layout != "adventure":
+                continue
+            # Creature half is face_index=0
+            mana_cost = (card.faces[0].mana_cost if card.faces and len(card.faces) > 0 else card.mana_cost) or ""
+            if not (can_pay_cost(player.mana_pool, mana_cost) or can_pay_cost(_total_available_pool(), mana_cost)):
+                continue
+            actions.append(LegalAction(
+                action_type="cast",
+                card_id=card.id,
+                card_name=card.name,
+                from_adventure_exile=True,
+                valid_targets=[],
+                mana_options=[{"mana_cost": mana_cost}],
+                description=f"Cast {card.name} (creature half from adventure exile)",
             ))
 
     # Cycling (US9) — cards in hand with cycling can be cycled

@@ -90,6 +90,27 @@ def _check_once(game_state: GameState) -> tuple[GameState, list[SBAEvent]]:
             if toughness is not None and toughness > 0 and perm.damage_marked >= toughness:
                 to_remove.append(perm)
     for perm in to_remove:
+        # CR 702.139e: Mutate — when merged creature dies, all cards in pile go to graveyard separately
+        if perm.mutated_cards:
+            controller = next((p for p in game_state.players if p.name == perm.controller), None)
+            if controller:
+                for mc in perm.mutated_cards:
+                    controller.graveyard.append(mc)
+                    events.append(SBAEvent(
+                        "mutate_graveyard",
+                        f"{mc.name} from mutate pile goes to graveyard",
+                        [],
+                    ))
+                # Base card also goes to graveyard
+                controller.graveyard.append(perm.card)
+                events.append(SBAEvent(
+                    "mutate_graveyard",
+                    f"{perm.card.name} (base card) goes to graveyard",
+                    [],
+                ))
+                game_state.battlefield[:] = [p for p in game_state.battlefield if p.id != perm.id]
+                continue
+        
         # CR 701.15: regeneration shield prevents destruction, taps creature, clears damage
         if perm.regen_shields > 0:
             perm.regen_shields -= 1
@@ -109,6 +130,25 @@ def _check_once(game_state: GameState) -> tuple[GameState, list[SBAEvent]]:
                 to_remove.append(perm)
     for perm in to_remove:
         perm.counters.pop("__deathtouch_damage__", None)
+        # CR 702.139e: Mutate — when merged creature dies, all cards in pile go to graveyard separately
+        if perm.mutated_cards:
+            controller = next((p for p in game_state.players if p.name == perm.controller), None)
+            if controller:
+                for mc in perm.mutated_cards:
+                    controller.graveyard.append(mc)
+                    events.append(SBAEvent(
+                        "mutate_graveyard",
+                        f"{mc.name} from mutate pile goes to graveyard",
+                        [],
+                    ))
+                controller.graveyard.append(perm.card)
+                events.append(SBAEvent(
+                    "mutate_graveyard",
+                    f"{perm.card.name} (base card) goes to graveyard",
+                    [],
+                ))
+                game_state.battlefield[:] = [p for p in game_state.battlefield if p.id != perm.id]
+                continue
         if perm.regen_shields > 0:
             perm.regen_shields -= 1
             perm.damage_marked = 0

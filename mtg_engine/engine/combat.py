@@ -122,6 +122,22 @@ def _get_protection_qualities(perm: Permanent) -> list[str]:
     return qualities
 
 
+def _get_defending_player_name(game_state: GameState) -> str:
+    """Get the name of the defending player (non-active player)."""
+    return next(
+        (p.name for p in game_state.players if p.name != game_state.active_player),
+        "",
+    )
+
+
+def _is_planeswalker_by_id(game_state: GameState, perm_id: str) -> bool:
+    """Check if a permanent ID refers to a planeswalker on the battlefield."""
+    perm = next((p for p in game_state.battlefield if p.id == perm_id), None)
+    if perm is None:
+        return False
+    return "planeswalker" in perm.card.type_line.lower()
+
+
 def _get_source_qualities(
     source_card: Any,
     source_controller: str,
@@ -353,6 +369,18 @@ def declare_blockers(
         attacker_info.blocker_ids.append(blocker.id)
         game_state.combat.blocker_assignments[blocker.id] = decl.attacker_id
 
+        # US25 CR 702.25a (Flanking): if attacker has flanking and blocker does not,
+        # blocker gets -1/-1 until end of turn
+        if _has_keyword(attacker, "flanking") and not _has_keyword(blocker, "flanking"):
+            blocker.power_bonus -= 1
+            blocker.toughness_bonus -= 1
+            blocker.power_bonus_expires = "end_of_turn"
+            blocker.toughness_bonus_expires = "end_of_turn"
+            logger.info(
+                "Flanking: %s gets -1/-1 until end of turn (blocked by %s)",
+                blocker.card.name, attacker.card.name,
+            )
+
     game_state.combat.blockers_declared = True
 
     # US3 (T008): After blockers are declared, check for first-strike combatants
@@ -495,7 +523,9 @@ def _auto_assign_damage(game_state: GameState, first_strike_only: bool = False) 
                 damage=power,
             ))
         else:
-            # Assign damage to blockers in order, then trample excess to player
+            # Determine where trample excess should go (player name or planeswalker ID)
+            defending_id = attacker_info.defending_id
+            # Assign damage to blockers in order, then trample excess to defending entity
             remaining = power
             for i, blocker in enumerate(active_blockers):
                 if remaining <= 0:
@@ -505,7 +535,7 @@ def _auto_assign_damage(game_state: GameState, first_strike_only: bool = False) 
                 is_last = (i == len(active_blockers) - 1)
 
                 if has_trample:
-                    # With trample: assign exactly lethal to each blocker, excess goes to player
+                    # With trample: assign exactly lethal to each blocker, excess goes to defending entity
                     to_assign = min(remaining, lethal_needed)
                 else:
                     # Without trample: pile all remaining damage into blockers
@@ -518,11 +548,11 @@ def _auto_assign_damage(game_state: GameState, first_strike_only: bool = False) 
                 ))
                 remaining -= to_assign
 
-            # Trample: remaining damage goes to defending player (REQ-R09, CR 702.19b)
+            # Trample: remaining damage goes to defending player or planeswalker (CR 702.19b)
             if has_trample and remaining > 0:
                 assignments.append(DamageAssignment(
                     source_id=attacker_info.permanent_id,
-                    target_id=attacker_info.defending_id,
+                    target_id=defending_id,
                     damage=remaining,
                 ))
 

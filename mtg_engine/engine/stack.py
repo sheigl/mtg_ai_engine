@@ -69,10 +69,11 @@ def cast_spell(
     mutate_target_id: str | None = None,
     mutate_on_top: bool = True,
     from_graveyard: bool = False,
+    from_adventure_exile: bool = False,
 ) -> GameState:
     """
-    Cast a spell from a player's hand (or graveyard for aftermath cards).
-    REQ-A03, REQ-A04, REQ-S01. CR 709: split cards.
+    Cast a spell from a player's hand (or graveyard/adventure exile).
+    REQ-A03, REQ-A04, REQ-S01. CR 709: split cards. CR 702.61: adventure.
     Validates timing, mana, targets; moves card to stack.
     Returns updated game_state.
     """
@@ -87,10 +88,14 @@ def cast_spell(
 
     player = get_player(game_state, player_name)
 
-    # Find card in hand (or graveyard for aftermath from_graveyard)
+    # Find card in hand (or graveyard/adventure exile for special casts)
     card = next((c for c in player.hand if c.id == card_id), None)
     if card is None:
-        if from_graveyard:
+        if from_adventure_exile:
+            card = next((c for c in player.adventure_cards if c.id == card_id), None)
+            if card is None:
+                raise ValueError(f"Card {card_id!r} not found in {player_name}'s adventure exile")
+        elif from_graveyard:
             card = next((c for c in player.graveyard if c.id == card_id), None)
             if card is None:
                 raise ValueError(f"Card {card_id!r} not found in {player_name}'s graveyard")
@@ -115,7 +120,15 @@ def cast_spell(
             )
 
     # Mana validation
-    cost = alternative_cost if alternative_cost is not None else (card.mana_cost or "")
+    if alternative_cost in ("foretell", "cast_foretold"):
+        import re as _re
+        foretell_match = _re.search(r'[Ff]oretell\s+(\{[^}]+\})', card.oracle_text or "")
+        if foretell_match:
+            cost = foretell_match.group(1)
+        else:
+            cost = (card.mana_cost or "")
+    else:
+        cost = alternative_cost if alternative_cost is not None else (card.mana_cost or "")
     if not can_pay_cost(player.mana_pool, cost, mana_payment):
         raise ValueError(
             f"Insufficient mana to cast {card.name!r}: cost={cost!r}, payment={mana_payment}"
@@ -124,8 +137,10 @@ def cast_spell(
     # Pay cost — deducts mana from player's pool
     player.mana_pool = pay_cost(player.mana_pool, cost, mana_payment)
 
-    # Move card from hand (or graveyard) to stack
-    if from_graveyard:
+    # Move card from hand (or graveyard/adventure exile) to stack
+    if from_adventure_exile:
+        player.adventure_cards[:] = [c for c in player.adventure_cards if c.id != card_id]
+    elif from_graveyard:
         player.graveyard[:] = [c for c in player.graveyard if c.id != card_id]
     else:
         player.hand[:] = [c for c in player.hand if c.id != card_id]
@@ -162,6 +177,18 @@ def cast_spell(
     is_flashback = alternative_cost == "flashback"
     is_escape = alternative_cost == "escape"
 
+    # US30: Validate mutate target
+    if mutate_target_id:
+        target_perm = next((p for p in game_state.battlefield if p.id == mutate_target_id), None)
+        if target_perm is None:
+            raise ValueError(f"Mutate target {mutate_target_id!r} not found on battlefield")
+        if target_perm.controller != player_name:
+            raise ValueError(f"Cannot mutate onto opponent's creature {target_perm.card.name!r}")
+        if "creature" not in target_perm.card.type_line.lower():
+            raise ValueError(f"Cannot mutate onto non-creature {target_perm.card.type!r}")
+        if "human" in target_perm.card.type_line.lower():
+            raise ValueError(f"Cannot mutate onto Human creature {target_perm.card.name!r}")
+
     stack_obj = StackObject(
         id=str(uuid.uuid4()),
         source_card=card,
@@ -181,8 +208,9 @@ def cast_spell(
         escape=is_escape,  # US8: Whether cast via escape from graveyard
         face_index=face_index,
         is_face_down=as_face_down,
-        is_adventure=foretell or (card.card_layout == "adventure" and face_index == 1),
+        is_adventure=card.card_layout == "adventure" and face_index == 1,
         is_fused=fuse,
+        is_foretold=alternative_cost in ("foretell", "cast_foretold"),
         mutate_target_id=mutate_target_id,
         mutate_on_top=mutate_on_top,
     )
@@ -263,8 +291,42 @@ def resolve_top(game_state: GameState) -> GameState:
 
     logger.info("Resolving %s (controller: %s)", card.name, stack_obj.controller)
 
+    # US30: Mutate — merge into target creature instead of creating new permanent
+    mutate_handled = False
+    if stack_obj.mutate_target_id:
+        target_perm = next((p for p in game_state.battlefield if p.id == stack_obj.mutate_target_id), None)
+        if target_perm:
+            # Create a temporary permanent so the card gets a proper ID
+            _, new_perm = put_permanent_onto_battlefield(
+                game_state, card, stack_obj.controller, from_zone="stack"
+            )
+            # Remove it from battlefield — will be merged into target instead
+            game_state.battlefield[:] = [p for p in game_state.battlefield if p.id != new_perm.id]
+            
+            # Add target card to pile first, then add mutate card in correct position
+            target_perm.mutated_cards.append(target_perm.card)
+            if stack_obj.mutate_on_top:
+                target_perm.mutated_cards.insert(0, new_perm.card)
+            else:
+                target_perm.mutated_cards.append(new_perm.card)
+            
+            # Top card of pile determines name/P/T/types
+            top_card = target_perm.mutated_cards[0]
+            target_perm.card = top_card
+            
+            # Grant all abilities from all cards in the pile
+            all_keywords = list(top_card.keywords or [])
+            for mc in target_perm.mutated_cards[1:]:
+                for kw in (mc.keywords or []):
+                    if kw not in all_keywords:
+                        all_keywords.append(kw)
+            target_perm.card = target_perm.card.model_copy(update={"keywords": all_keywords})
+            
+            logger.info("Mutate: %s merged into %s (on_top=%s)", card.name, top_card.name, stack_obj.mutate_on_top)
+            mutate_handled = True
+    
     # Permanent spell → enters battlefield (creatures, artifacts, enchantments, planeswalkers, lands)
-    if any(t in type_lower for t in ("creature", "artifact", "enchantment", "land", "planeswalker")):
+    if not mutate_handled and any(t in type_lower for t in ("creature", "artifact", "enchantment", "land", "planeswalker")):
         game_state, perm = put_permanent_onto_battlefield(
             game_state, card, stack_obj.controller, from_zone="stack"
         )
@@ -320,6 +382,10 @@ def resolve_top(game_state: GameState) -> GameState:
             if stack_obj.buyback_paid:
                 player.hand.append(card)
                 logger.info("Buyback: %s returned to hand", card.name)
+            # US18: Adventure (CR 702.61) — exiled to adventure_cards instead of graveyard
+            elif stack_obj.is_adventure:
+                player.adventure_cards.append(card)
+                logger.info("Adventure: %s exiled (creature half available from exile)", card.name)
             # US8: Flashback/Escape (CR 702.32, CR 702.132) — exile instead of graveyard
             elif stack_obj.flashback or stack_obj.escape:
                 player.exile.append(card)
