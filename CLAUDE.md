@@ -1,6 +1,6 @@
 # mtg_ai_engine Development Guidelines
 
-Auto-generated from all feature plans. Last updated: 2026-04-01
+Auto-generated from all feature plans. Last updated: 2026-04-18
 
 ## Active Technologies
 - Python 3.11 (matches existing codebase) + `httpx` (HTTP to engine API), `openai` (OpenAI-compatible LLM client), `argparse` (stdlib CLI parsing) (008-ai-cli-client)
@@ -23,6 +23,8 @@ Auto-generated from all feature plans. Last updated: 2026-04-01
 - In-memory game state (existing GameManager); AIMemory is per-game in-process only (017-forge-ai-parity)
 - Python 3.11 + FastAPI, Pydantic v2, httpx, openai (all existing — no new deps) (018-rules-engine-full-parity)
 - Python 3.11 + FastAPI, Pydantic v2, pytest (all existing -- no new deps) (020-rules-engine-complete-parity)
+- Python 3.11 (backend), TypeScript 5.x (frontend) + FastAPI, Pydantic v2 (backend); React 18, TanStack Query v5 (frontend) — all existing, no new deps (023-human-vs-ai-play)
+- In-memory GameState (existing GameManager) — no persistence changes (023-human-vs-ai-play)
 
 - Python 3.11 + FastAPI, Pydantic v2, standard `logging` module (007-play-by-play-log)
 
@@ -42,9 +44,9 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.11: Follow standard conventions
 
 ## Recent Changes
+- 023-human-vs-ai-play: Added Python 3.11 (backend), TypeScript 5.x (frontend) + FastAPI, Pydantic v2 (backend); React 18, TanStack Query v5 (frontend) — all existing, no new deps
 - 020-rules-engine-complete-parity: Added Python 3.11 + FastAPI, Pydantic v2, pytest (all existing -- no new deps)
 - 018-rules-engine-full-parity: Added Python 3.11 + FastAPI, Pydantic v2, httpx, openai (all existing — no new deps)
-- 017-forge-ai-parity: Added Python 3.11 + FastAPI, Pydantic v2, httpx (all existing — no new dependencies required)
 
 
 <!-- MANUAL ADDITIONS START -->

@@ -6,7 +6,7 @@ import '../styles/create-game.css'
 
 interface PlayerFormState {
   name: string
-  playerType: 'llm' | 'heuristic'
+  playerType: 'llm' | 'heuristic' | 'human'
   baseUrl: string
   model: string
 }
@@ -37,6 +37,7 @@ interface FieldErrors {
   commander2?: string
   observerModel?: string
   names?: string
+  humanConflict?: string
   deck1?: string
   deck2?: string
 }
@@ -93,7 +94,6 @@ async function resolveArchidektDeck(url: string): Promise<string[]> {
     throw new Error(msg)
   }
   const cards: { name: string; quantity: number }[] = json.data?.main_deck ?? []
-  // Expand each card by quantity into flat name list
   return cards.flatMap(c => Array(c.quantity).fill(c.name))
 }
 
@@ -108,6 +108,10 @@ function validateForm(form: FormState): FieldErrors {
     form.player1.name.trim() === form.player2.name.trim()
   ) {
     errors.names = 'Player names must be different'
+  }
+
+  if (form.player1.playerType === 'human' && form.player2.playerType === 'human') {
+    errors.humanConflict = 'Both players cannot be Human — at least one must be AI or Heuristic'
   }
 
   if (form.player1.playerType === 'llm') {
@@ -151,7 +155,7 @@ function PlayerCard({
   label: string
   state: PlayerFormState
   onChange: (patch: Partial<PlayerFormState>) => void
-  errors: { name?: string; url?: string; model?: string; names?: string }
+  errors: { name?: string; url?: string; model?: string; names?: string; humanConflict?: string }
 }) {
   return (
     <div className="cg-player-card">
@@ -166,15 +170,17 @@ function PlayerCard({
           />
           {errors.name && <span className="cg-field-error">{errors.name}</span>}
           {errors.names && <span className="cg-field-error">{errors.names}</span>}
+          {errors.humanConflict && <span className="cg-field-error">{errors.humanConflict}</span>}
         </div>
         <div className="cg-field cg-field--shrink">
           <label>Type</label>
           <select
             value={state.playerType}
-            onChange={e => onChange({ playerType: e.target.value as 'llm' | 'heuristic' })}
+            onChange={e => onChange({ playerType: e.target.value as PlayerFormState['playerType'] })}
           >
-            <option value="heuristic">Heuristic</option>
-            <option value="llm">LLM</option>
+            <option value="heuristic">Heuristic Bot</option>
+            <option value="llm">LLM (AI)</option>
+            <option value="human">Human (You)</option>
           </select>
         </div>
       </div>
@@ -219,11 +225,12 @@ export function CreateGameForm({ onClose }: Props) {
   const setPlayer2 = (patch: Partial<PlayerFormState>) =>
     setForm(f => ({ ...f, player2: { ...f.player2, ...patch } }))
 
-  // Warn when debug is on but no LLM and no observer URL
+  const hasHumanPlayer = form.player1.playerType === 'human' || form.player2.playerType === 'human'
+
   const showObserverWarning =
     form.debug &&
-    form.player1.playerType === 'heuristic' &&
-    form.player2.playerType === 'heuristic' &&
+    form.player1.playerType !== 'llm' &&
+    form.player2.playerType !== 'llm' &&
     !form.observerUrl.trim()
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -236,7 +243,6 @@ export function CreateGameForm({ onClose }: Props) {
 
     setIsSubmitting(true)
     try {
-      // Resolve Archidekt URLs before building the body
       let deck1: string[]
       let deck2: string[]
       try {
@@ -256,49 +262,89 @@ export function CreateGameForm({ onClose }: Props) {
         return
       }
 
-      const body = {
-        player1: {
-          name: form.player1.name.trim(),
-          player_type: form.player1.playerType,
-          base_url: form.player1.baseUrl.trim(),
-          model: form.player1.model.trim(),
-        },
-        player2: {
-          name: form.player2.name.trim(),
-          player_type: form.player2.playerType,
-          base_url: form.player2.baseUrl.trim(),
-          model: form.player2.model.trim(),
-        },
-        deck1,
-        deck2,
-        format: form.format,
-        commander1: form.format === 'commander' ? form.commander1.trim() : null,
-        commander2: form.format === 'commander' ? form.commander2.trim() : null,
-        verbose: form.verbose,
-        max_turns: parseInt(form.maxTurns, 10) || 200,
-        debug: form.debug,
-        observer_url: form.debug ? (form.observerUrl.trim() || null) : null,
-        observer_model: form.debug ? (form.observerModel.trim() || null) : null,
-      }
+      if (hasHumanPlayer) {
+        // Route to /human-game
+        const aiPlayer = form.player1.playerType !== 'human' ? form.player1 : form.player2
+        const body = {
+          player1_type: form.player1.playerType,
+          player2_type: form.player2.playerType,
+          player1_name: form.player1.name.trim(),
+          player2_name: form.player2.name.trim(),
+          player1_deck: deck1,
+          player2_deck: deck2,
+          format: form.format,
+          ai_model: aiPlayer.model.trim(),
+          ai_base_url: aiPlayer.baseUrl.trim(),
+          observer_enabled: form.debug,
+          observer_url: form.debug ? (form.observerUrl.trim() || null) : null,
+          observer_model: form.debug ? (form.observerModel.trim() || null) : null,
+          verbose: form.verbose,
+          max_turns: parseInt(form.maxTurns, 10) || 200,
+          debug: form.debug,
+        }
 
-      const res = await fetch('/ai-game', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
+        const res = await fetch('/human-game', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        const json = await res.json()
+        if (!res.ok) {
+          const detail = json?.detail
+          const msg = typeof detail === 'object' ? detail?.error : String(detail ?? 'Unknown error')
+          setServerError(msg)
+          return
+        }
+        const gameId: string = json.data?.game_id
+        const humanPlayerName: string = json.data?.human_player_name
+        if (gameId) {
+          onClose()
+          navigate(`/human-game/${gameId}`, { state: { humanPlayerName } })
+        }
+      } else {
+        // Route to /ai-game (existing flow)
+        const body = {
+          player1: {
+            name: form.player1.name.trim(),
+            player_type: form.player1.playerType,
+            base_url: form.player1.baseUrl.trim(),
+            model: form.player1.model.trim(),
+          },
+          player2: {
+            name: form.player2.name.trim(),
+            player_type: form.player2.playerType,
+            base_url: form.player2.baseUrl.trim(),
+            model: form.player2.model.trim(),
+          },
+          deck1,
+          deck2,
+          format: form.format,
+          commander1: form.format === 'commander' ? form.commander1.trim() : null,
+          commander2: form.format === 'commander' ? form.commander2.trim() : null,
+          verbose: form.verbose,
+          max_turns: parseInt(form.maxTurns, 10) || 200,
+          debug: form.debug,
+          observer_url: form.debug ? (form.observerUrl.trim() || null) : null,
+          observer_model: form.debug ? (form.observerModel.trim() || null) : null,
+        }
 
-      const json = await res.json()
-      if (!res.ok) {
-        const detail = json?.detail
-        const msg = typeof detail === 'object' ? detail?.error : String(detail ?? 'Unknown error')
-        setServerError(msg)
-        return
-      }
-
-      const gameId: string = json.data?.game_id
-      if (gameId) {
-        onClose()
-        navigate(`/game/${gameId}`)
+        const res = await fetch('/ai-game', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        const json = await res.json()
+        if (!res.ok) {
+          const detail = json?.detail
+          const msg = typeof detail === 'object' ? detail?.error : String(detail ?? 'Unknown error')
+          setServerError(msg)
+          return
+        }
+        const gameId: string = json.data?.game_id
+        if (gameId) {
+          onClose()
+          navigate(`/game/${gameId}`)
+        }
       }
     } catch {
       setServerError('Could not reach the engine. Is it running?')
@@ -312,7 +358,7 @@ export function CreateGameForm({ onClose }: Props) {
       <div className="cg-modal" onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div className="cg-header">
-          <h2>New AI Game</h2>
+          <h2>New Game</h2>
           <button className="cg-close-btn" onClick={onClose} title="Close">✕</button>
         </div>
 
@@ -332,6 +378,7 @@ export function CreateGameForm({ onClose }: Props) {
                     url: fieldErrors.player1Url,
                     model: fieldErrors.player1Model,
                     names: fieldErrors.names,
+                    humanConflict: fieldErrors.humanConflict,
                   }}
                 />
                 <PlayerCard
@@ -463,7 +510,7 @@ export function CreateGameForm({ onClose }: Props) {
               )}
               {showObserverWarning && (
                 <div className="cg-warning" style={{ marginTop: '0.5rem' }}>
-                  All players are heuristic and no observer URL is set — no AI commentary will be available. The debug panel will still capture game events.
+                  No LLM players and no observer URL — no AI commentary will be available. The debug panel will still capture game events.
                 </div>
               )}
             </div>
@@ -518,7 +565,7 @@ export function CreateGameForm({ onClose }: Props) {
               Cancel
             </button>
             <button type="submit" className="cg-btn-start" disabled={isSubmitting}>
-              {isSubmitting ? 'Starting…' : 'Start Game'}
+              {isSubmitting ? 'Starting…' : hasHumanPlayer ? 'Start Game' : 'Start AI Game'}
             </button>
           </div>
         </form>

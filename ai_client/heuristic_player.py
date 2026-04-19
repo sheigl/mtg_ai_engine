@@ -1627,10 +1627,11 @@ class HeuristicPlayer:
 
     def _score_mulligan(self, action: dict, game_state: dict, my_name: str) -> float:
         """Score a mulligan action — used in the _score_action dispatcher."""
-        # evaluate_mulligan() is the primary decision point; this is fallback
         my_info = self._extract_my_info(game_state, my_name)
         hand = my_info.get("hand", [])
-        return 50.0 if self.evaluate_mulligan(hand, len(hand)) else -50.0
+        should_mulligan = self.evaluate_mulligan(hand, len(hand))
+        is_keep = "keep" in (action.get("description") or "").lower()
+        return (50.0 if not should_mulligan else -50.0) if is_keep else (50.0 if should_mulligan else -50.0)
 
     def evaluate_mulligan(self, hand: list[dict], hand_size: int) -> bool:
         """

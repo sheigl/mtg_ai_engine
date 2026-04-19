@@ -8,6 +8,7 @@ from mtg_engine.api.routers import export as export_router
 from mtg_engine.api.routers import deck_import as deck_import_router
 from mtg_engine.api.routers import debug as debug_router
 from mtg_engine.api.routers import ai_game as ai_game_router
+from mtg_engine.api.routers import human_game as human_game_router
 
 app = FastAPI(title="MTG Rules Engine", version="1.0.0")
 app.include_router(game_router.router)
@@ -15,6 +16,7 @@ app.include_router(export_router.router)
 app.include_router(deck_import_router.router)
 app.include_router(debug_router.router)
 app.include_router(ai_game_router.router)
+app.include_router(human_game_router.router)
 
 @app.get("/health")
 def health() -> dict:

@@ -73,7 +73,7 @@ def _parse_mana_cost_to_payment(mana_cost: str, mana_pool: dict) -> dict:
     return payment
 
 
-def _map_action_to_request(action: dict, mana_pool: dict | None = None) -> tuple[str, dict]:
+def _map_action_to_request(action: dict, mana_pool: dict | None = None, player_name: str = "") -> tuple[str, dict]:
     """
     Map a legal-action dict to (action_type, request_payload).
 
@@ -179,7 +179,7 @@ def _map_action_to_request(action: dict, mana_pool: dict | None = None) -> tuple
 
     if action_type == "cascade_choice":
         return "cascade-choice", {
-            "player_name": action.get("player_name", ""),
+            "player_name": action.get("player_name") or player_name,
             "card_id": action.get("cascade_card_id", ""),
             "cast": True,  # AI scores determine this — if chosen it means cast
         }
@@ -187,7 +187,7 @@ def _map_action_to_request(action: dict, mana_pool: dict | None = None) -> tuple
     if action_type == "declare_mulligan":
         keep = "keep" in (action.get("description") or "").lower()
         return "mulligan", {
-            "player_name": action.get("player_name", ""),
+            "player_name": action.get("player_name") or player_name,
             "keep": keep,
         }
 
@@ -241,7 +241,12 @@ def _has_floating_mana(gs: dict, player_name: str) -> bool:
     """Return True if the named player has mana floating in their pool."""
     for p in gs.get("players", []):
         if p.get("name") == player_name:
-            return any(v > 0 for v in p.get("mana_pool", {}).values())
+            pool = p.get("mana_pool", {})
+            if isinstance(pool, dict):
+                for k, v in pool.items():
+                    if isinstance(v, int) and v > 0:
+                        return True
+            return False
     return False
 
 
@@ -266,6 +271,10 @@ def _format_gs_summary(gs: dict) -> str:
 
 class GameLoop:
     """Drives two AI players through a complete MTG game."""
+
+    def _skip_player_turn(self, priority_player: str, legal_data: dict) -> bool:
+        """Return True to skip AI decision and re-poll. Override in subclasses."""
+        return False
 
     def __init__(
         self,
@@ -376,6 +385,10 @@ class GameLoop:
             priority_player = legal_data.get("priority_player", "")
             phase = legal_data.get("phase", "?")
             step = legal_data.get("step", "?")
+
+            # Allow subclasses (e.g. HybridGameLoop) to skip AI decision for a player
+            if self._skip_player_turn(priority_player, legal_data):
+                continue
 
             # Get full game state to check is_game_over and actual turn number
             try:
@@ -527,7 +540,7 @@ class GameLoop:
                 except EngineError:
                     pass
 
-            action_type, payload = _map_action_to_request(chosen_action, priority_pool)
+            action_type, payload = _map_action_to_request(chosen_action, priority_pool, priority_player)
             if action_type == "declare_attackers" and isinstance(ai_player, HeuristicPlayer):
                 gs_with_priority = {**gs, "priority_player": priority_player}
                 selected_ids = ai_player.select_attackers(chosen_action, gs_with_priority, priority_player)

@@ -1,6 +1,6 @@
 """Prompt building and default deck for the AI CLI client."""
 
-# Built-in 99-card mono-green Commander deck (for use with a legendary green commander).
+# Built-in 99-card mono-green Commander deck (commander designated separately via --commander).
 # NOTE: This deck contains duplicates for testing convenience; real Commander games
 # require a proper singleton deck provided via --deck1/--deck2.
 DEFAULT_COMMANDER_DECK: list[str] = (

@@ -234,8 +234,11 @@ def create_game(req: CreateGameRequest) -> dict:
         # US19 (T045): Partner commander validation — validate partner pairs
         # Partners allow 2 commanders when both have Partner or matching "Partner with [Name]"
         # This is validated after loading the cards below
+        deck1_list = list(req.deck1)
+        if req.commander1 not in deck1_list:
+            deck1_list.append(req.commander1)
         try:
-            deck1_cards, commander1_card = load_commander_deck(req.deck1, req.commander1)
+            deck1_cards, commander1_card = load_commander_deck(deck1_list, req.commander1)
         except ValueError as e:
             msg = str(e)
             code = (
@@ -245,8 +248,11 @@ def create_game(req: CreateGameRequest) -> dict:
                 else "DECK_LOAD_ERROR"
             )
             raise _err(msg, code)
+        deck2_list = list(req.deck2)
+        if req.commander2 not in deck2_list:
+            deck2_list.append(req.commander2)
         try:
-            deck2_cards, commander2_card = load_commander_deck(req.deck2, req.commander2)
+            deck2_cards, commander2_card = load_commander_deck(deck2_list, req.commander2)
         except ValueError as e:
             msg = str(e)
             code = (
@@ -472,6 +478,78 @@ def play_land(game_id: str, req: PlayLandRequest) -> dict:
 
 # ─── Casting ─────────────────────────────────────────────────────────────────
 
+import re as _re_mana
+_MANA_SYM_RE = _re_mana.compile(r'\{([WUBRGC1-9XS])\}')
+_MANA_ADD_LAND_RE = _re_mana.compile(r'add\s+\{([WUBRGC])\}', _re_mana.IGNORECASE)
+
+
+def _auto_tap_and_build_payment(gs: "GameState", caster: str, mana_cost_str: str) -> tuple["GameState", dict]:
+    """Tap untapped mana sources to pay mana_cost_str, return (updated_gs, payment_dict).
+
+    Used when the human player submits a cast with no explicit mana_payment.
+    Taps lands greedily (colorless-last) until the pool can satisfy the cost.
+    """
+    from mtg_engine.engine.mana import add_mana, can_pay_cost
+    from mtg_engine.card_data.ability_parser import parse_oracle_text, ActivatedAbility
+
+    player = get_player(gs, caster)
+
+    # Build list of (permanent, mana_symbol) for all untapped mana sources
+    sources: list[tuple[object, str]] = []
+    for perm in gs.battlefield:
+        if perm.controller != caster or perm.tapped:
+            continue
+        is_creature = "creature" in perm.card.type_line.lower()
+        if is_creature and perm.summoning_sick:
+            continue
+        abilities = parse_oracle_text(perm.card.oracle_text or "", perm.card.type_line)
+        for ab in abilities:
+            if isinstance(ab, ActivatedAbility) and "{T}" in ab.cost:
+                m = _MANA_ADD_LAND_RE.search(ab.effect)
+                if m:
+                    sources.append((perm, m.group(1).upper()))
+
+    # Sort: colored first so we tap colored lands when needed, generic last
+    sources.sort(key=lambda x: x[1] == "C")
+
+    # Tap sources until pool can pay the cost
+    for perm, sym in sources:
+        if can_pay_cost(player.mana_pool, mana_cost_str):
+            break
+        perm.tapped = True
+        player.mana_pool = add_mana(player.mana_pool, sym)
+
+    # Build payment dict from pool + cost
+    import re as _re2
+    payment: dict[str, int] = {}
+    pool = {
+        "W": player.mana_pool.W,
+        "U": player.mana_pool.U,
+        "B": player.mana_pool.B,
+        "R": player.mana_pool.R,
+        "G": player.mana_pool.G,
+        "C": player.mana_pool.C,
+    }
+    generic = 0
+    for sym_m in _re2.findall(r'\{([^}]+)\}', mana_cost_str):
+        if sym_m in ("W", "U", "B", "R", "G", "C"):
+            payment[sym_m] = payment.get(sym_m, 0) + 1
+            pool[sym_m] = pool.get(sym_m, 0) - 1
+        elif sym_m.isdigit():
+            generic += int(sym_m)
+    for color in ("C", "W", "U", "B", "R", "G"):
+        if generic <= 0:
+            break
+        avail = max(0, pool.get(color, 0))
+        take = min(generic, avail)
+        if take:
+            payment[color] = payment.get(color, 0) + take
+            pool[color] -= take
+            generic -= take
+
+    return gs, payment
+
+
 @router.post("/{game_id}/cast")
 def cast(game_id: str, req: CastRequest) -> dict:
     """POST /game/{game_id}/cast. REQ-A03, REQ-A04"""
@@ -602,6 +680,12 @@ def cast(game_id: str, req: CastRequest) -> dict:
         )
         effective_cost_str = format_cost_dict_to_string(effective_cost_dict)
 
+    # Auto-tap mana sources when human player sends empty mana_payment
+    mana_payment = req.mana_payment
+    if not mana_payment and effective_cost_str:
+        gs, mana_payment = _auto_tap_and_build_payment(gs, caster, effective_cost_str)
+        player_gs = get_player(gs, caster)
+
     # T009: Validate targets before casting
     if req.targets:
         card_obj = next((c for c in player_gs.hand if c.id == req.card_id), None)
@@ -614,7 +698,7 @@ def cast(game_id: str, req: CastRequest) -> dict:
             caster,
             req.card_id,
             req.targets,
-            req.mana_payment,
+            mana_payment,
             alternative_cost=effective_cost_str if effective_cost_str != card_mana_cost else req.alternative_cost,
             modes_chosen=req.modes_chosen,
             x_value=req.x_value,
@@ -979,7 +1063,7 @@ def activate(game_id: str, req: ActivateRequest) -> dict:
                 sym = mana_add.group(1).strip("{}")
                 player.mana_pool = add_mana(player.mana_pool, sym.upper())
         # T128: Regeneration ability — add a regen shield to target permanent (CR 701.15a)
-        regen_match = _re.search(r"regenerate (target|this|~)", ability.effect, _re.IGNORECASE)
+        regen_match = re.search(r"regenerate (target|this|~)", ability.effect, re.IGNORECASE)
         if regen_match:
             # Determine target: if "target" use req.targets[0], else use the perm itself
             if "target" in regen_match.group(1).lower() and req.targets:
@@ -1607,7 +1691,7 @@ def mulligan(game_id: str, req: dict) -> dict:
         gs.mulligan_phase_active = False
 
     mgr = get_manager()
-    mgr.save(game_id, gs)
+    mgr.update(game_id, gs)
     return {
         "kept": keep or hand_size <= 5,
         "new_hand_size": len(player.hand),
