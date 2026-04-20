@@ -151,7 +151,7 @@ def create_ai_game(req: AIGameRequest, request: Request) -> dict:
     thread = threading.Thread(
         target=_run_ai_loop,
         args=(req, game_id, engine_url),
-        daemon=True,
+        daemon=False,
         name=f"ai-game-{game_id[:8]}",
     )
     thread.start()
@@ -166,6 +166,15 @@ def _run_ai_loop(req: AIGameRequest, game_id: str, engine_url: str) -> None:
     Runs in a daemon thread; exceptions are logged but do not crash the server.
     """
     print(f"[ai-game] Loop thread starting for game {game_id[:8]} (engine: {engine_url})", flush=True)
+    print(f"[ai-game] Testing HTTP connectivity...", flush=True)
+    
+    import httpx
+    try:
+        with httpx.Client(timeout=5) as client:
+            resp = client.get(f"{engine_url}/health")
+            print(f"[ai-game] Health check response: {resp.status_code} {resp.text}", flush=True)
+    except Exception as e:
+        print(f"[ai-game] Health check failed: {e}", flush=True)
     try:
         # Import here to avoid circular imports at module load time
         from ai_client.models import GameConfig, PlayerConfig
@@ -234,7 +243,8 @@ def _run_ai_loop(req: AIGameRequest, game_id: str, engine_url: str) -> None:
             )
             loop.run()
 
-    except Exception:
+    except Exception as e:
         import traceback
+        print(f"[CRITICAL] AI game loop exception: {e}", flush=True)
         traceback.print_exc()
         logger.exception("AI game loop for %s raised an unhandled exception", game_id)

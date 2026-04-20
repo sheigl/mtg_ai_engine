@@ -43,7 +43,9 @@ def _create_game(deck_size: int = 60, seed: int = 42) -> dict:
 def test_health():
     resp = client.get("/health")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
+    body = resp.json()
+    assert body["status"] == "ok"
+    assert "mongodb" in body
 
 
 def test_create_game_returns_200():

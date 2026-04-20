@@ -1,6 +1,8 @@
 import { Routes, Route } from 'react-router-dom'
 import { GameList } from './components/GameList'
 import { GameBoard } from './components/GameBoard'
+import { HumanGameBoard } from './components/HumanGameBoard'
+import { HumanGameCreator } from './components/HumanGameCreator'
 
 export function App() {
   return (
@@ -8,6 +10,8 @@ export function App() {
       <Routes>
         <Route path="/" element={<GameList />} />
         <Route path="/game/:gameId" element={<GameBoard />} />
+        <Route path="/human-game/create" element={<HumanGameCreator />} />
+        <Route path="/human-game/:gameId" element={<HumanGameBoard />} />
       </Routes>
       <footer style={{
         textAlign: 'center',

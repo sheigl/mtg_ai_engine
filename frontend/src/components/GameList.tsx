@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useGameList } from '../hooks/useGameList'
 import { useQueryClient } from '@tanstack/react-query'
 import { ConnectionStatus } from './ConnectionStatus'
@@ -18,6 +18,7 @@ export function GameList() {
   const { data: games, isLoading, isError } = useGameList()
   const [showCreateForm, setShowCreateForm] = useState(false)
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
 
   const deleteGame = async (gameId: string, e: React.MouseEvent) => {
     e.preventDefault()
@@ -36,22 +37,40 @@ export function GameList() {
 
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
         <h1 style={{ margin: 0 }}>MTG Game Observer</h1>
-        <button
-          onClick={() => setShowCreateForm(true)}
-          style={{
-            background: 'var(--active-glow)',
-            border: 'none',
-            color: '#000',
-            borderRadius: '6px',
-            padding: '0.5rem 1.1rem',
-            fontSize: '0.85rem',
-            fontWeight: 700,
-            cursor: 'pointer',
-            flexShrink: 0,
-          }}
-        >
-          + New AI Game
-        </button>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <button
+            onClick={() => navigate('/human-game/create')}
+            style={{
+              background: '#4a9a64',
+              border: 'none',
+              color: '#fff',
+              borderRadius: '6px',
+              padding: '0.5rem 1.1rem',
+              fontSize: '0.85rem',
+              fontWeight: 700,
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          >
+            ▶ Play vs AI
+          </button>
+          <button
+            onClick={() => setShowCreateForm(true)}
+            style={{
+              background: 'var(--active-glow)',
+              border: 'none',
+              color: '#000',
+              borderRadius: '6px',
+              padding: '0.5rem 1.1rem',
+              fontSize: '0.85rem',
+              fontWeight: 700,
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          >
+            + New AI Game
+          </button>
+        </div>
       </div>
       <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem', fontSize: '0.9rem' }}>
         Watch AI vs AI games in real time

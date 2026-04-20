@@ -150,18 +150,54 @@ def _fmt_phase_header(phase: str, step: str) -> str:
 
 # ── Main builder ──────────────────────────────────────────────────────────────
 
+def _fmt_debug_entry(entry: dict) -> list[str]:
+    """Format a single debug entry (observer commentary or AI prompt/response) as log lines."""
+    lines: list[str] = []
+    entry_type = entry.get("entry_type", "")
+    source = entry.get("source", "")
+    turn = entry.get("turn", 0)
+    phase = entry.get("phase", "")
+    step = entry.get("step", "")
+    loc = f"T{turn} {phase}/{step}"
+
+    if entry_type == "commentary":
+        lines.append(f"  [Observer AI — {loc}]")
+        rating = entry.get("rating")
+        if rating:
+            lines.append(f"    AI Rating  : {rating}")
+        override = entry.get("player_rating_override")
+        if override:
+            lines.append(f"    Player Rating Override: {override}")
+        explanation = entry.get("explanation")
+        if explanation:
+            lines.append(f"    Commentary : {explanation}")
+        alternative = entry.get("alternative")
+        if alternative:
+            lines.append(f"    Alternative: {alternative}")
+    else:
+        lines.append(f"  [AI Player: {source} — {loc}]")
+
+    annotation = entry.get("player_annotation")
+    if annotation:
+        lines.append(f"    Player Comment: {annotation}")
+
+    return lines
+
+
 def build_game_log(
     transcript: list[dict],
     snapshots: list[dict],
     game_id: str = "",
+    debug_entries: list[dict] | None = None,
 ) -> str:
     """
     Build a human-readable turn-by-turn game log.
 
     Args:
-        transcript: list of TranscriptEntry dicts (from TranscriptRecorder.to_json())
-        snapshots:  list of Snapshot dicts (from SnapshotRecorder.get_all())
-        game_id:    game identifier shown in the header
+        transcript:    list of TranscriptEntry dicts (from TranscriptRecorder.to_json())
+        snapshots:     list of Snapshot dicts (from SnapshotRecorder.get_all())
+        game_id:       game identifier shown in the header
+        debug_entries: optional list of DebugEntry dicts to merge into the turn timeline
     """
     lines: list[str] = []
 
@@ -212,6 +248,14 @@ def build_game_log(
             first_snap_by_turn[t] = snap
         if (t, p) not in first_snap_by_turn_phase:
             first_snap_by_turn_phase[(t, p)] = snap
+
+    # ── Index debug entries by (turn, phase, step) ───────────────────────────
+    debug_by_phase: dict[tuple[int, str, str], list[dict]] = {}
+    for de in (debug_entries or []):
+        if not de.get("is_complete"):
+            continue
+        key = (de.get("turn", 0), de.get("phase", ""), de.get("step", ""))
+        debug_by_phase.setdefault(key, []).append(de)
 
     # ── Sort transcript by seq ────────────────────────────────────────────────
     entries = sorted(transcript, key=lambda e: e.get("seq", 0))
@@ -284,6 +328,12 @@ def build_game_log(
                 last_board_phase = phase
 
             lines.extend(action_lines)
+
+            # Append debug entries for this (turn, phase, step)
+            debug_block = debug_by_phase.get((turn_num, phase, step), [])
+            for de in sorted(debug_block, key=lambda d: d.get("timestamp", 0)):
+                lines.extend(_fmt_debug_entry(de))
+
             lines.append("")
 
         lines.append("")

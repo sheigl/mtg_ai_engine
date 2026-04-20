@@ -45,7 +45,8 @@ def export_game_log(game_id: str) -> PlainTextResponse:
     store = _get_store(game_id)
     transcript = store.transcript.to_json()
     snapshots = [s.model_dump() for s in store.snapshots.get_all()]
-    log_text = build_game_log(transcript, snapshots, game_id=game_id)
+    debug_entries = [e.model_dump() for e in store.debug_log.get_all()]
+    log_text = build_game_log(transcript, snapshots, game_id=game_id, debug_entries=debug_entries)
     return PlainTextResponse(log_text, media_type="text/plain")
 
 

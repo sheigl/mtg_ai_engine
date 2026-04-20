@@ -18,6 +18,8 @@ export interface DebugEntry {
   explanation?: string
   alternative?: string
   thinking?: string     // Extended thinking/reasoning tokens (collapsible)
+  player_annotation?: string | null
+  player_rating_override?: Rating | null
 }
 
 export interface DebugLog {

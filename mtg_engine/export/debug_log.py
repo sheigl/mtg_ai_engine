@@ -69,6 +69,28 @@ class DebugLogRecorder:
         self._notify(entry)
         return entry
 
+    def annotate_entry(self, entry_id: str, text: str | None) -> DebugEntry | None:
+        """Set, update, or clear the player annotation on a completed entry. Returns None if not found."""
+        entry = self._index.get(entry_id)
+        if entry is None:
+            return None
+        stripped = text.strip() if text else None
+        entry.player_annotation = stripped if stripped else None
+        self._notify(entry)
+        return entry
+
+    def rerate_entry(self, entry_id: str, rating: str | None) -> DebugEntry | None:
+        """Set or clear the player rating override. Validates value; never modifies original rating. Returns None if not found."""
+        entry = self._index.get(entry_id)
+        if entry is None:
+            return None
+        valid = {"good", "acceptable", "suboptimal", None}
+        if rating not in valid:
+            raise ValueError(f"Invalid rating: {rating!r}")
+        entry.player_rating_override = rating
+        self._notify(entry)
+        return entry
+
     def get_all(self) -> list[DebugEntry]:
         """Return all entries (copy)."""
         return list(self._entries)
