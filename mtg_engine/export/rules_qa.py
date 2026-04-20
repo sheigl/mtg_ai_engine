@@ -5,7 +5,7 @@ Triggered by: SBA application, damage assignment, replacement effects,
 layer resolution, targeting validation.
 """
 import uuid
-from typing import Any
+from typing import Any, Callable
 from pydantic import BaseModel, Field
 
 
@@ -19,6 +19,7 @@ class QAPair(BaseModel):
     trigger_event: str
     cards_involved: list[str]
     rules_cited: list[str]
+    decision_id: str | None = None
 
 
 # ─── Q&A Templates ────────────────────────────────────────────────────────────
@@ -459,11 +460,34 @@ class RulesQARecorder:
     def __init__(self, game_id: str) -> None:
         self.game_id = game_id
         self._pairs: list[QAPair] = []
+        self._listeners: list[Callable[[QAPair], None]] = []
 
-    def _base_ctx(self, turn: int) -> dict:
-        return {"game_id": self.game_id, "turn": turn}
+    def register_listener(self, fn: Callable[[QAPair], None]) -> None:
+        self._listeners.append(fn)
 
-    def on_sba(self, sba_type: str, turn: int, **kwargs: Any) -> None:
+    def _notify(self, pair: QAPair) -> None:
+        for fn in self._listeners:
+            try:
+                fn(pair)
+            except Exception:
+                pass
+
+    def _add_pair(self, pair: QAPair) -> None:
+        self._pairs.append(pair)
+        self._notify(pair)
+
+    def _base_ctx(self, turn: int, decision_id: str | None = None) -> dict:
+        ctx = {"game_id": self.game_id, "turn": turn}
+        if decision_id is not None:
+            ctx["decision_id"] = decision_id
+        return ctx
+
+    def _add_pair_with_decision(self, qa: QAPair, decision_id: str | None) -> None:
+        if decision_id is not None:
+            qa.decision_id = decision_id
+        self._add_pair(qa)
+
+    def on_sba(self, sba_type: str, turn: int, decision_id: str | None = None, **kwargs: Any) -> None:
         """Generate Q&A when an SBA fires. REQ-D07."""
         ctx = {**self._base_ctx(turn), **kwargs}
         template_map = {
@@ -482,42 +506,41 @@ class RulesQARecorder:
         if fn:
             qa = fn(ctx)
             if qa:
-                self._pairs.append(qa)
+                self._add_pair_with_decision(qa, decision_id)
 
-    def on_damage(self, source_name: str, source_keywords: list[str], target_name: str, amount: int, turn: int) -> None:
+    def on_damage(self, source_name: str, source_keywords: list[str], target_name: str, amount: int, turn: int, decision_id: str | None = None) -> None:
         """Generate Q&A for notable damage events."""
         ctx = {**self._base_ctx(turn), "source_name": source_name, "target_name": target_name, "amount": amount}
         if "deathtouch" in source_keywords:
             qa = _qa_deathtouch({**ctx, "damage": amount})
             if qa:
-                self._pairs.append(qa)
+                self._add_pair_with_decision(qa, decision_id)
         if "lifelink" in source_keywords:
             qa = _qa_lifelink({**ctx, "controller": "controller"})
             if qa:
-                self._pairs.append(qa)
+                self._add_pair_with_decision(qa, decision_id)
         if "infect" in source_keywords:
-            # Determine if target is a creature name or player name
             qa = _qa_infect_creature(ctx)
             if qa:
-                self._pairs.append(qa)
+                self._add_pair_with_decision(qa, decision_id)
 
-    def on_trample(self, attacker_name: str, blocker_name: str, power: int, blocker_toughness: int, excess: int, turn: int) -> None:
+    def on_trample(self, attacker_name: str, blocker_name: str, power: int, blocker_toughness: int, excess: int, turn: int, decision_id: str | None = None) -> None:
         ctx = {**self._base_ctx(turn), "attacker_name": attacker_name, "blocker_name": blocker_name, "power": power, "blocker_toughness": blocker_toughness, "excess_damage": excess}
         qa = _qa_trample(ctx)
         if qa:
-            self._pairs.append(qa)
+            self._add_pair_with_decision(qa, decision_id)
 
-    def on_layer_interaction(self, card1: str, card2: str, turn: int) -> None:
+    def on_layer_interaction(self, card1: str, card2: str, turn: int, decision_id: str | None = None) -> None:
         ctx = {**self._base_ctx(turn), "card1_name": card1, "card2_name": card2}
         qa = _qa_layer_system(ctx)
         if qa:
-            self._pairs.append(qa)
+            self._add_pair_with_decision(qa, decision_id)
 
-    def on_replacement(self, creature_name: str, turn: int, replacement_type: str = "shield_counter") -> None:
+    def on_replacement(self, creature_name: str, turn: int, replacement_type: str = "shield_counter", decision_id: str | None = None) -> None:
         if replacement_type == "shield_counter":
             qa = _qa_shield_counter({**self._base_ctx(turn), "creature_name": creature_name})
             if qa:
-                self._pairs.append(qa)
+                self._add_pair_with_decision(qa, decision_id)
 
     def get_all(self) -> list[QAPair]:
         return list(self._pairs)

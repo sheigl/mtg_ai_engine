@@ -1,6 +1,13 @@
 import type { LegalAction } from '../hooks/useLegalActions'
 import type { Step } from '../types/game'
 
+interface EligibleAttacker {
+  id: string
+  name: string
+  power: string
+  toughness: string
+}
+
 interface ActionPanelProps {
   isMyTurn: boolean
   phase: string | null
@@ -12,11 +19,13 @@ interface ActionPanelProps {
   isPending: boolean
   lastError: string | null
   isResponseWindow: boolean
+  eligibleAttackers?: EligibleAttacker[]
   onPassPriority: () => void
   onConfirmAttackers: () => void
   onConfirmBlockers: () => void
   onToggleAutoPass: () => void
   onClearError: () => void
+  onToggleAttacker?: (id: string) => void
 }
 
 export function ActionPanel({
@@ -30,11 +39,13 @@ export function ActionPanel({
   isPending,
   lastError,
   isResponseWindow,
+  eligibleAttackers,
   onPassPriority,
   onConfirmAttackers,
   onConfirmBlockers,
   onToggleAutoPass,
   onClearError,
+  onToggleAttacker,
 }: ActionPanelProps) {
   if (!isMyTurn) return null
 
@@ -52,7 +63,7 @@ export function ActionPanel({
       flexDirection: 'column',
       alignItems: 'center',
       gap: '0.5rem',
-      zIndex: 100,
+      zIndex: 300,
       pointerEvents: 'none',
     }}>
       {/* Turn indicator */}
@@ -85,6 +96,40 @@ export function ActionPanel({
         }}>
           {lastError}
           <button onClick={onClearError} style={{ background: 'none', border: 'none', color: '#ff6b6b', cursor: 'pointer', padding: 0, fontSize: '0.8rem' }}>✕</button>
+        </div>
+      )}
+
+      {/* Attacker selection */}
+      {isDeclareAttackers && eligibleAttackers && eligibleAttackers.length > 0 && (
+        <div style={{ pointerEvents: 'all', textAlign: 'center' }}>
+          <div style={{ fontSize: '0.7rem', color: '#e55', fontWeight: 600, marginBottom: '0.3rem' }}>
+            Select attackers:
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', justifyContent: 'center', maxWidth: '500px' }}>
+            {eligibleAttackers.map(c => (
+              <button
+                key={c.id}
+                onClick={() => onToggleAttacker?.(c.id)}
+                disabled={isPending}
+                style={{
+                  background: selectedAttackers.has(c.id) ? '#e55' : 'var(--bg-secondary)',
+                  color: selectedAttackers.has(c.id) ? '#fff' : 'var(--text-secondary)',
+                  border: `1px solid ${selectedAttackers.has(c.id) ? '#e55' : 'var(--border-default)'}`,
+                  borderRadius: '4px',
+                  padding: '0.25rem 0.6rem',
+                  fontSize: '0.75rem',
+                  cursor: 'pointer',
+                }}
+              >
+                {c.name} ({c.power}/{c.toughness})
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {isDeclareAttackers && eligibleAttackers && eligibleAttackers.length === 0 && (
+        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', pointerEvents: 'none' }}>
+          No eligible attackers
         </div>
       )}
 

@@ -1,6 +1,6 @@
 # mtg_ai_engine Development Guidelines
 
-Auto-generated from all feature plans. Last updated: 2026-04-18
+Auto-generated from all feature plans. Last updated: 2026-04-20
 
 ## Active Technologies
 - Python 3.11 (matches existing codebase) + `httpx` (HTTP to engine API), `openai` (OpenAI-compatible LLM client), `argparse` (stdlib CLI parsing) (008-ai-cli-client)
@@ -25,6 +25,12 @@ Auto-generated from all feature plans. Last updated: 2026-04-18
 - Python 3.11 + FastAPI, Pydantic v2, pytest (all existing -- no new deps) (020-rules-engine-complete-parity)
 - Python 3.11 (backend), TypeScript 5.x (frontend) + FastAPI, Pydantic v2 (backend); React 18, TanStack Query v5 (frontend) — all existing, no new deps (023-human-vs-ai-play)
 - In-memory GameState (existing GameManager) — no persistence changes (023-human-vs-ai-play)
+- Python 3.11 (backend), TypeScript 5.x (frontend) + FastAPI, Pydantic v2 (backend); React 18, TanStack Query v5, Framer Motion (frontend) — all existing, no new deps (024-commentary-annotation-card-order)
+- In-memory `DebugLogRecorder` per game (existing); no persistence changes (024-commentary-annotation-card-order)
+- Python 3.11 (backend, matches existing codebase) + FastAPI, Pydantic v2 (existing); `motor>=3.3.0` (new — async MongoDB driver for asyncio/FastAPI) (025-mongodb-persistence)
+- MongoDB (new, external); existing in-memory `GameExportStore` recorders unchanged (025-mongodb-persistence)
+- Python 3.11 (backend), TypeScript 5.x (frontend) + FastAPI, Pydantic v2, motor ≥ 3.3.0 (existing), React 18, TanStack Query v5 (existing) (026-training-data-schema)
+- MongoDB via motor async driver (`decisions`, `games`, `rules_qa`, `transcript` collections) (026-training-data-schema)
 
 - Python 3.11 + FastAPI, Pydantic v2, standard `logging` module (007-play-by-play-log)
 
@@ -44,9 +50,9 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.11: Follow standard conventions
 
 ## Recent Changes
-- 023-human-vs-ai-play: Added Python 3.11 (backend), TypeScript 5.x (frontend) + FastAPI, Pydantic v2 (backend); React 18, TanStack Query v5 (frontend) — all existing, no new deps
-- 020-rules-engine-complete-parity: Added Python 3.11 + FastAPI, Pydantic v2, pytest (all existing -- no new deps)
-- 018-rules-engine-full-parity: Added Python 3.11 + FastAPI, Pydantic v2, httpx, openai (all existing — no new deps)
+- 026-training-data-schema: Added Python 3.11 (backend), TypeScript 5.x (frontend) + FastAPI, Pydantic v2, motor ≥ 3.3.0 (existing), React 18, TanStack Query v5 (existing)
+- 025-mongodb-persistence: Added Python 3.11 (backend, matches existing codebase) + FastAPI, Pydantic v2 (existing); `motor>=3.3.0` (new — async MongoDB driver for asyncio/FastAPI)
+- 024-commentary-annotation-card-order: Added Python 3.11 (backend), TypeScript 5.x (frontend) + FastAPI, Pydantic v2 (backend); React 18, TanStack Query v5, Framer Motion (frontend) — all existing, no new deps
 
 
 <!-- MANUAL ADDITIONS START -->

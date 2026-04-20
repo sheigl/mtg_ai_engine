@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import { useGameState } from '../hooks/useGameState'
 import { useLegalActions, type LegalAction } from '../hooks/useLegalActions'
@@ -14,8 +14,10 @@ import { ActionPanel } from './ActionPanel'
 import { BlockerAssigner } from './BlockerAssigner'
 import { TargetChoiceModal, MulliganModal, DiscardModal } from './ChoiceModal'
 import { GameResultOverlay } from './GameResultOverlay'
+import { DebugPanel } from './DebugPanel'
 import type { GameState, Permanent } from '../types/game'
 import '../styles/board.css'
+import '../styles/debug.css'
 
 function getPlayerPermanents(gs: GameState, playerName: string) {
   return gs.battlefield.filter(p => p.controller === playerName)
@@ -70,11 +72,20 @@ export function HumanGameBoard() {
   const [selectedAttackers, setSelectedAttackers] = useState<Set<string>>(new Set())
   const [blockerAssignments, setBlockerAssignments] = useState<Map<string, string>>(new Map())
   const [pendingCast, setPendingCast] = useState<{ action: LegalAction; cardId: string } | null>(null)
-  const [autoPassPriority, setAutoPassPriority] = useState(() =>
-    localStorage.getItem('hgb-auto-pass') === 'true',
-  )
+  const [autoPassPriority, setAutoPassPriority] = useState(() => {
+    const stored = localStorage.getItem('hgb-auto-pass')
+    return stored === null ? true : stored === 'true'
+  })
   const [_gameOverDismissed] = useState(false)
   const [draggedCardId, setDraggedCardId] = useState<string | null>(null)
+
+  // Card display order — purely cosmetic, no server state
+  const [handOrder, setHandOrder] = useState<string[]>([])
+  const [permanentOrder, setPermanentOrder] = useState<string[]>([])
+  const handOrderRef = useRef(handOrder)
+  const permanentOrderRef = useRef(permanentOrder)
+  handOrderRef.current = handOrder
+  permanentOrderRef.current = permanentOrder
 
   // Reset combat state when step changes
   useEffect(() => {
@@ -90,6 +101,25 @@ export function HumanGameBoard() {
       return () => clearTimeout(timer)
     }
   }, [isMyTurn, autoPassPriority, isPending, legalActions, submitAction])
+
+  // Reconcile handOrder/permanentOrder when game state updates
+  useEffect(() => {
+    if (!gs || !humanPlayerName) return
+    const human = gs.players.find(p => p.name === humanPlayerName) ?? gs.players[0]
+    if (!human) return
+    const handIds = new Set(human.hand.map(c => c.id))
+    setHandOrder(prev => {
+      const kept = prev.filter(id => handIds.has(id))
+      const newIds = human.hand.map(c => c.id).filter(id => !prev.includes(id))
+      return [...kept, ...newIds]
+    })
+    const permIds = new Set(gs.battlefield.filter(p => p.controller === humanPlayerName).map(p => p.id))
+    setPermanentOrder(prev => {
+      const kept = prev.filter(id => permIds.has(id))
+      const newIds = [...permIds].filter(id => !prev.includes(id))
+      return [...kept, ...newIds]
+    })
+  }, [gs, humanPlayerName])
 
   // ── Action handlers ──────────────────────────────────────────────────────────
 
@@ -107,7 +137,7 @@ export function HumanGameBoard() {
         card_id: cardId,
         targets: [],
         mana_payment: {},
-        x_value: null,
+        x_value: 0,
         face_index: action.face_index ?? 0,
       })
     }
@@ -119,7 +149,7 @@ export function HumanGameBoard() {
       card_id: pendingCast.cardId,
       targets: target ? [target] : [],
       mana_payment: {},
-      x_value: xValue ?? null,
+      x_value: xValue ?? 0,
       face_index: pendingCast.action.face_index ?? 0,
       ...(pendingCast.action.alternative_cost ? { alternative_cost: pendingCast.action.alternative_cost } : {}),
       ...(pendingCast.action.from_graveyard ? { from_graveyard: true } : {}),
@@ -137,8 +167,16 @@ export function HumanGameBoard() {
   }, [])
 
   const handleConfirmAttackers = useCallback(() => {
-    submitAction('declare_attackers', { attacker_ids: [...selectedAttackers] })
-  }, [submitAction, selectedAttackers])
+    // Find defending player from the legal action (card_name holds defending player name)
+    const declareAction = legalActions.find(a => a.action_type === 'declare_attackers')
+    const defendingId = declareAction?.card_name ?? ''
+    submitAction('declare_attackers', {
+      attack_declarations: [...selectedAttackers].map(attacker_id => ({
+        attacker_id,
+        defending_id: defendingId,
+      })),
+    })
+  }, [submitAction, selectedAttackers, legalActions])
 
   const handleAssignBlocker = useCallback((blockerId: string, attackerId: string) => {
     setBlockerAssignments(prev => new Map(prev).set(blockerId, attackerId))
@@ -153,11 +191,12 @@ export function HumanGameBoard() {
   }, [])
 
   const handleConfirmBlockers = useCallback(() => {
-    const assignments = [...blockerAssignments.entries()].map(([blocker_id, attacker_id]) => ({
-      blocker_id,
-      attacker_id,
-    }))
-    submitAction('declare_blockers', { assignments })
+    submitAction('declare_blockers', {
+      block_declarations: [...blockerAssignments.entries()].map(([blocker_id, attacker_id]) => ({
+        blocker_id,
+        attacker_id,
+      })),
+    })
   }, [submitAction, blockerAssignments])
 
   const handlePassPriority = useCallback(() => {
@@ -228,9 +267,6 @@ export function HumanGameBoard() {
 
       <div className="top-left-buttons">
         <button onClick={() => navigate('/')}>← Games</button>
-        <button onClick={() => navigate(`/game/${gs.game_id}`)} title="Open AI observer view">
-          Observer View
-        </button>
       </div>
 
       {/* Opponent zone */}
@@ -256,7 +292,7 @@ export function HumanGameBoard() {
         />
       </div>
 
-      {/* Human battlefield with attacker/blocker overlays */}
+      {/* Human battlefield */}
       <div
         style={{ position: 'relative' }}
         onDragOver={draggedCardId ? (e) => e.preventDefault() : undefined}
@@ -270,37 +306,25 @@ export function HumanGameBoard() {
           setDraggedCardId(null)
         } : undefined}
       >
-        <Battlefield permanents={humanPermanents} />
-        {isMyTurn && step === 'declare_attackers' && (
-          <div style={{ marginTop: '0.5rem' }}>
-            <div style={{ fontSize: '0.75rem', color: '#e55', fontWeight: 600, marginBottom: '0.25rem' }}>
-              Click creatures to attack:
-            </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
-              {getCreatures(humanPermanents)
-                .filter(p => !p.tapped && !p.summoning_sick)
-                .map(creature => (
-                  <button
-                    key={creature.id}
-                    onClick={() => handleToggleAttacker(creature.id)}
-                    disabled={isPending}
-                    style={{
-                      background: selectedAttackers.has(creature.id) ? '#e55' : 'var(--bg-secondary)',
-                      color: selectedAttackers.has(creature.id) ? '#fff' : 'var(--text-secondary)',
-                      border: `1px solid ${selectedAttackers.has(creature.id) ? '#e55' : 'var(--border-default)'}`,
-                      borderRadius: '4px',
-                      padding: '0.25rem 0.5rem',
-                      fontSize: '0.75rem',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    {creature.card.name} ({creature.card.power}/{creature.card.toughness})
-                  </button>
-                ))}
-            </div>
-          </div>
-        )}
-        {isMyTurn && step === 'declare_blockers' && attackingCreatures.length > 0 && (
+        <Battlefield
+          permanents={humanPermanents}
+          permanentOrder={permanentOrder}
+          onReorder={setPermanentOrder}
+          isPending={isPending}
+        />
+      </div>
+
+      {/* Blocker assigner — fixed overlay so it doesn't disrupt grid layout */}
+      {isMyTurn && step === 'declare_blockers' && attackingCreatures.length > 0 && (
+        <div style={{
+          position: 'fixed',
+          bottom: '8rem',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          zIndex: 250,
+          maxWidth: '90vw',
+          width: '620px',
+        }}>
           <BlockerAssigner
             myCreatures={getCreatures(humanPermanents)}
             attackingCreatures={attackingCreatures}
@@ -310,10 +334,10 @@ export function HumanGameBoard() {
             onAssign={handleAssignBlocker}
             onUnassign={handleUnassignBlocker}
           />
-        )}
-      </div>
+        </div>
+      )}
 
-      {/* Human hand — interactive when it's the human's turn */}
+      {/* Human hand — always visible, interactive when it's the human's turn */}
       <div>
         <PlayerZone
           player={humanPlayer}
@@ -321,21 +345,17 @@ export function HumanGameBoard() {
           format={gs.format}
           commanderDamage={isCommander ? gs.commander_damage[humanPlayer.name] : undefined}
         />
-        {isMyTurn ? (
-          <InteractiveHand
-            hand={humanPlayer.hand}
-            legalActionsByCard={legalActionsByCard}
-            isPending={isPending}
-            onPlayLand={handlePlayLand}
-            onCastSpell={handleCastSpell}
-            onDragStart={setDraggedCardId}
-            onDragEnd={() => setDraggedCardId(null)}
-          />
-        ) : (
-          <div style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-            {humanPlayer.hand.length} card{humanPlayer.hand.length !== 1 ? 's' : ''} in hand
-          </div>
-        )}
+        <InteractiveHand
+          hand={humanPlayer.hand}
+          legalActionsByCard={isMyTurn ? legalActionsByCard : new Map()}
+          isPending={isPending}
+          handOrder={handOrder}
+          onReorder={setHandOrder}
+          onPlayLand={handlePlayLand}
+          onCastSpell={handleCastSpell}
+          onDragStart={setDraggedCardId}
+          onDragEnd={() => setDraggedCardId(null)}
+        />
       </div>
 
       {/* Action log sidebar */}
@@ -355,11 +375,15 @@ export function HumanGameBoard() {
         isPending={isPending}
         lastError={lastError}
         isResponseWindow={isResponseWindow}
+        eligibleAttackers={step === 'declare_attackers' ? getCreatures(humanPermanents)
+          .filter(p => !p.tapped && !p.summoning_sick)
+          .map(p => ({ id: p.id, name: p.card.name, power: p.card.power ?? '?', toughness: p.card.toughness ?? '?' })) : undefined}
         onPassPriority={handlePassPriority}
         onConfirmAttackers={handleConfirmAttackers}
         onConfirmBlockers={handleConfirmBlockers}
         onToggleAutoPass={handleToggleAutoPass}
         onClearError={clearError}
+        onToggleAttacker={handleToggleAttacker}
       />
 
       {/* Modals */}
@@ -367,6 +391,10 @@ export function HumanGameBoard() {
         <TargetChoiceModal
           action={pendingCast.action}
           cardName={gs.players.flatMap(p => p.hand).find(c => c.id === pendingCast.cardId)?.name ?? 'Spell'}
+          targetNames={new Map([
+            ...gs.battlefield.map(p => [p.id, `${p.card.name} (${p.controller})`] as [string, string]),
+            ...gs.players.map(p => [p.name, p.name] as [string, string]),
+          ])}
           onConfirm={handleCastConfirm}
           onCancel={() => setPendingCast(null)}
         />
@@ -395,6 +423,9 @@ export function HumanGameBoard() {
           gameId={gs.game_id}
         />
       )}
+
+      {/* Debug panel — shows AI/observer thoughts while playing */}
+      <DebugPanel gameId={gs.game_id} isGameOver={gs.is_game_over} debugEnabled={gs.debug_enabled} />
     </div>
   )
 }

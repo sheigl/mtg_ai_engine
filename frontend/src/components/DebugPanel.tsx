@@ -5,7 +5,6 @@ import { CommentaryBlock } from './CommentaryBlock'
 import type { DebugEntry } from '../types/debug'
 import '../styles/debug.css'
 
-const LS_KEY = 'mtg_debug_panel_enabled'
 const PAGE_SIZE = 10
 
 interface Props {
@@ -18,33 +17,18 @@ async function postPause(gameId: string, paused: boolean) {
   await fetch(`/game/${gameId}/${paused ? 'pause' : 'resume'}`, { method: 'POST' })
 }
 
-export function DebugPanel({ gameId, isGameOver, debugEnabled }: Props) {
-  const [enabled, setEnabled] = useState<boolean>(() => {
-    if (debugEnabled) return true
-    try { return localStorage.getItem(LS_KEY) === 'true' } catch { return false }
-  })
-  const [open, setOpen] = useState(enabled)
+export function DebugPanel({ gameId, isGameOver }: Props) {
+  const [open, setOpen] = useState(true)
   const [showAll, setShowAll] = useState(false)
   const [paused, setPaused] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  // If the server says debug is enabled (e.g. game was started with --debug or via the UI
-  // debug checkbox), force the panel on even if the useState initializer ran before the
-  // prop arrived (stale cache) or the prop changes on a later refetch.
-  useEffect(() => {
-    if (debugEnabled && !enabled) {
-      setEnabled(true)
-      setOpen(true)
-    }
-  }, [debugEnabled])
-
-  const { entries, isLoading } = useDebugLog(gameId, enabled, isGameOver)
+  const { entries, isLoading } = useDebugLog(gameId, true, isGameOver)
 
   const allSources = Array.from(
     new Set(entries.filter(e => e.source !== 'Observer AI').map(e => e.source))
   )
 
-  // When paused, freeze the displayed entries so they don't scroll away
   const [frozenEntries, setFrozenEntries] = useState<DebugEntry[]>([])
   useEffect(() => {
     if (!paused) setFrozenEntries([])
@@ -54,51 +38,35 @@ export function DebugPanel({ gameId, isGameOver, debugEnabled }: Props) {
   const visibleEntries = showAll ? displayedAll : displayedAll.slice(-PAGE_SIZE)
   const hiddenCount = displayedAll.length - visibleEntries.length
 
-  // Auto-scroll to bottom on new entries (only when not paused and not showing all)
   useEffect(() => {
     if (open && !paused && !showAll && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
   }, [entries.length, open, paused, showAll])
 
-  const toggleEnabled = () => {
-    const next = !enabled
-    setEnabled(next)
-    setOpen(next)
-    try { localStorage.setItem(LS_KEY, String(next)) } catch { /* ignore */ }
-  }
-
-  const toggleOpen = () => setOpen(o => !o)
-
   const togglePause = async () => {
     const next = !paused
-    if (next) {
-      // Freeze current entries before pausing
-      setFrozenEntries(entries)
-    }
+    if (next) setFrozenEntries(entries)
     setPaused(next)
     await postPause(gameId, next)
   }
 
   return (
     <div className={`debug-panel-container ${open ? 'debug-panel-open' : ''}`}>
-      {/* Toggle button — always visible */}
       <button
-        className={`debug-panel-toggle-btn ${enabled ? 'debug-panel-toggle-active' : ''}`}
-        onClick={enabled ? toggleOpen : toggleEnabled}
-        title={enabled ? (open ? 'Collapse debug panel' : 'Expand debug panel') : 'Enable debug panel'}
+        className="debug-panel-toggle-btn debug-panel-toggle-active"
+        onClick={() => setOpen(o => !o)}
+        title={open ? 'Collapse debug panel' : 'Expand debug panel'}
       >
-        🔍 Debug {enabled ? (open ? '▼' : '▶') : '(off)'}
+        🔍 AI {open ? '▼' : '▶'}
       </button>
 
-      {/* Side panel */}
       {open && (
         <div className="debug-panel">
-          {/* Header */}
           <div className="debug-panel-header">
-            <span>Debug Panel</span>
+            <span>AI Commentary</span>
             <div className="debug-panel-header-actions">
-              {enabled && !isGameOver && (
+              {!isGameOver && (
                 <button
                   className={`debug-panel-pause-btn ${paused ? 'debug-panel-paused' : ''}`}
                   onClick={togglePause}
@@ -107,28 +75,18 @@ export function DebugPanel({ gameId, isGameOver, debugEnabled }: Props) {
                   {paused ? '▶ Resume' : '⏸ Pause'}
                 </button>
               )}
-              {enabled && (
-                <button className="debug-panel-disable-btn" onClick={toggleEnabled} title="Disable debug panel">
-                  Disable
-                </button>
-              )}
-              <button className="debug-panel-close-btn" onClick={toggleOpen} title="Close panel">
+              <button className="debug-panel-close-btn" onClick={() => setOpen(false)} title="Collapse panel">
                 ✕
               </button>
             </div>
           </div>
 
-          {/* Body */}
           <div className="debug-panel-body" ref={scrollRef}>
-            {!enabled ? (
-              <div className="debug-empty-state">
-                Debug panel off — click to enable
-              </div>
-            ) : isLoading ? (
-              <div className="debug-empty-state">Loading debug data…</div>
+            {isLoading ? (
+              <div className="debug-empty-state">Loading…</div>
             ) : entries.length === 0 ? (
               <div className="debug-empty-state">
-                No AI prompts captured yet.
+                No AI entries yet.
                 <br />
                 <small>
                   Heuristic players don't generate LLM entries.
@@ -151,7 +109,7 @@ export function DebugPanel({ gameId, isGameOver, debugEnabled }: Props) {
                   entry.entry_type === 'commentary' ? (
                     <CommentaryBlock key={entry.entry_id} entry={entry} gameId={gameId} />
                   ) : (
-                    <PromptResponseBlock key={entry.entry_id} entry={entry} allSources={allSources} />
+                    <PromptResponseBlock key={entry.entry_id} entry={entry} allSources={allSources} gameId={gameId} />
                   )
                 )}
               </>

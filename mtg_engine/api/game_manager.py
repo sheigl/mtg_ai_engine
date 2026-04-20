@@ -41,6 +41,8 @@ class GameManager:
         format: str = "standard",
         commander1_card: Optional[Card] = None,
         commander2_card: Optional[Card] = None,
+        player1_type: str = "ai",
+        player2_type: str = "ai",
     ) -> GameState:
         """Create a new game, shuffle libraries, deal opening hands. REQ-G01, REQ-G04"""
         # Ensure the global zone-change listener is registered (once per process)
@@ -101,6 +103,12 @@ class GameManager:
         recorder.register_listener(vlogger.on_event)
         self._recorders[game_id] = recorder
         self._verbose_loggers[game_id] = vlogger
+
+        if store.persister is not None:
+            store.persister.register_on_store(store)
+            store.persister.init_game_document(
+                player1_name, player1_type, player2_name, player2_type, format,
+            )
 
         return gs
 

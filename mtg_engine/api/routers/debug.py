@@ -12,6 +12,8 @@ from fastapi.responses import StreamingResponse
 from mtg_engine.api.game_manager import get_manager
 from mtg_engine.export.observer_skip import trigger_skip
 from mtg_engine.export.store import get_export_store
+from pydantic import BaseModel
+
 from mtg_engine.models.debug import DebugEntry, DebugEntryPatch
 
 logger = logging.getLogger(__name__)
@@ -72,6 +74,76 @@ async def skip_observer_entry(game_id: str, entry_id: str) -> dict:
     trigger_skip(entry_id)
     recorder.patch_entry(entry_id, "", True, explanation="Analysis skipped.")
     return {"data": {"entry_id": entry_id, "skipped": True}}
+
+
+# ── PATCH /game/{game_id}/debug/entry/{entry_id}/annotate ────────────────────
+
+class _AnnotateBody(BaseModel):
+    text: str | None = None
+
+
+@router.patch("/{game_id}/debug/entry/{entry_id}/annotate")
+async def annotate_debug_entry(game_id: str, entry_id: str, body: _AnnotateBody) -> dict:
+    """Set, update, or clear a player annotation on a completed debug entry."""
+    recorder = _get_recorder(game_id)
+    all_entries = {e.entry_id: e for e in recorder.get_all()}
+    if entry_id not in all_entries:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "Entry not found", "error_code": "ENTRY_NOT_FOUND"},
+        )
+    entry = all_entries[entry_id]
+    if not entry.is_complete:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "Entry is still streaming", "error_code": "ENTRY_NOT_COMPLETE"},
+        )
+    text = body.text
+    if text is not None and text.strip() == "":
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "Annotation cannot be whitespace-only", "error_code": "INVALID_ANNOTATION"},
+        )
+    updated = recorder.annotate_entry(entry_id, text)
+    store = get_export_store(game_id)
+    if store.persister is not None:
+        store.persister.update_debug_entry(updated)
+    return {"data": {"entry_id": entry_id, "player_annotation": updated.player_annotation}}
+
+
+# ── PATCH /game/{game_id}/debug/entry/{entry_id}/rerate ──────────────────────
+
+class _RerateBody(BaseModel):
+    rating: str | None = None
+
+
+@router.patch("/{game_id}/debug/entry/{entry_id}/rerate")
+async def rerate_debug_entry(game_id: str, entry_id: str, body: _RerateBody) -> dict:
+    """Set or clear the player rating override on an observer commentary entry."""
+    recorder = _get_recorder(game_id)
+    all_entries = {e.entry_id: e for e in recorder.get_all()}
+    if entry_id not in all_entries:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "Entry not found", "error_code": "ENTRY_NOT_FOUND"},
+        )
+    entry = all_entries[entry_id]
+    if entry.entry_type.value != "commentary":
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "Rating override only valid for commentary entries", "error_code": "INVALID_ENTRY_TYPE"},
+        )
+    valid_ratings = {"good", "acceptable", "suboptimal", None}
+    if body.rating not in valid_ratings:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": f"Invalid rating: {body.rating!r}", "error_code": "INVALID_RATING"},
+        )
+    updated = recorder.rerate_entry(entry_id, body.rating)
+    store = get_export_store(game_id)
+    if store.persister is not None:
+        store.persister.update_debug_entry(updated)
+    return {"data": {"entry_id": entry_id, "rating": updated.rating, "player_rating_override": updated.player_rating_override}}
 
 
 # ── GET /game/{game_id}/debug ─────────────────────────────────────────────────

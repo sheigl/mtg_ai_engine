@@ -1591,7 +1591,8 @@ def legal_actions(game_id: str) -> dict:
     actions_data = [a.model_dump() for a in actions]
     # Record snapshot at each priority grant (needed for UUID→name resolution in game log).
     store = get_export_store(game_id)
-    store.snapshots.record_snapshot(gs, actions_data)
+    snap = store.snapshots.record_snapshot(gs, actions_data)
+    store.current_snapshot_id = snap.snapshot_id
     return {
         "data": {
             "priority_player": gs.priority_holder,
@@ -1601,6 +1602,7 @@ def legal_actions(game_id: str) -> dict:
             "is_paused": mgr.is_paused(game_id),
             "is_game_over": gs.is_game_over,
             "winner": gs.winner,
+            "snapshot_id": snap.snapshot_id,
         }
     }
 

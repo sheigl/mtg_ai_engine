@@ -354,7 +354,7 @@ export function CreateGameForm({ onClose }: Props) {
   }
 
   return (
-    <div className="cg-overlay" onClick={onClose}>
+    <div className="cg-overlay">
       <div className="cg-modal" onClick={e => e.stopPropagation()}>
         {/* Header */}
         <div className="cg-header">

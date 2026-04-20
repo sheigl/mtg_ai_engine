@@ -49,7 +49,9 @@ export function useHumanAction(gameId: string | undefined): UseHumanActionResult
         if (!res.ok) {
           const json = await res.json().catch(() => null)
           const detail = json?.detail
-          const msg = typeof detail === 'object' ? detail?.error : String(detail ?? `Action failed (${res.status})`)
+          const msg = Array.isArray(detail)
+            ? detail.map((e: Record<string, unknown>) => `${e.loc}: ${e.msg}`).join('; ')
+            : typeof detail === 'object' ? (detail?.error ?? JSON.stringify(detail)) : String(detail ?? `Action failed (${res.status})`)
           setLastError(msg)
           return
         }

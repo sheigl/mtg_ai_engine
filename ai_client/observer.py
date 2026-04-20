@@ -13,8 +13,8 @@ import openai
 logger = logging.getLogger(__name__)
 
 _OBSERVER_SYSTEM = (
-    "You are an expert Magic: The Gathering analyst observing an AI vs AI game. "
-    "You will be given the game state, the action chosen by an AI player, and all legal actions "
+    "You are an expert Magic: The Gathering analyst observing a game. "
+    "You will be given the game state, the action chosen by a player (human or AI), and all legal actions "
     "that were available at that moment. "
     "Rate the play as one of: good, acceptable, suboptimal. "
     "If suboptimal, you MUST name a specific better alternative from the legal actions list. "

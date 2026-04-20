@@ -5,9 +5,10 @@ export interface LegalAction {
   action_type: string
   description: string
   card_id?: string
+  card_name?: string
   permanent_id?: string
   valid_targets?: string[]
-  mana_options?: { mana_cost: string }[]
+  mana_options?: Record<string, unknown>[]
   x_value?: number | null
   face_index?: number
   modes_chosen?: number[]

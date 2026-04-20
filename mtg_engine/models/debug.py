@@ -25,6 +25,10 @@ class DebugEntry(BaseModel):
     explanation: str | None = None
     alternative: str | None = None
     thinking: str = ""  # Extended thinking tokens (collapsible in UI)
+    player_annotation: str | None = None
+    player_rating_override: str | None = None
+    snapshot_id: str | None = None
+    related_entry_id: str | None = None
 
 
 class DebugEntryPatch(BaseModel):

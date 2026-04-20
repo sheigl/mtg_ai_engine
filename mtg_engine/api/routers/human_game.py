@@ -69,7 +69,10 @@ def create_human_game(req: HumanGameRequest, request: Request) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=422, detail={"error": str(exc), "error_code": "DECK_LOAD_ERROR"})
 
-    # Create game
+    # Create game — map "heuristic" → "ai" for persistence type label
+    def _persist_type(t: str) -> str:
+        return "human" if t == "human" else "ai"
+
     gs = mgr.create_game(
         req.player1_name,
         req.player2_name,
@@ -78,6 +81,8 @@ def create_human_game(req: HumanGameRequest, request: Request) -> dict:
         verbose=req.verbose,
         debug=req.debug,
         format=req.format,
+        player1_type=_persist_type(req.player1_type),
+        player2_type=_persist_type(req.player2_type),
     )
     game_id = gs.game_id
 

@@ -4,7 +4,7 @@ A snapshot is recorded at every priority grant. The chosen action
 is attached via finalize_snapshot() after the action is taken.
 """
 import uuid
-from typing import Any
+from typing import Any, Callable
 from pydantic import BaseModel, Field
 from mtg_engine.models.game import GameState
 
@@ -29,6 +29,23 @@ class SnapshotRecorder:
         self.game_id = game_id
         self._snapshots: list[Snapshot] = []
         self._pending: Snapshot | None = None  # last unfinalized snapshot
+        self._listeners: list[Callable[[Snapshot], None]] = []
+
+    def register_listener(self, fn: Callable[[Snapshot], None]) -> None:
+        self._listeners.append(fn)
+
+    def unregister_listener(self, fn: Callable[[Snapshot], None]) -> None:
+        try:
+            self._listeners.remove(fn)
+        except ValueError:
+            pass
+
+    def _notify_finalized(self, snap: Snapshot) -> None:
+        for fn in self._listeners:
+            try:
+                fn(snap)
+            except Exception:
+                pass
 
     def record_snapshot(
         self,
@@ -67,6 +84,7 @@ class SnapshotRecorder:
             self._pending.action_taken = action_taken
             self._pending.action_taken_by = action_taken_by
             self._snapshots.append(self._pending)
+            self._notify_finalized(self._pending)
             self._pending = None
 
     def flush(self) -> None:

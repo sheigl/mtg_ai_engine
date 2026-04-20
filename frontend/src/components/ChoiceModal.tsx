@@ -5,11 +5,12 @@ import type { Card } from '../types/game'
 interface TargetChoiceModalProps {
   action: LegalAction
   cardName: string
+  targetNames?: Map<string, string>
   onConfirm: (target: string, xValue?: number) => void
   onCancel: () => void
 }
 
-export function TargetChoiceModal({ action, cardName, onConfirm, onCancel }: TargetChoiceModalProps) {
+export function TargetChoiceModal({ action, cardName, targetNames, onConfirm, onCancel }: TargetChoiceModalProps) {
   const [selectedTarget, setSelectedTarget] = useState<string | null>(null)
   const [xValue, setXValue] = useState(0)
   const targets = action.valid_targets ?? []
@@ -43,7 +44,7 @@ export function TargetChoiceModal({ action, cardName, onConfirm, onCancel }: Tar
                     textAlign: 'left',
                   }}
                 >
-                  {t}
+                  {targetNames?.get(t) ?? t}
                 </button>
               ))}
             </div>

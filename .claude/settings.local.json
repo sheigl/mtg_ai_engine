@@ -96,7 +96,22 @@
       "Bash(curl -s \"http://localhost:8085/human-game/18a7fde6-ccb6-47fa-bd96-ad886163f00f/player\")",
       "Bash(curl -s -X POST http://localhost:8085/game/18a7fde6-ccb6-47fa-bd96-ad886163f00f/cast -H 'Content-Type: application/json' -d '{\"card_id\":\"64b2defe-b1a2-4c19-aaed-b99e38ffdbdd\",\"targets\":[],\"mana_payment\":{}}')",
       "Bash(curl -s -X POST http://localhost:8085/game/18a7fde6-ccb6-47fa-bd96-ad886163f00f/cast -H 'Content-Type: application/json' -d '{\"card_id\":\"64b2defe-b4ae-452d-be51-31a5c9360ca5\",\"targets\":[],\"mana_payment\":{}}')",
-      "Bash(curl -s http://localhost:8085/game/18a7fde6-ccb6-47fa-bd96-ad886163f00f)"
+      "Bash(curl -s http://localhost:8085/game/18a7fde6-ccb6-47fa-bd96-ad886163f00f)",
+      "Bash(curl -s -X POST http://localhost:8085/game/18a7fde6-ccb6-47fa-bd96-ad886163f00f/cast -H 'Content-Type: application/json' -d '{\"card_id\":\"b7a3b0bd-4c65-431d-bf57-68c63c50e0ee\",\"targets\":[],\"mana_payment\":{}}')",
+      "Bash(curl -s -X POST http://localhost:8085/game/18a7fde6-ccb6-47fa-bd96-ad886163f00f/cast -H 'Content-Type: application/json' -d '{\"card_id\":\"b7a3b0bd-80dc-4512-a954-ec6033dee433\",\"targets\":[],\"mana_payment\":{}}')",
+      "Bash(python -c \"from ai_client.hybrid_game_loop import HybridGameLoop; from ai_client.game_loop import GameLoop; print\\('OK'\\)\")",
+      "Bash(.specify/scripts/bash/create-new-feature.sh \"I want to create a few new features. 1. I want to be able to make comments on the observer AI commentary, if I want to counter what it thinks. This should be exportable as well when downloading the game log. I want to be able to comment on the AI thought process if the player is an AI player. 2. I want to be able to drag my cards in my hand as well as on the board to change their order \\(just personal preference on ordering\\) 3. When the AI observer rates a move as Good, Acceptable etc, I want to be able to change that if I think it's wrong and rerate the move. However this still needs to be kept track of in the game log \\(remember the point of this is to teach AI later on in training\\)\" --json --short-name \"commentary-annotation-card-order\")",
+      "Bash(.specify/scripts/bash/create-new-feature.sh 'I want to create a few new features. 1. I want to be able to make comments on the observer AI commentary, if I want to counter what it thinks. This should be exportable as well when downloading the game log. I want to be able to comment on the AI thought process if the player is an AI player. 2. I want to be able to drag my cards in my hand as well as on the board to change their order \\(just personal preference on ordering\\) 3. When the AI observer rates a move as Good, Acceptable etc, I want to be able to change that if I think it is wrong and rerate the move. However this still needs to be kept track of in the game log \\(remember the point of this is to teach AI later on in training\\)' --json --short-name commentary-annotation-card-order)",
+      "Bash(.specify/scripts/bash/create-new-feature.sh \"I would like to save all game data to mongodb instead of downloading a file. I want it to save as it is happening as well. Remember this is reinforcement learning for AI models.\" --json --short-name \"mongodb-persistence\" \"MongoDB Game Data Persistence\")",
+      "Bash(python -c ' *)",
+      "Bash(pkill -f \"uvicorn\")",
+      "Bash(echo \"exit: $?\")",
+      "Bash(python3 -m pip show motor)",
+      "Bash(uv pip *)",
+      "Bash(python3 -c \"import motor; print\\(motor.__version__\\)\")",
+      "Bash(uvicorn --version)",
+      "Bash(/home/sheigl/code/mtg_ai_engine/.venv/bin/python -c \"from motor.motor_asyncio import AsyncIOMotorClient; print\\('motor works'\\)\")",
+      "Bash(.specify/scripts/bash/create-new-feature.sh \"Redesign the MongoDB persistence layer so that all game data is properly linked for AI model training purposes.\" --json --short-name \"training-data-schema\")"
     ]
   }
 }

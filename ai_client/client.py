@@ -83,6 +83,17 @@ class EngineClient:
         data = self._request("POST", f"/game/{game_id}{path_suffix}", json=payload)
         return data.get("data", {})
 
+    def get_last_transcript_desc(self, game_id: str) -> str:
+        """Return description of the last transcript event, or empty string."""
+        try:
+            data = self._request("GET", f"/export/{game_id}/transcript")
+            entries = data.get("data", [])
+            if entries:
+                return entries[-1].get("description", "")
+        except EngineError:
+            pass
+        return ""
+
     def set_verbose(self, game_id: str, enabled: bool) -> None:
         """POST /game/{game_id}/verbose to toggle play-by-play logging."""
         self._request("POST", f"/game/{game_id}/verbose", json={"enabled": enabled})

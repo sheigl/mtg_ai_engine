@@ -15,6 +15,8 @@ class GameExportStore:
         self.transcript = TranscriptRecorder(game_id)
         self.rules_qa = RulesQARecorder(game_id)
         self.debug_log = DebugLogRecorder(game_id)
+        self.persister = None  # set by get_export_store when MongoDB is configured
+        self.current_snapshot_id: str | None = None
 
 
 _store: dict[str, GameExportStore] = {}
@@ -22,7 +24,21 @@ _store: dict[str, GameExportStore] = {}
 
 def get_export_store(game_id: str) -> GameExportStore:
     if game_id not in _store:
-        _store[game_id] = GameExportStore(game_id)
+        store = GameExportStore(game_id)
+        from mtg_engine.persistence.mongo_client import (
+            is_configured, get_games_collection,
+            get_decisions_collection, get_rules_qa_collection, get_transcript_collection,
+        )
+        if is_configured():
+            from mtg_engine.persistence.game_persister import MongoGamePersister
+            store.persister = MongoGamePersister(
+                game_id,
+                get_games_collection(),
+                get_decisions_collection(),
+                get_rules_qa_collection(),
+                get_transcript_collection(),
+            )
+        _store[game_id] = store
     return _store[game_id]
 
 
