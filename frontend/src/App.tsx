@@ -3,10 +3,19 @@ import { GameList } from './components/GameList'
 import { GameBoard } from './components/GameBoard'
 import { HumanGameBoard } from './components/HumanGameBoard'
 import { HumanGameCreator } from './components/HumanGameCreator'
+import { ThemeToggle } from './components/ThemeToggle'
 
 export function App() {
   return (
     <>
+      <div style={{
+        position: 'fixed',
+        bottom: '0.75rem',
+        right: '0.75rem',
+        zIndex: 300,
+      }}>
+        <ThemeToggle />
+      </div>
       <Routes>
         <Route path="/" element={<GameList />} />
         <Route path="/game/:gameId" element={<GameBoard />} />

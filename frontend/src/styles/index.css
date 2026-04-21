@@ -1,5 +1,5 @@
 :root {
-  /* Dark theme */
+  /* Dark theme (default) */
   --bg-primary: #0d1117;
   --bg-secondary: #161b22;
   --bg-tertiary: #21262d;
@@ -39,6 +39,24 @@
   /* Transitions */
   --transition-fast: 200ms ease;
   --transition-normal: 400ms ease;
+}
+
+[data-theme="light"] {
+  --bg-primary: #f6f8fa;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f3f4f6;
+  --bg-card: #ffffff;
+  --border-default: #d0d7de;
+  --border-muted: #e6e9ef;
+  --text-primary: #1f2328;
+  --text-secondary: #656d76;
+  --text-muted: #8c959f;
+
+  /* Status colors — slightly adjusted for light backgrounds */
+  --life-high: #1a7f37;
+  --life-mid: #9a6700;
+  --life-low: #cf222e;
+  --active-glow: #0969da;
 }
 
 * {

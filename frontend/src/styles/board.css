@@ -157,11 +157,17 @@
   text-transform: uppercase;
 }
 
-.phase-badge.beginning { background: #3d4752; }
-.phase-badge.precombat_main { background: #1a4d2e; }
-.phase-badge.combat { background: #6e2222; }
-.phase-badge.postcombat_main { background: #1a4d2e; }
-.phase-badge.ending { background: #3d4752; }
+.phase-badge.beginning { background: #3d4752; color: #e6edf3; }
+.phase-badge.precombat_main { background: #1a4d2e; color: #e6edf3; }
+.phase-badge.combat { background: #6e2222; color: #e6edf3; }
+.phase-badge.postcombat_main { background: #1a4d2e; color: #e6edf3; }
+.phase-badge.ending { background: #3d4752; color: #e6edf3; }
+
+[data-theme="light"] .phase-badge.beginning { background: #6e7f94; color: #fff; }
+[data-theme="light"] .phase-badge.precombat_main { background: #2d8a4e; color: #fff; }
+[data-theme="light"] .phase-badge.combat { background: #a33; color: #fff; }
+[data-theme="light"] .phase-badge.postcombat_main { background: #2d8a4e; color: #fff; }
+[data-theme="light"] .phase-badge.ending { background: #6e7f94; color: #fff; }
 
 .turn-counter {
   font-weight: 700;
