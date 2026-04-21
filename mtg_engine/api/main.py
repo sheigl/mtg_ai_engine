@@ -13,6 +13,7 @@ from mtg_engine.api.routers import debug as debug_router
 from mtg_engine.api.routers import ai_game as ai_game_router
 from mtg_engine.api.routers import human_game as human_game_router
 from mtg_engine.api.routers import game_records as game_records_router
+from mtg_engine.api.routers import player_defaults as player_defaults_router
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ app.include_router(debug_router.router)
 app.include_router(ai_game_router.router)
 app.include_router(human_game_router.router)
 app.include_router(game_records_router.router)
+app.include_router(player_defaults_router.router)
 
 
 @app.get("/health")

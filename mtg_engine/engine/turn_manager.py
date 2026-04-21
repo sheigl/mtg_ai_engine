@@ -8,6 +8,73 @@ from mtg_engine.models.game import GameState, ManaPool, Phase, Step
 
 logger = logging.getLogger(__name__)
 
+
+# ── Feature 029: Skip empty phases helpers ───────────────────────────────────
+
+def _get_legal_actions_for_player(gs: GameState, player_name: str):
+    """Compute legal actions for a specific player (not just priority_holder).
+
+    Temporarily swaps priority_holder, calls the existing computation,
+    then restores the original. This avoids duplicating the 700+
+    lines of action-computation logic in game.py.
+    """
+    from mtg_engine.api.routers.game import _compute_legal_actions
+    original_holder = gs.priority_holder
+    try:
+        gs.priority_holder = player_name
+        return _compute_legal_actions(gs)
+    finally:
+        gs.priority_holder = original_holder
+
+
+def _has_non_pass_actions(actions: list) -> bool:
+    """Return True if any action is not a simple pass."""
+    return any(a.action_type != "pass" for a in actions)
+
+
+def can_skip_phase(gs: GameState) -> bool:
+    """Evaluate whether the current phase can be skipped.
+
+    A phase is skipped when NO player has any non-pass legal actions.
+    This is the core helper for Feature 029 (skip-empty-phases).
+
+    Skip-prevention conditions (phase is NEVER skipped if any are true):
+      - Stack is non-empty
+      - Pending triggers exist
+      - Any pending_*_choice is set
+      - Pending echo payment exists
+      - Current step is UNTAP (no priority granted anyway)
+    """
+    # Skip-prevention: untap step has no priority anyway
+    if gs.step == Step.UNTAP:
+        return False
+
+    # Skip-prevention: stack objects require resolution
+    if gs.stack:
+        return False
+
+    # Skip-prevention: pending triggers create mandatory actions
+    if gs.pending_triggers:
+        return False
+
+    # Skip-prevention: any pending choice blocks skipping
+    pending_choice_attrs = [
+        "pending_scry_choice", "pending_surveil_choice", "pending_tutor_choice",
+        "pending_discard_choice", "pending_ward_payment", "pending_echo_payment",
+        "pending_cascade", "pending_dredge_choice", "pending_proliferate_choice",
+    ]
+    for attr in pending_choice_attrs:
+        if getattr(gs, attr, None):
+            return False
+
+    # Evaluate both players for non-pass actions
+    for player in gs.players:
+        actions = _get_legal_actions_for_player(gs, player.name)
+        if _has_non_pass_actions(actions):
+            return False
+
+    return True
+
 # Ordered sequence of (Phase, Step) pairs for a full turn. REQ-T01
 TURN_SEQUENCE: list[tuple[Phase, Step]] = [
     (Phase.BEGINNING, Step.UNTAP),
@@ -304,10 +371,13 @@ def begin_step(game_state: GameState) -> GameState:
     return game_state
 
 
-def advance_step(game_state: GameState) -> GameState:
+def advance_step(game_state: GameState, skip_depth: int = 0) -> GameState:
     """
     Move to the next step/phase in the turn sequence.
     Applies start-of-step effects and grants priority. REQ-T01, REQ-S01.
+
+    Feature 029: If no player has non-pass actions after begin_step(),
+    the phase is skipped and we advance directly to the next step.
     """
     current = (game_state.phase, game_state.step)
 
@@ -356,6 +426,38 @@ def advance_step(game_state: GameState) -> GameState:
         game_state = _advance_turn(game_state)
 
     game_state = begin_step(game_state)
+
+    # ── Feature 029: Skip empty phases ───────────────────────────────────────
+    if skip_depth < 10 and game_state.step != Step.UNTAP:
+        try:
+            if can_skip_phase(game_state):
+                logger.info(
+                    "Turn %d %s — %s skipped (no actions available)",
+                    game_state.turn,
+                    game_state.phase.value,
+                    game_state.step.value,
+                )
+                # Record skipped phase in transcript (US2)
+                from mtg_engine.export.store import get_export_store
+                store = get_export_store(game_state.game_id)
+                store.transcript.record_phase_skipped(
+                    turn=game_state.turn,
+                    phase=game_state.phase.value,
+                    step=game_state.step.value,
+                    active_player=game_state.active_player,
+                    reason="no_actions_available",
+                )
+                return advance_step(game_state, skip_depth=skip_depth + 1)
+        except Exception:
+            # Fail-safe: if skip evaluation crashes, do not skip — log and continue
+            logger.warning(
+                "Skip evaluation failed for %s at turn %d %s/%s",
+                game_state.game_id,
+                game_state.turn,
+                game_state.phase.value,
+                game_state.step.value,
+                exc_info=True,
+            )
 
     # Grant priority to active player (except untap step — no priority there). REQ-S01
     if game_state.step != Step.UNTAP:
@@ -463,6 +565,19 @@ def process_cleanup_step(game_state: GameState) -> GameState:
     return game_state
 
 
+def _should_auto_pass(game_state: GameState, player_name: str) -> bool:
+    """Feature 029: Check if a player has only pass actions (no non-pass options).
+
+    Returns True if the player should be auto-passed without presentation.
+    """
+    try:
+        actions = _get_legal_actions_for_player(game_state, player_name)
+        return not _has_non_pass_actions(actions)
+    except Exception:
+        # Fail-safe: if evaluation crashes, don't auto-pass
+        return False
+
+
 def pass_priority(game_state: GameState, player_name: str) -> GameState:
     """
     Handle priority passing. REQ-S01, REQ-S02.
@@ -470,6 +585,9 @@ def pass_priority(game_state: GameState, player_name: str) -> GameState:
     If both players pass consecutively:
     - If stack is non-empty: resolve top of stack
     - If stack is empty: advance step
+
+    Feature 029: If the next priority holder has only pass actions,
+    auto-pass them immediately without presentation.
     """
     if game_state.priority_holder != player_name:
         raise ValueError(f"{player_name} does not have priority (holder: {game_state.priority_holder!r})")
@@ -481,6 +599,10 @@ def pass_priority(game_state: GameState, player_name: str) -> GameState:
         if game_state.priority_holder == game_state.active_player:
             # Active player passed with stack — give priority to other player
             game_state.priority_holder = other
+            # Feature 029: Auto-pass if other has only pass actions
+            if _should_auto_pass(game_state, other):
+                logger.info("Auto-pass for %s (stack non-empty, only pass available)", other)
+                return pass_priority(game_state, other)
         else:
             # Non-active player passed with stack non-empty AND active player already passed
             # → both have passed in succession: resolve top of stack
@@ -492,6 +614,10 @@ def pass_priority(game_state: GameState, player_name: str) -> GameState:
         if game_state.priority_holder == game_state.active_player:
             # Active player passes on empty stack → give priority to other
             game_state.priority_holder = other
+            # Feature 029: Auto-pass if other has only pass actions
+            if _should_auto_pass(game_state, other):
+                logger.info("Auto-pass for %s (empty stack, only pass available)", other)
+                return pass_priority(game_state, other)
         else:
             # Both passed on empty stack → advance step. REQ-S02
             game_state = advance_step(game_state)

@@ -5,6 +5,8 @@ import threading
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, model_validator
 
+from mtg_engine.persistence.player_defaults import get_merged_player_settings_sync
+
 router = APIRouter(tags=["human-game"])
 logger = logging.getLogger(__name__)
 
@@ -123,11 +125,28 @@ def create_human_game(req: HumanGameRequest, request: Request) -> dict:
     ai_player_type = req.player2_type if req.player1_type == "human" else req.player1_type
     ai_player_name = req.player2_name if req.player1_type == "human" else req.player1_name
 
+    # Fetch and merge AI player defaults with request values (Feature 028)
+    ai_request_values = {
+        "base_url": req.ai_base_url or "",
+        "model": req.ai_model or "",
+        "enable_thinking": req.ai_enable_thinking,
+    }
+    try:
+        merged_ai = get_merged_player_settings_sync(ai_player_type, ai_request_values)
+        final_ai_base_url = merged_ai.get("base_url", req.ai_base_url) or ""
+        final_ai_model = merged_ai.get("model", req.ai_model) or ""
+        final_ai_enable_thinking = req.ai_enable_thinking if req.ai_enable_thinking is not None else merged_ai.get("enable_thinking")
+    except Exception:
+        final_ai_base_url = req.ai_base_url
+        final_ai_model = req.ai_model
+        final_ai_enable_thinking = req.ai_enable_thinking
+
     engine_url = str(request.base_url).rstrip("/")
 
     thread = threading.Thread(
         target=_run_hybrid_loop,
-        args=(req, game_id, engine_url, human_player_name, ai_player_name, ai_player_type),
+        args=(req, game_id, engine_url, human_player_name, ai_player_name, ai_player_type,
+              final_ai_base_url, final_ai_model, final_ai_enable_thinking),
         daemon=False,
         name=f"human-game-{game_id[:8]}",
     )
@@ -158,6 +177,9 @@ def _run_hybrid_loop(
     human_player_name: str,
     ai_player_name: str,
     ai_player_type: str,
+    merged_ai_base_url: str = "",
+    merged_ai_model: str = "",
+    merged_ai_enable_thinking: bool | None = None,
 ) -> None:
     """Build and run the HybridGameLoop in a daemon thread."""
     try:
@@ -171,10 +193,10 @@ def _run_hybrid_loop(
 
         ai_pc = PlayerConfig(
             name=ai_player_name,
-            base_url=req.ai_base_url,
-            model=req.ai_model,
+            base_url=merged_ai_base_url,
+            model=merged_ai_model,
             player_type="heuristic" if ai_player_type == "heuristic" else "llm",
-            enable_thinking=req.ai_enable_thinking,
+            enable_thinking=merged_ai_enable_thinking,
         )
 
         # Human seat uses a dummy PlayerConfig — the loop skips it
@@ -207,7 +229,7 @@ def _run_hybrid_loop(
 
         observer = None
         if req.observer_enabled and req.observer_url and req.observer_model:
-            observer = ObserverAI(req.observer_url, req.observer_model, enable_thinking=req.ai_enable_thinking)
+            observer = ObserverAI(req.observer_url, req.observer_model, enable_thinking=merged_ai_enable_thinking)
 
         with EngineClient(engine_url) as engine:
             loop = HybridGameLoop(
