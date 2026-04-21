@@ -11,6 +11,8 @@ interface FormState {
   deck1Text: string
   deck2Text: string
   format: 'standard' | 'commander'
+  commander1: string
+  commander2: string
 }
 
 interface FieldErrors {
@@ -19,6 +21,8 @@ interface FieldErrors {
   names?: string
   deck1?: string
   deck2?: string
+  commander1?: string
+  commander2?: string
 }
 
 function parseDeck(raw: string): string[] {
@@ -30,7 +34,7 @@ function isArchidektUrl(raw: string): boolean {
   return t.startsWith('https://archidekt.com') || t.startsWith('http://archidekt.com')
 }
 
-async function resolveArchidektDeck(url: string): Promise<string[]> {
+async function resolveArchidektDeck(url: string): Promise<{ cards: string[]; commander?: string }> {
   const res = await fetch('/deck/import', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -43,7 +47,10 @@ async function resolveArchidektDeck(url: string): Promise<string[]> {
     throw new Error(msg)
   }
   const cards: { name: string; quantity: number }[] = json.data?.main_deck ?? []
-  return cards.flatMap(c => Array(c.quantity).fill(c.name))
+  return {
+    cards: cards.flatMap(c => Array(c.quantity).fill(c.name)),
+    commander: json.data?.commander ?? undefined,
+  }
 }
 
 export function HumanGameCreator() {
@@ -55,6 +62,8 @@ export function HumanGameCreator() {
     deck1Text: '',
     deck2Text: '',
     format: 'standard',
+    commander1: '',
+    commander2: '',
   })
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({})
   const [serverError, setServerError] = useState<string | null>(null)
@@ -66,6 +75,12 @@ export function HumanGameCreator() {
     if (!form.opponentName.trim()) errors.opponentName = 'Name required'
     if (form.humanName.trim() && form.opponentName.trim() && form.humanName.trim() === form.opponentName.trim()) {
       errors.names = 'Names must be different'
+    }
+    if (form.format === 'commander') {
+      if (!form.commander1.trim() && !isArchidektUrl(form.deck1Text))
+        errors.commander1 = 'Your commander name required'
+      if (!form.commander2.trim() && !isArchidektUrl(form.deck2Text))
+        errors.commander2 = 'Opponent commander name required'
     }
     return errors
   }
@@ -81,18 +96,35 @@ export function HumanGameCreator() {
     try {
       let deck1: string[]
       let deck2: string[]
+      let detectedCommander1: string | undefined
+      let detectedCommander2: string | undefined
       try {
-        deck1 = isArchidektUrl(form.deck1Text) ? await resolveArchidektDeck(form.deck1Text) : parseDeck(form.deck1Text)
+        if (isArchidektUrl(form.deck1Text)) {
+          const r = await resolveArchidektDeck(form.deck1Text)
+          deck1 = r.cards
+          detectedCommander1 = r.commander
+        } else {
+          deck1 = parseDeck(form.deck1Text)
+        }
       } catch (err) {
         setFieldErrors(prev => ({ ...prev, deck1: (err as Error).message }))
         return
       }
       try {
-        deck2 = isArchidektUrl(form.deck2Text) ? await resolveArchidektDeck(form.deck2Text) : parseDeck(form.deck2Text)
+        if (isArchidektUrl(form.deck2Text)) {
+          const r = await resolveArchidektDeck(form.deck2Text)
+          deck2 = r.cards
+          detectedCommander2 = r.commander
+        } else {
+          deck2 = parseDeck(form.deck2Text)
+        }
       } catch (err) {
         setFieldErrors(prev => ({ ...prev, deck2: (err as Error).message }))
         return
       }
+
+      const commander1 = form.commander1.trim() || detectedCommander1 || ''
+      const commander2 = form.commander2.trim() || detectedCommander2 || ''
 
       const body = {
         player1_type: 'human',
@@ -102,6 +134,10 @@ export function HumanGameCreator() {
         player1_deck: deck1,
         player2_deck: deck2,
         format: form.format,
+        ...(form.format === 'commander' && {
+          commander1,
+          commander2,
+        }),
       }
 
       const res = await fetch('/human-game', {
@@ -222,6 +258,28 @@ export function HumanGameCreator() {
               <option value="commander">Commander</option>
             </select>
           </div>
+          {form.format === 'commander' && (
+            <div className="cg-row" style={{ marginTop: '0.75rem' }}>
+              <div className="cg-field">
+                <label>Your Commander</label>
+                <input
+                  value={form.commander1}
+                  onChange={e => { setFieldErrors(p => ({ ...p, commander1: undefined })); setForm(f => ({ ...f, commander1: e.target.value })) }}
+                  placeholder="e.g. Atraxa, Praetors' Voice"
+                />
+                {fieldErrors.commander1 && <span className="cg-field-error">{fieldErrors.commander1}</span>}
+              </div>
+              <div className="cg-field">
+                <label>Opponent Commander</label>
+                <input
+                  value={form.commander2}
+                  onChange={e => { setFieldErrors(p => ({ ...p, commander2: undefined })); setForm(f => ({ ...f, commander2: e.target.value })) }}
+                  placeholder="e.g. Atraxa, Praetors' Voice"
+                />
+                {fieldErrors.commander2 && <span className="cg-field-error">{fieldErrors.commander2}</span>}
+              </div>
+            </div>
+          )}
         </div>
 
         {serverError && <div className="cg-error">{serverError}</div>}

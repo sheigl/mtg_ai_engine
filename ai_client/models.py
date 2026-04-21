@@ -170,6 +170,7 @@ class PlayerConfig:
     personality: "AiPersonalityProfile" = field(
         default_factory=lambda: AiPersonalityProfile.DEFAULT  # type: ignore[attr-defined]
     )
+    enable_thinking: bool | None = None  # None = let model decide; True/False = pass to llama.cpp via extra_body
 
 
 @dataclass

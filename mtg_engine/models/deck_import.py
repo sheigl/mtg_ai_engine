@@ -36,6 +36,7 @@ class DeckPreview(BaseModel):
     errors: list[str] = []
     warnings: list[str] = []
     created_at: str
+    commander: Optional[str] = None
 
     @field_validator("total_cards")
     @classmethod

@@ -169,6 +169,7 @@ async def import_deck(req: DeckImportRequest, request: Request) -> dict:
         errors=errors,
         warnings=warnings,
         created_at=datetime.now(timezone.utc).isoformat(),
+        commander=deck_data.get("commander"),
     )
 
     if not req.dry_run:

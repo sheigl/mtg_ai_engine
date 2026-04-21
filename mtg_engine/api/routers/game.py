@@ -3,9 +3,10 @@ import copy
 import logging
 from typing import Any
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from mtg_engine.api.game_manager import get_manager
+from mtg_engine.persistence.player_defaults import get_merged_player_settings_sync
 from mtg_engine.models.game import GameState, Phase, Step
 from mtg_engine.models.actions import (
     CastRequest, ActivateRequest, PlayLandRequest,
@@ -50,6 +51,8 @@ class GameSummary(BaseModel):
 class CreateGameRequest(BaseModel):
     player1_name: str = "player_1"
     player2_name: str = "player_2"
+    player1_type: str = "ai"
+    player2_type: str = "ai"
     deck1: list[str]   # card names
     deck2: list[str]
     seed: int | None = None
@@ -58,6 +61,26 @@ class CreateGameRequest(BaseModel):
     format: str = "standard"
     commander1: str | None = None
     commander2: str | None = None
+    ai_model: str = ""
+    ai_base_url: str = ""
+    ai_enable_thinking: bool | None = None
+    observer_model: str | None = None
+    observer_url: str | None = None
+    observer_enabled: bool = True
+    max_turns: int = 200
+
+    @model_validator(mode="after")
+    def _validate(self) -> "CreateGameRequest":
+        if self.player1_type == "llm":
+            self.player1_type = "ai"
+        if self.player2_type == "llm":
+            self.player2_type = "ai"
+        valid = {"human", "ai", "heuristic"}
+        if self.player1_type not in valid:
+            raise ValueError(f"player1_type must be one of {valid}")
+        if self.player2_type not in valid:
+            raise ValueError(f"player2_type must be one of {valid}")
+        return self
 
 
 class VerboseToggleRequest(BaseModel):
@@ -228,6 +251,42 @@ def create_game(req: CreateGameRequest) -> dict:
     """POST /game — create a new game. REQ-G01"""
     mgr = get_manager()
 
+    # Feature 028: Fetch and merge player defaults (Feature 028)
+    final_player1_type = req.player1_type
+    final_player2_type = req.player2_type
+    try:
+        p1_request_values: dict[str, Any] = {}
+        p2_request_values: dict[str, Any] = {}
+        if req.player1_type in ("ai", "heuristic"):
+            p1_request_values = {
+                "base_url": req.ai_base_url or "",
+                "model": req.ai_model or "",
+                "enable_thinking": req.ai_enable_thinking,
+            }
+        if req.player2_type in ("ai", "heuristic"):
+            p2_request_values = {
+                "base_url": req.ai_base_url or "",
+                "model": req.ai_model or "",
+                "enable_thinking": req.ai_enable_thinking,
+            }
+        merged_p1 = get_merged_player_settings_sync(req.player1_type, p1_request_values if p1_request_values else None)
+        merged_p2 = get_merged_player_settings_sync(req.player2_type, p2_request_values if p2_request_values else None)
+        if p1_request_values:
+            req.ai_base_url = merged_p1.get("base_url", req.ai_base_url) or ""
+            req.ai_model = merged_p1.get("model", req.ai_model) or ""
+            if req.ai_enable_thinking is None:
+                req.ai_enable_thinking = merged_p1.get("enable_thinking")
+        if p2_request_values:
+            if not p1_request_values:
+                req.ai_base_url = merged_p2.get("base_url", req.ai_base_url) or ""
+                req.ai_model = merged_p2.get("model", req.ai_model) or ""
+                if req.ai_enable_thinking is None:
+                    req.ai_enable_thinking = merged_p2.get("enable_thinking")
+            final_player1_type = merged_p1.get("player_type", req.player1_type) if "player_type" in merged_p1 else req.player1_type
+            final_player2_type = merged_p2.get("player_type", req.player2_type) if "player_type" in merged_p2 else req.player2_type
+    except Exception:
+        pass
+
     if req.format == "commander":
         if not req.commander1 or not req.commander2:
             raise _err("Commander format requires commander1 and commander2", "INVALID_COMMANDER")
@@ -299,6 +358,8 @@ def create_game(req: CreateGameRequest) -> dict:
             format="commander",
             commander1_card=commander1_card,
             commander2_card=commander2_card,
+            player1_type=final_player1_type,
+            player2_type=final_player2_type,
         )
     else:
         try:
@@ -312,6 +373,8 @@ def create_game(req: CreateGameRequest) -> dict:
             seed=req.seed,
             verbose=req.verbose,
             debug=req.debug,
+            player1_type=final_player1_type,
+            player2_type=final_player2_type,
         )
     # US16 T148: Wire zone-change triggers for death/ETB detection (CR 603.2)
     from mtg_engine.engine.triggers import initialize_triggers

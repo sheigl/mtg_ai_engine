@@ -74,6 +74,17 @@ class TranscriptRecorder:
             turn, phase, step,
         )
 
+    def record_phase_skipped(
+        self, turn: int, phase: str, step: str, active_player: str = "", reason: str = "no_actions_available"
+    ) -> None:
+        """Feature 029: Record a phase that was skipped because no player had non-pass actions."""
+        self._entry(
+            "phase_skipped",
+            f"Turn {turn}: {phase} — {step} skipped ({reason})",
+            {"turn": turn, "phase": phase, "step": step, "active_player": active_player, "reason": reason},
+            turn, phase, step,
+        )
+
     def record_priority_grant(self, player: str, turn: int, phase: str, step: str) -> None:
         self._entry(
             "priority_grant",

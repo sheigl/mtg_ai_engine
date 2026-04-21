@@ -23,6 +23,7 @@ interface Props {
 
 export function PromptResponseBlock({ entry, allSources, gameId }: Props) {
   const [collapsed, setCollapsed] = useState(false)
+  const [promptCollapsed, setPromptCollapsed] = useState(true)
   const responseRef = useRef<HTMLDivElement>(null)
   const borderColor = getSourceColor(entry.source, allSources)
 
@@ -87,8 +88,16 @@ export function PromptResponseBlock({ entry, allSources, gameId }: Props) {
       {/* Body */}
       {!collapsed && (
         <div className="debug-block-body">
-          <div className="debug-block-section-label">Prompt</div>
-          <pre className="debug-block-pre debug-block-prompt">{entry.prompt}</pre>
+          <div
+            className="debug-block-section-label"
+            style={{ cursor: 'pointer', userSelect: 'none' }}
+            onClick={() => setPromptCollapsed(c => !c)}
+          >
+            {promptCollapsed ? '▶' : '▼'} Prompt
+          </div>
+          {!promptCollapsed && (
+            <pre className="debug-block-pre debug-block-prompt">{entry.prompt}</pre>
+          )}
 
           <div className="debug-block-section-label">Response</div>
           <div

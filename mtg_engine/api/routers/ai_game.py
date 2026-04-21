@@ -14,6 +14,7 @@ from pydantic import BaseModel, field_validator, model_validator
 
 from mtg_engine.api.game_manager import get_manager
 from mtg_engine.card_data.deck_loader import load_deck, load_commander_deck
+from mtg_engine.persistence.player_defaults import get_merged_player_settings_sync
 from ai_client.prompts import DEFAULT_DECK, DEFAULT_COMMANDER_DECK
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,7 @@ class AIPlayerConfig(BaseModel):
     player_type: str = "heuristic"  # "llm" | "heuristic"
     base_url: str = ""
     model: str = ""
+    enable_thinking: bool | None = None
 
     @field_validator("player_type")
     @classmethod
@@ -143,6 +145,30 @@ def create_ai_game(req: AIGameRequest, request: Request) -> dict:
     )
     game_id = gs.game_id
 
+    # Fetch and merge AI player defaults with request values (Feature 028)
+    def _resolve_ai_player(cfg: AIPlayerConfig) -> tuple[str, str, bool | None]:
+        ptype = "llm" if cfg.player_type == "llm" else "heuristic"
+        if ptype == "heuristic":
+            return cfg.base_url, cfg.model, cfg.enable_thinking
+        # For LLM players, merge with defaults
+        request_values = {
+            "base_url": cfg.base_url or "",
+            "model": cfg.model or "",
+            "enable_thinking": cfg.enable_thinking,
+        }
+        try:
+            merged = get_merged_player_settings_sync(ptype, request_values)
+            return (
+                merged.get("base_url", cfg.base_url) or "",
+                merged.get("model", cfg.model) or "",
+                cfg.enable_thinking if cfg.enable_thinking is not None else merged.get("enable_thinking"),
+            )
+        except Exception:
+            return cfg.base_url, cfg.model, cfg.enable_thinking
+
+    final_p1_url, final_p1_model, final_p1_thinking = _resolve_ai_player(req.player1)
+    final_p2_url, final_p2_model, final_p2_thinking = _resolve_ai_player(req.player2)
+
     # Derive the engine URL from the incoming request so the daemon thread
     # connects to the correct server (avoids hardcoded localhost:8000).
     engine_url = str(request.base_url).rstrip("/")
@@ -150,7 +176,8 @@ def create_ai_game(req: AIGameRequest, request: Request) -> dict:
     # Start AI loop in a daemon thread so we return immediately
     thread = threading.Thread(
         target=_run_ai_loop,
-        args=(req, game_id, engine_url),
+        args=(req, game_id, engine_url, final_p1_url, final_p1_model, final_p1_thinking,
+              final_p2_url, final_p2_model, final_p2_thinking),
         daemon=False,
         name=f"ai-game-{game_id[:8]}",
     )
@@ -160,7 +187,17 @@ def create_ai_game(req: AIGameRequest, request: Request) -> dict:
     return {"data": {"game_id": game_id}}
 
 
-def _run_ai_loop(req: AIGameRequest, game_id: str, engine_url: str) -> None:
+def _run_ai_loop(
+    req: AIGameRequest,
+    game_id: str,
+    engine_url: str,
+    merged_p1_url: str = "",
+    merged_p1_model: str = "",
+    merged_p1_thinking: bool | None = None,
+    merged_p2_url: str = "",
+    merged_p2_model: str = "",
+    merged_p2_thinking: bool | None = None,
+) -> None:
     """
     Build the GameLoop from the request and run it.
     Runs in a daemon thread; exceptions are logged but do not crash the server.
@@ -185,17 +222,21 @@ def _run_ai_loop(req: AIGameRequest, game_id: str, engine_url: str) -> None:
         from ai_client.observer import ObserverAI
         from ai_client.prompts import DEFAULT_DECK, DEFAULT_COMMANDER_DECK
 
-        # Build PlayerConfig objects
-        def _make_pc(cfg: AIPlayerConfig) -> PlayerConfig:
-            return PlayerConfig(
-                name=cfg.name,
-                base_url=cfg.base_url,
-                model=cfg.model,
-                player_type=cfg.player_type,
-            )
-
-        pc1 = _make_pc(req.player1)
-        pc2 = _make_pc(req.player2)
+        # Build PlayerConfig objects — use merged values from defaults (Feature 028)
+        pc1 = PlayerConfig(
+            name=req.player1.name,
+            base_url=merged_p1_url,
+            model=merged_p1_model,
+            player_type=req.player1.player_type,
+            enable_thinking=merged_p1_thinking,
+        )
+        pc2 = PlayerConfig(
+            name=req.player2.name,
+            base_url=merged_p2_url,
+            model=merged_p2_model,
+            player_type=req.player2.player_type,
+            enable_thinking=merged_p2_thinking,
+        )
 
         # Build GameConfig (decks already loaded; pass card names back for config)
         game_config = GameConfig(
@@ -222,14 +263,26 @@ def _run_ai_loop(req: AIGameRequest, game_id: str, engine_url: str) -> None:
         observer: ObserverAI | None = None
         obs_url = req.observer_url
         obs_model = req.observer_model
+        obs_thinking: bool | None = None
         if req.debug and not obs_url:
             # Default to first LLM player's endpoint
             llm = next((p for p in [req.player1, req.player2] if p.player_type == "llm"), None)
             if llm:
                 obs_url = llm.base_url
                 obs_model = llm.model
+                obs_thinking = llm.enable_thinking
+        elif obs_url:
+            # Observer URL explicitly set — inherit thinking from whichever LLM player
+            # shares the same endpoint, otherwise leave as model default
+            llm = next(
+                (p for p in [req.player1, req.player2]
+                 if p.player_type == "llm" and p.base_url == obs_url),
+                None,
+            )
+            if llm:
+                obs_thinking = llm.enable_thinking
         if obs_url and obs_model:
-            observer = ObserverAI(obs_url, obs_model)
+            observer = ObserverAI(obs_url, obs_model, enable_thinking=obs_thinking)
 
         # The engine self-address for EngineClient (loop uses HTTP to submit actions)
         with EngineClient(engine_url) as engine:
