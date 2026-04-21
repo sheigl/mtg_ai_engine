@@ -111,7 +111,12 @@
       "Bash(python3 -c \"import motor; print\\(motor.__version__\\)\")",
       "Bash(uvicorn --version)",
       "Bash(/home/sheigl/code/mtg_ai_engine/.venv/bin/python -c \"from motor.motor_asyncio import AsyncIOMotorClient; print\\('motor works'\\)\")",
-      "Bash(.specify/scripts/bash/create-new-feature.sh \"Redesign the MongoDB persistence layer so that all game data is properly linked for AI model training purposes.\" --json --short-name \"training-data-schema\")"
+      "Bash(.specify/scripts/bash/create-new-feature.sh \"Redesign the MongoDB persistence layer so that all game data is properly linked for AI model training purposes.\" --json --short-name \"training-data-schema\")",
+      "Bash(python3 *)",
+      "WebSearch",
+      "Bash(grep -E \"\\\\.\\(py|tsx|ts\\)$\")",
+      "Bash(curl *)",
+      "Bash(journalctl --user -n 100)"
     ]
   }
 }

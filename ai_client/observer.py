@@ -32,8 +32,9 @@ class ObserverAI:
     Runs in the AI client process (not the engine) so the engine stays LLM-free.
     """
 
-    def __init__(self, base_url: str, model: str) -> None:
+    def __init__(self, base_url: str, model: str, enable_thinking: bool | None = None) -> None:
         self._model = model
+        self._enable_thinking = enable_thinking
         self._client = openai.OpenAI(base_url=base_url, api_key="ollama")
 
     def analyze(
@@ -72,14 +73,18 @@ class ObserverAI:
             {"role": "user", "content": prompt},
         ]
 
+        extra: dict = {}
+        if self._enable_thinking is not None:
+            extra["enable_thinking"] = self._enable_thinking
         try:
             if content_callback is not None or thinking_callback is not None:
-                return self._analyze_streaming(messages, content_callback, thinking_callback, stop_check)
+                return self._analyze_streaming(messages, content_callback, thinking_callback, stop_check, extra)
             response = self._client.chat.completions.create(
                 model=self._model,
                 messages=messages,
                 temperature=0.2,
                 timeout=15.0,
+                **({"extra_body": extra} if extra else {}),
             )
             content = response.choices[0].message.content or ""
             return self._parse(content)
@@ -97,6 +102,7 @@ class ObserverAI:
         content_callback: Callable[[str], None] | None,
         thinking_callback: Callable[[str], None] | None,
         stop_check: Callable[[], bool] | None,
+        extra: dict | None = None,
     ) -> dict:
         """
         Stream the LLM response. Calls content_callback for response tokens and
@@ -112,6 +118,7 @@ class ObserverAI:
                 temperature=0.2,
                 timeout=60.0,
                 stream=True,
+                **({"extra_body": extra} if extra else {}),
             ) as stream:
                 for chunk in stream:
                     if stop_check and stop_check():

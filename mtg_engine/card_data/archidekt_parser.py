@@ -21,6 +21,14 @@ _BASIC_LANDS = {"Plains", "Island", "Swamp", "Mountain", "Forest",
                 "Wastes", "Snow-Covered Plains", "Snow-Covered Island",
                 "Snow-Covered Swamp", "Snow-Covered Mountain", "Snow-Covered Forest"}
 
+# Archidekt categories that are organizational/non-deck markers.
+# A card is excluded from main (or placed in sideboard) only when ALL of its
+# categories fall within this set — meaning it has no functional deck category.
+# Cards with even one functional category alongside these tags stay in main,
+# because deck owners often use "Maybeboard" as a "consider cutting" note on
+# cards that are still in the deck.
+_NON_DECK_CATEGORIES = {"Maybeboard", "Sideboard", "Considering", "Acquireboard"}
+
 # Archidekt deck URLs look like: https://archidekt.com/decks/12345/deck-name
 _ARCHIDEKT_URL_RE = re.compile(r"archidekt\.com/decks/(\d+)", re.IGNORECASE)
 
@@ -36,7 +44,7 @@ def parse_archidekt_json(url: str) -> dict:
     """
     Fetch an Archidekt deck by URL and parse its JSON API response.
 
-    Returns {"main": [(name, qty), ...], "sideboard": [(name, qty), ...]}
+    Returns {"main": [(name, qty), ...], "sideboard": [(name, qty), ...], "commander": str | None}
     """
     deck_id = _extract_archidekt_id(url)
     api_url = f"https://archidekt.com/api/decks/{deck_id}/"
@@ -46,8 +54,9 @@ def parse_archidekt_json(url: str) -> dict:
         resp.raise_for_status()
         data = resp.json()
 
-    main: list[tuple[str, int]] = []
+    main_with_cats: list[tuple[str, int, set]] = []
     sideboard: list[tuple[str, int]] = []
+    commander: str | None = None
 
     for card_entry in data.get("cards", []):
         qty = card_entry.get("quantity", 1)
@@ -60,13 +69,33 @@ def parse_archidekt_json(url: str) -> dict:
             continue
 
         categories = card_entry.get("categories", [])
-        if "Sideboard" in categories:
-            sideboard.append((name, qty))
-        else:
-            main.append((name, qty))
+        cat_set = set(categories)
 
+        if "Commander" in cat_set and commander is None:
+            commander = name
+
+        all_non_deck = bool(cat_set) and cat_set.issubset(_NON_DECK_CATEGORIES)
+        if all_non_deck and "Sideboard" in cat_set:
+            sideboard.append((name, qty))
+        elif not all_non_deck:
+            main_with_cats.append((name, qty, cat_set))
+        # else: purely Maybeboard/Considering/Acquireboard with no functional tag → excluded
+
+    # If main exceeds 100 cards the deck owner likely tagged swap/alternate cards with
+    # Sideboard or Maybeboard alongside functional labels. Trim progressively to 100.
+    total = sum(q for _, q, _ in main_with_cats)
+    if total > 100:
+        sb_extras = [(n, q) for n, q, c in main_with_cats if "Sideboard" in c]
+        if sb_extras:
+            sideboard.extend(sb_extras)
+            main_with_cats = [(n, q, c) for n, q, c in main_with_cats if "Sideboard" not in c]
+            total = sum(q for _, q, _ in main_with_cats)
+    if total > 100:
+        main_with_cats = [(n, q, c) for n, q, c in main_with_cats if "Maybeboard" not in c]
+
+    main = [(n, q) for n, q, _ in main_with_cats]
     _validate_parsed(main, sideboard)
-    return {"main": main, "sideboard": sideboard}
+    return {"main": main, "sideboard": sideboard, "commander": commander}
 
 
 def parse_archidekt_text(content: str) -> dict:

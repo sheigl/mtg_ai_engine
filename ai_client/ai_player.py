@@ -63,6 +63,9 @@ class AIPlayer:
         return self._decide_normal(prompt)
 
     def _decide_normal(self, prompt: str) -> tuple[int, str]:
+        extra: dict = {}
+        if self._config.enable_thinking is not None:
+            extra["enable_thinking"] = self._config.enable_thinking
         for attempt in range(1, 3):
             try:
                 response = self._client.chat.completions.create(
@@ -72,6 +75,7 @@ class AIPlayer:
                         {"role": "user", "content": prompt},
                     ],
                     temperature=0.3,
+                    **({"extra_body": extra} if extra else {}),
                 )
                 content = response.choices[0].message.content or ""
                 return self._parse_response(content)
@@ -95,6 +99,10 @@ class AIPlayer:
         cb = self._debug_callback
         assert cb is not None  # guarded by caller
 
+        extra: dict = {}
+        if self._config.enable_thinking is not None:
+            extra["enable_thinking"] = self._config.enable_thinking
+
         # Signal that prompt is being sent (entry_id assigned by caller via forwarder)
         cb("prompt_start", prompt, "")
 
@@ -108,6 +116,7 @@ class AIPlayer:
                     ],
                     temperature=0.3,
                     stream=True,
+                    **({"extra_body": extra} if extra else {}),
                 )
                 accumulated = ""
                 for chunk in stream:

@@ -22,15 +22,23 @@ class HumanGameRequest(BaseModel):
     format: str = "standard"
     ai_model: str = ""
     ai_base_url: str = ""
+    ai_enable_thinking: bool | None = None
     observer_model: str | None = None
     observer_url: str | None = None
     observer_enabled: bool = True
     verbose: bool = False
     max_turns: int = 200
     debug: bool = False
+    commander1: str | None = None
+    commander2: str | None = None
 
     @model_validator(mode="after")
     def _validate(self) -> "HumanGameRequest":
+        # Normalize "llm" → "ai" so both the AI game form and this endpoint agree
+        if self.player1_type == "llm":
+            self.player1_type = "ai"
+        if self.player2_type == "llm":
+            self.player2_type = "ai"
         valid = {"human", "ai", "heuristic"}
         if self.player1_type not in valid:
             raise ValueError(f"player1_type must be one of {valid}")
@@ -55,17 +63,40 @@ class HumanGameResponse(BaseModel):
 def create_human_game(req: HumanGameRequest, request: Request) -> dict:
     """Create a game with a human seat and start the AI loop in a daemon thread."""
     from mtg_engine.api.game_manager import get_manager
-    from mtg_engine.card_data.deck_loader import load_deck
-    from ai_client.prompts import DEFAULT_DECK
+    from mtg_engine.card_data.deck_loader import load_deck, load_commander_deck
+    from ai_client.prompts import DEFAULT_DECK, DEFAULT_COMMANDER_DECK
 
     mgr = get_manager()
 
     # Load decks
     try:
-        d1 = req.player1_deck if req.player1_deck else list(DEFAULT_DECK)
-        d2 = req.player2_deck if req.player2_deck else list(DEFAULT_DECK)
-        deck1_cards = load_deck(d1)
-        deck2_cards = load_deck(d2)
+        if req.format == "commander":
+            fallback = list(DEFAULT_COMMANDER_DECK)
+            d1 = req.player1_deck if req.player1_deck else fallback
+            d2 = req.player2_deck if req.player2_deck else fallback
+        else:
+            d1 = req.player1_deck if req.player1_deck else list(DEFAULT_DECK)
+            d2 = req.player2_deck if req.player2_deck else list(DEFAULT_DECK)
+
+        if req.format == "commander":
+            if not req.commander1 or not req.commander2:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"error": "Commander format requires commander1 and commander2", "error_code": "MISSING_COMMANDER"},
+                )
+            if req.commander1 not in d1:
+                d1 = d1 + [req.commander1]
+            if req.commander2 not in d2:
+                d2 = d2 + [req.commander2]
+            deck1_cards, commander1_card = load_commander_deck(d1, req.commander1)
+            deck2_cards, commander2_card = load_commander_deck(d2, req.commander2)
+        else:
+            deck1_cards = load_deck(d1)
+            deck2_cards = load_deck(d2)
+            commander1_card = None
+            commander2_card = None
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=422, detail={"error": str(exc), "error_code": "DECK_LOAD_ERROR"})
 
@@ -83,6 +114,8 @@ def create_human_game(req: HumanGameRequest, request: Request) -> dict:
         format=req.format,
         player1_type=_persist_type(req.player1_type),
         player2_type=_persist_type(req.player2_type),
+        commander1_card=commander1_card,
+        commander2_card=commander2_card,
     )
     game_id = gs.game_id
 
@@ -141,6 +174,7 @@ def _run_hybrid_loop(
             base_url=req.ai_base_url,
             model=req.ai_model,
             player_type="heuristic" if ai_player_type == "heuristic" else "llm",
+            enable_thinking=req.ai_enable_thinking,
         )
 
         # Human seat uses a dummy PlayerConfig — the loop skips it
@@ -173,7 +207,7 @@ def _run_hybrid_loop(
 
         observer = None
         if req.observer_enabled and req.observer_url and req.observer_model:
-            observer = ObserverAI(req.observer_url, req.observer_model)
+            observer = ObserverAI(req.observer_url, req.observer_model, enable_thinking=req.ai_enable_thinking)
 
         with EngineClient(engine_url) as engine:
             loop = HybridGameLoop(

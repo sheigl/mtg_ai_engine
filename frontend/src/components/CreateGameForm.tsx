@@ -9,6 +9,7 @@ interface PlayerFormState {
   playerType: 'llm' | 'heuristic' | 'human'
   baseUrl: string
   model: string
+  enableThinking: 'auto' | 'on' | 'off'
 }
 
 interface FormState {
@@ -53,6 +54,7 @@ const defaultPlayer = (name: string): PlayerFormState => ({
   playerType: 'heuristic',
   baseUrl: 'http://localhost:8080/v1',
   model: '',
+  enableThinking: 'auto',
 })
 
 const defaultForm = (): FormState => ({
@@ -81,7 +83,7 @@ function isArchidektUrl(raw: string): boolean {
   return t.startsWith('https://archidekt.com') || t.startsWith('http://archidekt.com')
 }
 
-async function resolveArchidektDeck(url: string): Promise<string[]> {
+async function resolveArchidektDeck(url: string): Promise<{ cards: string[]; commander?: string }> {
   const res = await fetch('/deck/import', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -94,7 +96,10 @@ async function resolveArchidektDeck(url: string): Promise<string[]> {
     throw new Error(msg)
   }
   const cards: { name: string; quantity: number }[] = json.data?.main_deck ?? []
-  return cards.flatMap(c => Array(c.quantity).fill(c.name))
+  return {
+    cards: cards.flatMap(c => Array(c.quantity).fill(c.name)),
+    commander: json.data?.commander ?? undefined,
+  }
 }
 
 function validateForm(form: FormState): FieldErrors {
@@ -129,8 +134,10 @@ function validateForm(form: FormState): FieldErrors {
   }
 
   if (form.format === 'commander') {
-    if (!form.commander1.trim()) errors.commander1 = 'Commander name required'
-    if (!form.commander2.trim()) errors.commander2 = 'Commander name required'
+    if (!form.commander1.trim() && !isArchidektUrl(form.deck1Text))
+      errors.commander1 = 'Commander name required'
+    if (!form.commander2.trim() && !isArchidektUrl(form.deck2Text))
+      errors.commander2 = 'Commander name required'
   }
 
   if (form.debug && form.observerUrl.trim() && !form.observerModel.trim()) {
@@ -142,6 +149,12 @@ function validateForm(form: FormState): FieldErrors {
 
 function hasErrors(errors: FieldErrors): boolean {
   return Object.keys(errors).length > 0
+}
+
+function thinkingValue(v: 'auto' | 'on' | 'off'): boolean | null {
+  if (v === 'on') return true
+  if (v === 'off') return false
+  return null
 }
 
 // ── Sub-component: player config card ────────────────────────────────────────
@@ -185,26 +198,41 @@ function PlayerCard({
         </div>
       </div>
       {state.playerType === 'llm' && (
-        <div className="cg-row">
-          <div className="cg-field">
-            <label>LLM Endpoint URL</label>
-            <input
-              value={state.baseUrl}
-              onChange={e => onChange({ baseUrl: e.target.value })}
-              placeholder="http://localhost:8080/v1"
-            />
-            {errors.url && <span className="cg-field-error">{errors.url}</span>}
+        <>
+          <div className="cg-row">
+            <div className="cg-field">
+              <label>LLM Endpoint URL</label>
+              <input
+                value={state.baseUrl}
+                onChange={e => onChange({ baseUrl: e.target.value })}
+                placeholder="http://localhost:8080/v1"
+              />
+              {errors.url && <span className="cg-field-error">{errors.url}</span>}
+            </div>
+            <div className="cg-field">
+              <label>Model</label>
+              <input
+                value={state.model}
+                onChange={e => onChange({ model: e.target.value })}
+                placeholder="devstral"
+              />
+              {errors.model && <span className="cg-field-error">{errors.model}</span>}
+            </div>
           </div>
-          <div className="cg-field">
-            <label>Model</label>
-            <input
-              value={state.model}
-              onChange={e => onChange({ model: e.target.value })}
-              placeholder="devstral"
-            />
-            {errors.model && <span className="cg-field-error">{errors.model}</span>}
+          <div className="cg-row" style={{ marginTop: '0.5rem' }}>
+            <div className="cg-field cg-field--shrink">
+              <label>Thinking</label>
+              <select
+                value={state.enableThinking}
+                onChange={e => onChange({ enableThinking: e.target.value as PlayerFormState['enableThinking'] })}
+              >
+                <option value="auto">Auto (model default)</option>
+                <option value="on">Enabled</option>
+                <option value="off">Disabled</option>
+              </select>
+            </div>
           </div>
-        </div>
+        </>
       )}
     </div>
   )
@@ -245,22 +273,35 @@ export function CreateGameForm({ onClose }: Props) {
     try {
       let deck1: string[]
       let deck2: string[]
+      let detectedCommander1: string | undefined
+      let detectedCommander2: string | undefined
       try {
-        deck1 = isArchidektUrl(form.deck1Text)
-          ? await resolveArchidektDeck(form.deck1Text)
-          : parseDeck(form.deck1Text)
+        if (isArchidektUrl(form.deck1Text)) {
+          const r = await resolveArchidektDeck(form.deck1Text)
+          deck1 = r.cards
+          detectedCommander1 = r.commander
+        } else {
+          deck1 = parseDeck(form.deck1Text)
+        }
       } catch (err) {
         setFieldErrors(prev => ({ ...prev, deck1: (err as Error).message }))
         return
       }
       try {
-        deck2 = isArchidektUrl(form.deck2Text)
-          ? await resolveArchidektDeck(form.deck2Text)
-          : parseDeck(form.deck2Text)
+        if (isArchidektUrl(form.deck2Text)) {
+          const r = await resolveArchidektDeck(form.deck2Text)
+          deck2 = r.cards
+          detectedCommander2 = r.commander
+        } else {
+          deck2 = parseDeck(form.deck2Text)
+        }
       } catch (err) {
         setFieldErrors(prev => ({ ...prev, deck2: (err as Error).message }))
         return
       }
+
+      const resolvedCommander1 = form.commander1.trim() || detectedCommander1 || ''
+      const resolvedCommander2 = form.commander2.trim() || detectedCommander2 || ''
 
       if (hasHumanPlayer) {
         // Route to /human-game
@@ -273,8 +314,13 @@ export function CreateGameForm({ onClose }: Props) {
           player1_deck: deck1,
           player2_deck: deck2,
           format: form.format,
+          ...(form.format === 'commander' && {
+            commander1: resolvedCommander1,
+            commander2: resolvedCommander2,
+          }),
           ai_model: aiPlayer.model.trim(),
           ai_base_url: aiPlayer.baseUrl.trim(),
+          ai_enable_thinking: thinkingValue(aiPlayer.enableThinking),
           observer_enabled: form.debug,
           observer_url: form.debug ? (form.observerUrl.trim() || null) : null,
           observer_model: form.debug ? (form.observerModel.trim() || null) : null,
@@ -309,18 +355,20 @@ export function CreateGameForm({ onClose }: Props) {
             player_type: form.player1.playerType,
             base_url: form.player1.baseUrl.trim(),
             model: form.player1.model.trim(),
+            enable_thinking: thinkingValue(form.player1.enableThinking),
           },
           player2: {
             name: form.player2.name.trim(),
             player_type: form.player2.playerType,
             base_url: form.player2.baseUrl.trim(),
             model: form.player2.model.trim(),
+            enable_thinking: thinkingValue(form.player2.enableThinking),
           },
           deck1,
           deck2,
           format: form.format,
-          commander1: form.format === 'commander' ? form.commander1.trim() : null,
-          commander2: form.format === 'commander' ? form.commander2.trim() : null,
+          commander1: form.format === 'commander' ? resolvedCommander1 : null,
+          commander2: form.format === 'commander' ? resolvedCommander2 : null,
           verbose: form.verbose,
           max_turns: parseInt(form.maxTurns, 10) || 200,
           debug: form.debug,

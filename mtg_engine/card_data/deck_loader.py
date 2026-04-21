@@ -13,6 +13,7 @@ def load_deck(card_names: list[str], db_path: str | None = None) -> list[Card]:
     """
     kwargs = {"db_path": db_path} if db_path else {}
     client = ScryfallClient(**kwargs)
+    client.preload(card_names)
     cards: list[Card] = []
 
     for name in card_names:
@@ -47,6 +48,7 @@ def load_commander_deck(
     """
     kwargs = {"db_path": db_path} if db_path else {}
     client = ScryfallClient(**kwargs)
+    client.preload(card_names)
 
     cards: list[Card] = []
     for name in card_names:

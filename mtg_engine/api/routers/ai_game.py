@@ -27,6 +27,7 @@ class AIPlayerConfig(BaseModel):
     player_type: str = "heuristic"  # "llm" | "heuristic"
     base_url: str = ""
     model: str = ""
+    enable_thinking: bool | None = None
 
     @field_validator("player_type")
     @classmethod
@@ -192,6 +193,7 @@ def _run_ai_loop(req: AIGameRequest, game_id: str, engine_url: str) -> None:
                 base_url=cfg.base_url,
                 model=cfg.model,
                 player_type=cfg.player_type,
+                enable_thinking=cfg.enable_thinking,
             )
 
         pc1 = _make_pc(req.player1)
@@ -222,14 +224,26 @@ def _run_ai_loop(req: AIGameRequest, game_id: str, engine_url: str) -> None:
         observer: ObserverAI | None = None
         obs_url = req.observer_url
         obs_model = req.observer_model
+        obs_thinking: bool | None = None
         if req.debug and not obs_url:
             # Default to first LLM player's endpoint
             llm = next((p for p in [req.player1, req.player2] if p.player_type == "llm"), None)
             if llm:
                 obs_url = llm.base_url
                 obs_model = llm.model
+                obs_thinking = llm.enable_thinking
+        elif obs_url:
+            # Observer URL explicitly set — inherit thinking from whichever LLM player
+            # shares the same endpoint, otherwise leave as model default
+            llm = next(
+                (p for p in [req.player1, req.player2]
+                 if p.player_type == "llm" and p.base_url == obs_url),
+                None,
+            )
+            if llm:
+                obs_thinking = llm.enable_thinking
         if obs_url and obs_model:
-            observer = ObserverAI(obs_url, obs_model)
+            observer = ObserverAI(obs_url, obs_model, enable_thinking=obs_thinking)
 
         # The engine self-address for EngineClient (loop uses HTTP to submit actions)
         with EngineClient(engine_url) as engine:
