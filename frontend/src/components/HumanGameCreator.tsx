@@ -165,28 +165,43 @@ export function HumanGameCreator() {
   }
 
   return (
-    <div style={{ maxWidth: 640, margin: '0 auto', padding: '2rem 1rem' }}>
-      <div style={{ marginBottom: '1.5rem' }}>
-        <button
-          onClick={() => navigate('/')}
-          style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '0.85rem', padding: 0 }}
-        >
-          ← Back
-        </button>
-        <h1 style={{ margin: '0.5rem 0 0.25rem', fontSize: '1.5rem' }}>Play vs AI</h1>
-        <p style={{ color: 'var(--text-secondary)', margin: 0, fontSize: '0.85rem' }}>
+    <div style={{ maxWidth: 640, margin: '0 auto', padding: 'var(--space-6) var(--space-4)' }}>
+      <button
+        className="btn btn--ghost btn--sm"
+        onClick={() => navigate('/')}
+        style={{ marginBottom: 'var(--space-4)' }}
+      >
+        ← Back to Games
+      </button>
+
+      <div style={{
+        background: 'linear-gradient(135deg, var(--surface-elevated) 0%, var(--surface-hover) 100%)',
+        borderRadius: 'var(--radius-xl)',
+        border: '1px solid var(--border-subtle)',
+        padding: 'var(--space-6)',
+        marginBottom: 'var(--space-6)',
+      }}>
+        <h1 style={{
+          fontSize: 'var(--text-2xl)',
+          fontWeight: 800,
+          marginBottom: 'var(--space-2)',
+          letterSpacing: '-0.02em',
+        }}>
+          Play vs AI
+        </h1>
+        <p style={{ color: 'var(--text-secondary)', margin: 0, fontSize: 'var(--text-sm)' }}>
           Play MTG as a human against a bot opponent
         </p>
       </div>
 
-      <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-        {/* Opponent type */}
-        <div className="cg-player-card">
-          <div className="cg-player-title">Opponent</div>
-          <div className="cg-row">
-            <div className="cg-field cg-field--shrink">
-              <label>Opponent type</label>
+      <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-4)' }}>
+        <div className="form-card">
+          <div className="form-card-title">Opponent</div>
+          <div className="form-row">
+            <div className="form-field form-field--shrink">
+              <label className="label">Opponent type</label>
               <select
+                className="select"
                 value={form.opponentType}
                 onChange={e => setForm(f => ({ ...f, opponentType: e.target.value as PlayerType }))}
               >
@@ -194,63 +209,65 @@ export function HumanGameCreator() {
                 <option value="ai">AI (requires LLM endpoint)</option>
               </select>
             </div>
-            <div className="cg-field">
-              <label>Opponent name</label>
+            <div className="form-field">
+              <label className="label">Opponent name</label>
               <input
+                className="input"
                 value={form.opponentName}
                 onChange={e => setForm(f => ({ ...f, opponentName: e.target.value }))}
                 placeholder="Bot"
               />
-              {fieldErrors.opponentName && <span className="cg-field-error">{fieldErrors.opponentName}</span>}
+              {fieldErrors.opponentName && <span className="form-error">{fieldErrors.opponentName}</span>}
             </div>
           </div>
         </div>
 
-        {/* Human player */}
-        <div className="cg-player-card">
-          <div className="cg-player-title">You</div>
-          <div className="cg-field">
-            <label>Your name</label>
+        <div className="form-card">
+          <div className="form-card-title">You</div>
+          <div className="form-field">
+            <label className="label">Your name</label>
             <input
+              className="input"
               value={form.humanName}
               onChange={e => setForm(f => ({ ...f, humanName: e.target.value }))}
               placeholder="You"
             />
-            {fieldErrors.humanName && <span className="cg-field-error">{fieldErrors.humanName}</span>}
-            {fieldErrors.names && <span className="cg-field-error">{fieldErrors.names}</span>}
+            {fieldErrors.humanName && <span className="form-error">{fieldErrors.humanName}</span>}
+            {fieldErrors.names && <span className="form-error">{fieldErrors.names}</span>}
           </div>
         </div>
 
-        {/* Decks */}
-        <div className="cg-player-card">
-          <div className="cg-player-title">Decks (optional — leave blank for default)</div>
-          <div className="cg-row">
-            <div className="cg-field">
-              <label>Your deck</label>
+        <div className="form-card">
+          <div className="form-card-title">Decks (optional — leave blank for default)</div>
+          <div className="form-row">
+            <div className="form-field">
+              <label className="label">Your deck</label>
               <textarea
+                className="textarea"
                 value={form.deck1Text}
                 onChange={e => { setFieldErrors(p => ({ ...p, deck1: undefined })); setForm(f => ({ ...f, deck1Text: e.target.value })) }}
                 placeholder="Comma-separated card names or Archidekt URL"
               />
-              {fieldErrors.deck1 && <span className="cg-field-error">{fieldErrors.deck1}</span>}
+              {fieldErrors.deck1 && <span className="form-error">{fieldErrors.deck1}</span>}
             </div>
-            <div className="cg-field">
-              <label>Opponent deck</label>
+            <div className="form-field">
+              <label className="label">Opponent deck</label>
               <textarea
+                className="textarea"
                 value={form.deck2Text}
                 onChange={e => { setFieldErrors(p => ({ ...p, deck2: undefined })); setForm(f => ({ ...f, deck2Text: e.target.value })) }}
                 placeholder="Comma-separated card names or Archidekt URL"
               />
-              {fieldErrors.deck2 && <span className="cg-field-error">{fieldErrors.deck2}</span>}
+              {fieldErrors.deck2 && <span className="form-error">{fieldErrors.deck2}</span>}
             </div>
           </div>
         </div>
 
-        {/* Format */}
-        <div className="cg-player-card">
-          <div className="cg-field cg-field--shrink">
-            <label>Format</label>
+        <div className="form-card">
+          <div className="form-field form-field--shrink">
+            <label className="label">Format</label>
             <select
+              className="select"
               value={form.format}
               onChange={e => setForm(f => ({ ...f, format: e.target.value as 'standard' | 'commander' }))}
             >
@@ -259,24 +276,26 @@ export function HumanGameCreator() {
             </select>
           </div>
           {form.format === 'commander' && (
-            <div className="cg-row" style={{ marginTop: '0.75rem' }}>
-              <div className="cg-field">
-                <label>Your Commander</label>
+            <div className="form-row" style={{ marginTop: 'var(--space-3)' }}>
+              <div className="form-field">
+                <label className="label">Your Commander</label>
                 <input
+                  className="input"
                   value={form.commander1}
                   onChange={e => { setFieldErrors(p => ({ ...p, commander1: undefined })); setForm(f => ({ ...f, commander1: e.target.value })) }}
                   placeholder="e.g. Atraxa, Praetors' Voice"
                 />
-                {fieldErrors.commander1 && <span className="cg-field-error">{fieldErrors.commander1}</span>}
+                {fieldErrors.commander1 && <span className="form-error">{fieldErrors.commander1}</span>}
               </div>
-              <div className="cg-field">
-                <label>Opponent Commander</label>
+              <div className="form-field">
+                <label className="label">Opponent Commander</label>
                 <input
+                  className="input"
                   value={form.commander2}
                   onChange={e => { setFieldErrors(p => ({ ...p, commander2: undefined })); setForm(f => ({ ...f, commander2: e.target.value })) }}
                   placeholder="e.g. Atraxa, Praetors' Voice"
                 />
-                {fieldErrors.commander2 && <span className="cg-field-error">{fieldErrors.commander2}</span>}
+                {fieldErrors.commander2 && <span className="form-error">{fieldErrors.commander2}</span>}
               </div>
             </div>
           )}
@@ -285,12 +304,7 @@ export function HumanGameCreator() {
         {serverError && <div className="cg-error">{serverError}</div>}
 
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-          <button
-            type="submit"
-            disabled={isSubmitting}
-            className="cg-btn-start"
-            style={{ padding: '0.6rem 2rem' }}
-          >
+          <button type="submit" disabled={isSubmitting} className="btn btn--primary btn--lg">
             {isSubmitting ? 'Starting…' : 'Start Game'}
           </button>
         </div>

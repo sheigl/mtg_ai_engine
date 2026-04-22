@@ -35,16 +35,28 @@ function GameOverOverlay({
   }
 
   return (
-    <div className="game-over-overlay">
-      <div className="game-over-box">
-        <div className="game-over-title">Game Over</div>
-        <div className="game-over-winner">
+    <div className="modal-backdrop">
+      <div className="modal-panel" style={{ textAlign: 'center', maxWidth: 400 }}>
+        <div style={{
+          fontSize: 'var(--text-3xl)',
+          fontWeight: 800,
+          marginBottom: 'var(--space-3)',
+          color: 'var(--text-primary)',
+        }}>
+          Game Over
+        </div>
+        <div style={{
+          fontSize: 'var(--text-xl)',
+          fontWeight: 600,
+          color: gs.winner === 'draw' ? 'var(--warning)' : 'var(--success)',
+          marginBottom: 'var(--space-6)',
+        }}>
           {gs.winner === 'draw' ? 'Draw!' : `${gs.winner} wins!`}
         </div>
-        <div className="game-over-actions">
-          <button onClick={onDismiss}>View Board</button>
-          <button onClick={downloadLog}>↓ Download Log</button>
-          <button onClick={() => navigate('/')}>← Back to Games</button>
+        <div style={{ display: 'flex', gap: 'var(--space-3)', justifyContent: 'center', flexWrap: 'wrap' }}>
+          <button className="btn btn--secondary" onClick={onDismiss}>View Board</button>
+          <button className="btn btn--secondary" onClick={downloadLog}>↓ Download Log</button>
+          <button className="btn btn--primary" onClick={() => navigate('/')}>← Back to Games</button>
         </div>
       </div>
     </div>
@@ -60,21 +72,21 @@ export function GameBoard() {
   if (isError) {
     const isNotFound = error instanceof Error && error.message === 'GAME_NOT_FOUND'
     return (
-      <div className="error-container">
+      <div className="center-message">
         <ConnectionStatus isError={!isNotFound} isLoading={false} />
-        <div className="error-message">
+        <div style={{ color: 'var(--danger)', fontSize: 'var(--text-lg)', fontWeight: 600, marginBottom: 'var(--space-4)' }}>
           {isNotFound ? 'Game has ended or was not found.' : 'Connection lost. Retrying...'}
         </div>
-        <button onClick={() => navigate('/')}>Back to Games</button>
+        <button className="btn btn--primary" onClick={() => navigate('/')}>Back to Games</button>
       </div>
     )
   }
 
   if (isLoading || !gs) {
     return (
-      <div className="loading-container">
-        <ConnectionStatus isError={false} isLoading={true} />
-        Loading game...
+      <div className="center-message">
+        <div className="spinner" style={{ marginBottom: 'var(--space-4)' }} />
+        <span style={{ color: 'var(--text-secondary)' }}>Loading game...</span>
       </div>
     )
   }
@@ -94,11 +106,9 @@ export function GameBoard() {
 
   return (
     <div className="game-board with-sidebar">
-      <ConnectionStatus isError={false} isLoading={false} />
-
-      <div className="top-left-buttons">
-        <button onClick={() => navigate('/')}>← Games</button>
-        <button onClick={downloadGameLog} title="Download turn-by-turn game log">↓ Download Log</button>
+      <div className="board-actions">
+        <button className="btn btn--secondary btn--sm" onClick={() => navigate('/')}>← Games</button>
+        <button className="btn btn--ghost btn--sm" onClick={downloadGameLog} title="Download turn-by-turn game log">↓ Log</button>
       </div>
 
       {/* Opponent (Player 2) info */}

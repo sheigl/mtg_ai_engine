@@ -11,13 +11,13 @@ const VISIBLE_EVENTS = new Set([
 ])
 
 const EVENT_COLORS: Record<string, string> = {
-  cast: 'var(--active-glow)',
-  resolve: 'var(--life-high)',
-  damage: 'var(--life-low)',
-  life_change: 'var(--life-mid)',
+  cast: 'var(--accent)',
+  resolve: 'var(--success)',
+  damage: 'var(--danger)',
+  life_change: 'var(--warning)',
   attack: 'var(--mtg-red)',
   block: 'var(--mtg-white)',
-  game_end: 'var(--life-high)',
+  game_end: 'var(--success)',
   zone_change: 'var(--text-secondary)',
   trigger: '#c9a0ff',
   activate: 'var(--mtg-blue)',
@@ -30,7 +30,6 @@ export function ActionLog({ gameId }: ActionLogProps) {
 
   const filtered = entries.filter(e => VISIBLE_EVENTS.has(e.event_type))
 
-  // Group entries by turn number
   const byTurn: { turn: number; entries: typeof filtered }[] = []
   for (const entry of filtered) {
     const last = byTurn[byTurn.length - 1]
@@ -52,17 +51,21 @@ export function ActionLog({ gameId }: ActionLogProps) {
       display: 'flex',
       flexDirection: 'column',
       height: '100%',
-      background: 'var(--bg-secondary)',
-      borderRadius: '8px',
-      border: '1px solid var(--border-default)',
+      background: 'var(--surface-elevated)',
+      borderRadius: 'var(--radius-lg)',
+      border: '1px solid var(--border-subtle)',
       overflow: 'hidden',
     }}>
       <div style={{
-        padding: '0.5rem 0.75rem',
-        borderBottom: '1px solid var(--border-muted)',
+        padding: 'var(--space-3) var(--space-4)',
+        borderBottom: '1px solid var(--border-subtle)',
         fontWeight: 700,
-        fontSize: '0.85rem',
+        fontSize: 'var(--text-sm)',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 'var(--space-2)',
       }}>
+        <span style={{ fontSize: 'var(--text-xs)' }}>📜</span>
         Action Log
       </div>
       <div
@@ -70,25 +73,30 @@ export function ActionLog({ gameId }: ActionLogProps) {
         style={{
           flex: 1,
           overflowY: 'auto',
-          padding: '0.5rem',
+          padding: 'var(--space-2)',
         }}
       >
         {filtered.length === 0 && (
-          <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', textAlign: 'center', padding: '1rem' }}>
+          <div style={{
+            color: 'var(--text-muted)',
+            fontSize: 'var(--text-sm)',
+            textAlign: 'center',
+            padding: 'var(--space-8) var(--space-4)',
+          }}>
             Waiting for game actions...
           </div>
         )}
         {byTurn.map(({ turn, entries: turnEntries }) => (
           <div key={turn}>
             <div style={{
-              fontSize: '0.65rem',
+              fontSize: 'var(--text-xs)',
               fontWeight: 700,
               textTransform: 'uppercase',
               letterSpacing: '0.06em',
               color: 'var(--text-muted)',
-              padding: '0.4rem 0.25rem 0.2rem',
-              borderBottom: '1px solid var(--border-muted)',
-              marginBottom: '0.25rem',
+              padding: 'var(--space-2) var(--space-2) var(--space-1)',
+              borderBottom: '1px solid var(--border-subtle)',
+              marginBottom: 'var(--space-1)',
             }}>
               Turn {turn}
             </div>
@@ -96,12 +104,13 @@ export function ActionLog({ gameId }: ActionLogProps) {
               <div
                 key={entry.seq}
                 style={{
-                  padding: '0.25rem 0.5rem',
-                  fontSize: '0.75rem',
-                  lineHeight: 1.4,
-                  borderLeft: `2px solid ${EVENT_COLORS[entry.event_type] || 'var(--border-muted)'}`,
-                  marginBottom: '0.25rem',
+                  padding: 'var(--space-1) var(--space-2)',
+                  fontSize: 'var(--text-xs)',
+                  lineHeight: 'var(--leading-normal)',
+                  borderLeft: `2px solid ${EVENT_COLORS[entry.event_type] || 'var(--border-subtle)'}`,
+                  marginBottom: 'var(--space-1)',
                   color: 'var(--text-primary)',
+                  borderRadius: '0 var(--radius-sm) var(--radius-sm) 0',
                 }}
               >
                 {entry.description}

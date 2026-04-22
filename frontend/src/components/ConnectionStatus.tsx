@@ -1,5 +1,3 @@
-import '../styles/animations.css'
-
 interface ConnectionStatusProps {
   isError: boolean
   isLoading: boolean
@@ -10,26 +8,27 @@ export function ConnectionStatus({ isError, isLoading }: ConnectionStatusProps) 
 
   return (
     <div style={{
-      position: 'fixed',
-      top: '0.75rem',
-      right: '0.75rem',
-      padding: '0.5rem 1rem',
-      borderRadius: '6px',
-      fontSize: '0.8rem',
-      fontWeight: 600,
-      zIndex: 200,
-      background: isError ? 'var(--life-low)' : 'var(--bg-tertiary)',
-      color: isError ? '#fff' : 'var(--text-secondary)',
-      border: `1px solid ${isError ? 'var(--life-low)' : 'var(--border-default)'}`,
       display: 'flex',
       alignItems: 'center',
-      gap: '0.5rem',
+      gap: 'var(--space-2)',
+      padding: 'var(--space-1) var(--space-3)',
+      borderRadius: 'var(--radius-full)',
+      fontSize: 'var(--text-xs)',
+      fontWeight: 600,
+      background: isError ? 'var(--danger-subtle)' : 'var(--surface-hover)',
+      color: isError ? 'var(--danger)' : 'var(--text-secondary)',
+      border: `1px solid ${isError ? 'var(--danger)' : 'var(--border-subtle)'}`,
+      transition: 'all var(--transition-fast)',
     }}>
-      <span
-        className="animate-pulse"
-        style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: isError ? '#fff' : 'var(--active-glow)' }}
-      />
-      {isError ? 'Reconnecting...' : 'Loading...'}
+      <span style={{
+        display: 'inline-block',
+        width: 6,
+        height: 6,
+        borderRadius: '50%',
+        background: isError ? 'var(--danger)' : 'var(--accent)',
+        animation: isError ? 'pulse 1.5s ease-in-out infinite' : 'pulse 2s ease-in-out infinite',
+      }} />
+      {isError ? 'Reconnecting' : 'Loading'}
     </div>
   )
 }

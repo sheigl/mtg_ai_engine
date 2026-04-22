@@ -39,7 +39,6 @@ export function HumanGameBoard() {
   const location = useLocation()
   const navigate = useNavigate()
 
-  // Persist humanPlayerName across refreshes — fall back to server lookup
   const [humanPlayerName, setHumanPlayerName] = useState<string>(() => {
     const fromNav = (location.state as { humanPlayerName?: string } | null)?.humanPlayerName
     if (fromNav) {
@@ -49,7 +48,6 @@ export function HumanGameBoard() {
     return localStorage.getItem(`hgb-player-${gameId}`) ?? ''
   })
 
-  // If name is unknown, fetch it from the server
   useEffect(() => {
     if (humanPlayerName || !gameId) return
     fetch(`/human-game/${gameId}/player`)
@@ -68,7 +66,6 @@ export function HumanGameBoard() {
   const { isMyTurn, legalActions, legalActionsByCard, step, phase } = useLegalActions(gameId, humanPlayerName)
   const { submitAction, isPending, lastError, clearError } = useHumanAction(gameId)
 
-  // ── Interactive state ────────────────────────────────────────────────────────
   const [selectedAttackers, setSelectedAttackers] = useState<Set<string>>(new Set())
   const [blockerAssignments, setBlockerAssignments] = useState<Map<string, string>>(new Map())
   const [pendingCast, setPendingCast] = useState<{ action: LegalAction; cardId: string } | null>(null)
@@ -79,7 +76,6 @@ export function HumanGameBoard() {
   const [_gameOverDismissed] = useState(false)
   const [draggedCardId, setDraggedCardId] = useState<string | null>(null)
 
-  // Card display order — purely cosmetic, no server state
   const [handOrder, setHandOrder] = useState<string[]>([])
   const [permanentOrder, setPermanentOrder] = useState<string[]>([])
   const handOrderRef = useRef(handOrder)
@@ -87,13 +83,11 @@ export function HumanGameBoard() {
   handOrderRef.current = handOrder
   permanentOrderRef.current = permanentOrder
 
-  // Reset combat state when step changes
   useEffect(() => {
     if (step !== 'declare_attackers') setSelectedAttackers(new Set())
     if (step !== 'declare_blockers') setBlockerAssignments(new Map())
   }, [step])
 
-  // Auto-pass priority when enabled and only "pass" is available
   useEffect(() => {
     if (!isMyTurn || !autoPassPriority || isPending) return
     if (legalActions.length === 1 && legalActions[0].action_type === 'pass') {
@@ -102,7 +96,6 @@ export function HumanGameBoard() {
     }
   }, [isMyTurn, autoPassPriority, isPending, legalActions, submitAction])
 
-  // Reconcile handOrder/permanentOrder when game state updates
   useEffect(() => {
     if (!gs || !humanPlayerName) return
     const human = gs.players.find(p => p.name === humanPlayerName) ?? gs.players[0]
@@ -120,8 +113,6 @@ export function HumanGameBoard() {
       return [...kept, ...newIds]
     })
   }, [gs, humanPlayerName])
-
-  // ── Action handlers ──────────────────────────────────────────────────────────
 
   const handlePlayLand = useCallback((cardId: string) => {
     submitAction('play_land', { card_id: cardId })
@@ -167,7 +158,6 @@ export function HumanGameBoard() {
   }, [])
 
   const handleConfirmAttackers = useCallback(() => {
-    // Find defending player from the legal action (card_name holds defending player name)
     const declareAction = legalActions.find(a => a.action_type === 'declare_attackers')
     const defendingId = declareAction?.card_name ?? ''
     submitAction('declare_attackers', {
@@ -211,36 +201,32 @@ export function HumanGameBoard() {
     })
   }, [])
 
-  // ── Mulligan detection ───────────────────────────────────────────────────────
-  // Backend uses action_type="declare_mulligan"; "Keep hand" description = keep, otherwise = mulligan
   const mulliganActions = legalActions.filter(a => a.action_type === 'declare_mulligan')
   const isMulliganPhase = mulliganActions.length > 0
   const keepAction = mulliganActions.find(a => a.description?.toLowerCase().includes('keep'))
   const doMulliganAction = mulliganActions.find(a => !a.description?.toLowerCase().includes('keep'))
 
-  // ── Discard detection ────────────────────────────────────────────────────────
   const discardActions = legalActions.filter(a => a.action_type === 'discard')
   const isDiscardPhase = discardActions.length > 0 && legalActions.every(a => a.action_type === 'discard')
 
-  // ── Error / loading states ───────────────────────────────────────────────────
   if (isError) {
     const isNotFound = error instanceof Error && error.message === 'GAME_NOT_FOUND'
     return (
-      <div className="error-container">
+      <div className="center-message">
         <ConnectionStatus isError={!isNotFound} isLoading={false} />
-        <div className="error-message">
+        <div style={{ color: 'var(--danger)', fontSize: 'var(--text-lg)', fontWeight: 600, marginBottom: 'var(--space-4)' }}>
           {isNotFound ? 'Game has ended or was not found.' : 'Connection lost. Retrying...'}
         </div>
-        <button onClick={() => navigate('/')}>Back to Games</button>
+        <button className="btn btn--primary" onClick={() => navigate('/')}>Back to Games</button>
       </div>
     )
   }
 
   if (isLoading || !gs || !humanPlayerName) {
     return (
-      <div className="loading-container">
-        <ConnectionStatus isError={false} isLoading={true} />
-        Loading game...
+      <div className="center-message">
+        <div className="spinner" style={{ marginBottom: 'var(--space-4)' }} />
+        <span style={{ color: 'var(--text-secondary)' }}>Loading game...</span>
       </div>
     )
   }
@@ -251,7 +237,6 @@ export function HumanGameBoard() {
   const opponentPermanents = getPlayerPermanents(gs, opponentPlayer.name)
   const isCommander = gs.format === 'commander'
 
-  // Legal blocker IDs — any creature the human controls that's not tapped
   const legalBlockerIds = new Set(
     getCreatures(humanPermanents)
       .filter(p => !p.tapped)
@@ -263,10 +248,8 @@ export function HumanGameBoard() {
 
   return (
     <div className="game-board with-sidebar">
-      <ConnectionStatus isError={false} isLoading={false} />
-
-      <div className="top-left-buttons">
-        <button onClick={() => navigate('/')}>← Games</button>
+      <div className="board-actions">
+        <button className="btn btn--secondary btn--sm" onClick={() => navigate('/')}>← Games</button>
       </div>
 
       {/* Opponent zone */}
@@ -314,17 +297,9 @@ export function HumanGameBoard() {
         />
       </div>
 
-      {/* Blocker assigner — fixed overlay so it doesn't disrupt grid layout */}
+      {/* Blocker assigner */}
       {isMyTurn && step === 'declare_blockers' && attackingCreatures.length > 0 && (
-        <div style={{
-          position: 'fixed',
-          bottom: '8rem',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          zIndex: 250,
-          maxWidth: '90vw',
-          width: '620px',
-        }}>
+        <div className="blocker-overlay">
           <BlockerAssigner
             myCreatures={getCreatures(humanPermanents)}
             attackingCreatures={attackingCreatures}
@@ -337,7 +312,7 @@ export function HumanGameBoard() {
         </div>
       )}
 
-      {/* Human hand — always visible, interactive when it's the human's turn */}
+      {/* Human hand */}
       <div>
         <PlayerZone
           player={humanPlayer}
@@ -424,7 +399,6 @@ export function HumanGameBoard() {
         />
       )}
 
-      {/* Debug panel — shows AI/observer thoughts while playing */}
       <DebugPanel gameId={gs.game_id} isGameOver={gs.is_game_over} debugEnabled={gs.debug_enabled} />
     </div>
   )

@@ -2,8 +2,6 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import '../styles/create-game.css'
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
 interface PlayerFormState {
   name: string
   playerType: 'llm' | 'heuristic' | 'human'
@@ -47,8 +45,6 @@ interface Props {
   onClose: () => void
 }
 
-// ── Defaults ──────────────────────────────────────────────────────────────────
-
 const defaultPlayer = (name: string): PlayerFormState => ({
   name,
   playerType: 'heuristic',
@@ -71,8 +67,6 @@ const defaultForm = (): FormState => ({
   observerUrl: 'http://localhost:8080/v1',
   observerModel: '',
 })
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function parseDeck(raw: string): string[] {
   return raw.split(',').map(s => s.trim()).filter(Boolean)
@@ -116,21 +110,21 @@ function validateForm(form: FormState): FieldErrors {
   }
 
   if (form.player1.playerType === 'human' && form.player2.playerType === 'human') {
-    errors.humanConflict = 'Both players cannot be Human — at least one must be AI or Heuristic'
+    errors.humanConflict = 'Both players cannot be Human'
   }
 
   if (form.player1.playerType === 'llm') {
     if (!form.player1.baseUrl.trim() || (!form.player1.baseUrl.startsWith('http://') && !form.player1.baseUrl.startsWith('https://'))) {
-      errors.player1Url = 'Valid http(s) URL required for LLM player'
+      errors.player1Url = 'Valid http(s) URL required'
     }
-    if (!form.player1.model.trim()) errors.player1Model = 'Model is required for LLM player'
+    if (!form.player1.model.trim()) errors.player1Model = 'Model is required'
   }
 
   if (form.player2.playerType === 'llm') {
     if (!form.player2.baseUrl.trim() || (!form.player2.baseUrl.startsWith('http://') && !form.player2.baseUrl.startsWith('https://'))) {
-      errors.player2Url = 'Valid http(s) URL required for LLM player'
+      errors.player2Url = 'Valid http(s) URL required'
     }
-    if (!form.player2.model.trim()) errors.player2Model = 'Model is required for LLM player'
+    if (!form.player2.model.trim()) errors.player2Model = 'Model is required'
   }
 
   if (form.format === 'commander') {
@@ -157,8 +151,6 @@ function thinkingValue(v: 'auto' | 'on' | 'off'): boolean | null {
   return null
 }
 
-// ── Sub-component: player config card ────────────────────────────────────────
-
 function PlayerCard({
   label,
   state,
@@ -171,23 +163,25 @@ function PlayerCard({
   errors: { name?: string; url?: string; model?: string; names?: string; humanConflict?: string }
 }) {
   return (
-    <div className="cg-player-card">
-      <div className="cg-player-title">{label}</div>
-      <div className="cg-row">
-        <div className="cg-field">
-          <label>Name</label>
+    <div className="form-card">
+      <div className="form-card-title">{label}</div>
+      <div className="form-row">
+        <div className="form-field">
+          <label className="label">Name</label>
           <input
+            className="input"
             value={state.name}
             onChange={e => onChange({ name: e.target.value })}
             placeholder="Player name"
           />
-          {errors.name && <span className="cg-field-error">{errors.name}</span>}
-          {errors.names && <span className="cg-field-error">{errors.names}</span>}
-          {errors.humanConflict && <span className="cg-field-error">{errors.humanConflict}</span>}
+          {errors.name && <span className="form-error">{errors.name}</span>}
+          {errors.names && <span className="form-error">{errors.names}</span>}
+          {errors.humanConflict && <span className="form-error">{errors.humanConflict}</span>}
         </div>
-        <div className="cg-field cg-field--shrink">
-          <label>Type</label>
+        <div className="form-field form-field--shrink">
+          <label className="label">Type</label>
           <select
+            className="select"
             value={state.playerType}
             onChange={e => onChange({ playerType: e.target.value as PlayerFormState['playerType'] })}
           >
@@ -199,30 +193,33 @@ function PlayerCard({
       </div>
       {state.playerType === 'llm' && (
         <>
-          <div className="cg-row">
-            <div className="cg-field">
-              <label>LLM Endpoint URL</label>
+          <div className="form-row">
+            <div className="form-field">
+              <label className="label">LLM Endpoint URL</label>
               <input
+                className="input"
                 value={state.baseUrl}
                 onChange={e => onChange({ baseUrl: e.target.value })}
                 placeholder="http://localhost:8080/v1"
               />
-              {errors.url && <span className="cg-field-error">{errors.url}</span>}
+              {errors.url && <span className="form-error">{errors.url}</span>}
             </div>
-            <div className="cg-field">
-              <label>Model</label>
+            <div className="form-field">
+              <label className="label">Model</label>
               <input
+                className="input"
                 value={state.model}
                 onChange={e => onChange({ model: e.target.value })}
                 placeholder="devstral"
               />
-              {errors.model && <span className="cg-field-error">{errors.model}</span>}
+              {errors.model && <span className="form-error">{errors.model}</span>}
             </div>
           </div>
-          <div className="cg-row" style={{ marginTop: '0.5rem' }}>
-            <div className="cg-field cg-field--shrink">
-              <label>Thinking</label>
+          <div className="form-row" style={{ marginTop: 'var(--space-3)' }}>
+            <div className="form-field form-field--shrink">
+              <label className="label">Thinking</label>
               <select
+                className="select"
                 value={state.enableThinking}
                 onChange={e => onChange({ enableThinking: e.target.value as PlayerFormState['enableThinking'] })}
               >
@@ -237,8 +234,6 @@ function PlayerCard({
     </div>
   )
 }
-
-// ── Main component ────────────────────────────────────────────────────────────
 
 export function CreateGameForm({ onClose }: Props) {
   const navigate = useNavigate()
@@ -304,7 +299,6 @@ export function CreateGameForm({ onClose }: Props) {
       const resolvedCommander2 = form.commander2.trim() || detectedCommander2 || ''
 
       if (hasHumanPlayer) {
-        // Route to /human-game
         const aiPlayer = form.player1.playerType !== 'human' ? form.player1 : form.player2
         const body = {
           player1_type: form.player1.playerType,
@@ -348,7 +342,6 @@ export function CreateGameForm({ onClose }: Props) {
           navigate(`/human-game/${gameId}`, { state: { humanPlayerName } })
         }
       } else {
-        // Route to /ai-game (existing flow)
         const body = {
           player1: {
             name: form.player1.name.trim(),
@@ -402,222 +395,215 @@ export function CreateGameForm({ onClose }: Props) {
   }
 
   return (
-    <div className="cg-overlay">
-      <div className="cg-modal" onClick={e => e.stopPropagation()}>
-        {/* Header */}
-        <div className="cg-header">
-          <h2>New Game</h2>
-          <button className="cg-close-btn" onClick={onClose} title="Close">✕</button>
+    <div className="cg-modal" onClick={e => e.stopPropagation()}>
+      <div className="cg-header">
+        <h2>New Game</h2>
+        <button className="btn btn--ghost btn--icon" onClick={onClose} title="Close" style={{ width: 32, height: 32 }}>
+          ✕
+        </button>
+      </div>
+
+      <form onSubmit={handleSubmit}>
+        <div className="cg-body">
+          <div>
+            <div className="cg-section-label">Players</div>
+            <div className="cg-players">
+              <PlayerCard
+                label="Player 1"
+                state={form.player1}
+                onChange={setPlayer1}
+                errors={{
+                  name: fieldErrors.player1Name,
+                  url: fieldErrors.player1Url,
+                  model: fieldErrors.player1Model,
+                  names: fieldErrors.names,
+                  humanConflict: fieldErrors.humanConflict,
+                }}
+              />
+              <PlayerCard
+                label="Player 2"
+                state={form.player2}
+                onChange={setPlayer2}
+                errors={{
+                  name: fieldErrors.player2Name,
+                  url: fieldErrors.player2Url,
+                  model: fieldErrors.player2Model,
+                }}
+              />
+            </div>
+          </div>
+
+          <hr className="divider" />
+
+          <div>
+            <div className="cg-section-label">Decks (optional)</div>
+            <div className="form-row">
+              <div className="form-field">
+                <label className="label">Player 1 deck</label>
+                <textarea
+                  className="textarea"
+                  value={form.deck1Text}
+                  onChange={e => {
+                    setFieldErrors(prev => ({ ...prev, deck1: undefined }))
+                    setForm(f => ({ ...f, deck1Text: e.target.value }))
+                  }}
+                  placeholder="Leave blank for default deck — paste comma-separated card names or an Archidekt URL"
+                />
+                {fieldErrors.deck1 && <span className="form-error">{fieldErrors.deck1}</span>}
+              </div>
+              <div className="form-field">
+                <label className="label">Player 2 deck</label>
+                <textarea
+                  className="textarea"
+                  value={form.deck2Text}
+                  onChange={e => {
+                    setFieldErrors(prev => ({ ...prev, deck2: undefined }))
+                    setForm(f => ({ ...f, deck2Text: e.target.value }))
+                  }}
+                  placeholder="Leave blank for default deck — paste comma-separated card names or an Archidekt URL"
+                />
+                {fieldErrors.deck2 && <span className="form-error">{fieldErrors.deck2}</span>}
+              </div>
+            </div>
+          </div>
+
+          <hr className="divider" />
+
+          <div>
+            <div className="cg-section-label">Format</div>
+            <div className="form-row">
+              <div className="form-field form-field--shrink">
+                <label className="label">Game format</label>
+                <select
+                  className="select"
+                  value={form.format}
+                  onChange={e => setForm(f => ({ ...f, format: e.target.value as 'standard' | 'commander' }))}
+                >
+                  <option value="standard">Standard</option>
+                  <option value="commander">Commander</option>
+                </select>
+              </div>
+            </div>
+            {form.format === 'commander' && (
+              <div className="form-row">
+                <div className="form-field">
+                  <label className="label">Commander (Player 1)</label>
+                  <input
+                    className="input"
+                    value={form.commander1}
+                    onChange={e => setForm(f => ({ ...f, commander1: e.target.value }))}
+                    placeholder="e.g. Ghalta, Primal Hunger"
+                  />
+                  {fieldErrors.commander1 && <span className="form-error">{fieldErrors.commander1}</span>}
+                </div>
+                <div className="form-field">
+                  <label className="label">Commander (Player 2)</label>
+                  <input
+                    className="input"
+                    value={form.commander2}
+                    onChange={e => setForm(f => ({ ...f, commander2: e.target.value }))}
+                    placeholder="e.g. Multani, Maro-Sorcerer"
+                  />
+                  {fieldErrors.commander2 && <span className="form-error">{fieldErrors.commander2}</span>}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <hr className="divider" />
+
+          <div>
+            <div className="cg-section-label">Debug &amp; Observer</div>
+            <label className="cg-check-row">
+              <input
+                type="checkbox"
+                checked={form.debug}
+                onChange={e => setForm(f => ({ ...f, debug: e.target.checked }))}
+              />
+              Enable debug panel (captures AI prompts &amp; commentary)
+            </label>
+            {form.debug && (
+              <div className="form-row" style={{ marginTop: 'var(--space-3)' }}>
+                <div className="form-field">
+                  <label className="label">Observer endpoint URL (optional)</label>
+                  <input
+                    className="input"
+                    value={form.observerUrl}
+                    onChange={e => setForm(f => ({ ...f, observerUrl: e.target.value }))}
+                    placeholder="http://localhost:8080/v1"
+                  />
+                </div>
+                <div className="form-field">
+                  <label className="label">Observer model (optional)</label>
+                  <input
+                    className="input"
+                    value={form.observerModel}
+                    onChange={e => setForm(f => ({ ...f, observerModel: e.target.value }))}
+                    placeholder="e.g. devstral"
+                  />
+                  {fieldErrors.observerModel && <span className="form-error">{fieldErrors.observerModel}</span>}
+                </div>
+              </div>
+            )}
+            {showObserverWarning && (
+              <div className="cg-warning">
+                No LLM players and no observer URL — no AI commentary will be available. The debug panel will still capture game events.
+              </div>
+            )}
+          </div>
+
+          <hr className="divider" />
+
+          <div>
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm"
+              onClick={() => setShowAdvanced(v => !v)}
+              style={{ padding: 0, background: 'transparent', border: 'none' }}
+            >
+              {showAdvanced ? '▼' : '▶'} Advanced options
+            </button>
+            {showAdvanced && (
+              <div className="form-card" style={{ marginTop: 'var(--space-3)' }}>
+                <div className="form-row">
+                  <div className="form-field form-field--shrink">
+                    <label className="label">Max turns (0 = unlimited)</label>
+                    <input
+                      className="input"
+                      type="number"
+                      min={0}
+                      value={form.maxTurns}
+                      onChange={e => setForm(f => ({ ...f, maxTurns: e.target.value }))}
+                      style={{ width: 100 }}
+                    />
+                  </div>
+                </div>
+                <label className="cg-check-row">
+                  <input
+                    type="checkbox"
+                    checked={form.verbose}
+                    onChange={e => setForm(f => ({ ...f, verbose: e.target.checked }))}
+                  />
+                  Verbose play-by-play logging
+                </label>
+              </div>
+            )}
+          </div>
+
+          {serverError && (
+            <div className="cg-error">{serverError}</div>
+          )}
         </div>
 
-        <form onSubmit={handleSubmit}>
-          <div className="cg-body">
-
-            {/* Players */}
-            <div>
-              <div className="cg-section-label">Players</div>
-              <div className="cg-players">
-                <PlayerCard
-                  label="Player 1"
-                  state={form.player1}
-                  onChange={setPlayer1}
-                  errors={{
-                    name: fieldErrors.player1Name,
-                    url: fieldErrors.player1Url,
-                    model: fieldErrors.player1Model,
-                    names: fieldErrors.names,
-                    humanConflict: fieldErrors.humanConflict,
-                  }}
-                />
-                <PlayerCard
-                  label="Player 2"
-                  state={form.player2}
-                  onChange={setPlayer2}
-                  errors={{
-                    name: fieldErrors.player2Name,
-                    url: fieldErrors.player2Url,
-                    model: fieldErrors.player2Model,
-                  }}
-                />
-              </div>
-            </div>
-
-            <div className="cg-divider" />
-
-            {/* Decks */}
-            <div>
-              <div className="cg-section-label">Decks (optional)</div>
-              <div className="cg-row">
-                <div className="cg-field">
-                  <label>Player 1 deck</label>
-                  <textarea
-                    value={form.deck1Text}
-                    onChange={e => {
-                      setFieldErrors(prev => ({ ...prev, deck1: undefined }))
-                      setForm(f => ({ ...f, deck1Text: e.target.value }))
-                    }}
-                    placeholder="Leave blank for default deck — paste comma-separated card names or an Archidekt URL"
-                  />
-                  {fieldErrors.deck1 && <span className="cg-field-error">{fieldErrors.deck1}</span>}
-                </div>
-                <div className="cg-field">
-                  <label>Player 2 deck</label>
-                  <textarea
-                    value={form.deck2Text}
-                    onChange={e => {
-                      setFieldErrors(prev => ({ ...prev, deck2: undefined }))
-                      setForm(f => ({ ...f, deck2Text: e.target.value }))
-                    }}
-                    placeholder="Leave blank for default deck — paste comma-separated card names or an Archidekt URL"
-                  />
-                  {fieldErrors.deck2 && <span className="cg-field-error">{fieldErrors.deck2}</span>}
-                </div>
-              </div>
-            </div>
-
-            <div className="cg-divider" />
-
-            {/* Format */}
-            <div>
-              <div className="cg-section-label">Format</div>
-              <div className="cg-row">
-                <div className="cg-field cg-field--shrink">
-                  <label>Game format</label>
-                  <select
-                    value={form.format}
-                    onChange={e => setForm(f => ({ ...f, format: e.target.value as 'standard' | 'commander' }))}
-                  >
-                    <option value="standard">Standard</option>
-                    <option value="commander">Commander</option>
-                  </select>
-                </div>
-              </div>
-              {form.format === 'commander' && (
-                <div className="cg-row">
-                  <div className="cg-field">
-                    <label>Commander (Player 1)</label>
-                    <input
-                      value={form.commander1}
-                      onChange={e => setForm(f => ({ ...f, commander1: e.target.value }))}
-                      placeholder="e.g. Ghalta, Primal Hunger"
-                    />
-                    {fieldErrors.commander1 && (
-                      <span className="cg-field-error">{fieldErrors.commander1}</span>
-                    )}
-                  </div>
-                  <div className="cg-field">
-                    <label>Commander (Player 2)</label>
-                    <input
-                      value={form.commander2}
-                      onChange={e => setForm(f => ({ ...f, commander2: e.target.value }))}
-                      placeholder="e.g. Multani, Maro-Sorcerer"
-                    />
-                    {fieldErrors.commander2 && (
-                      <span className="cg-field-error">{fieldErrors.commander2}</span>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div className="cg-divider" />
-
-            {/* Debug / Observer */}
-            <div>
-              <div className="cg-section-label">Debug &amp; Observer</div>
-              <label className="cg-check-row">
-                <input
-                  type="checkbox"
-                  checked={form.debug}
-                  onChange={e => setForm(f => ({ ...f, debug: e.target.checked }))}
-                />
-                Enable debug panel (captures AI prompts &amp; commentary)
-              </label>
-              {form.debug && (
-                <div className="cg-row" style={{ marginTop: '0.6rem' }}>
-                  <div className="cg-field">
-                    <label>Observer endpoint URL (optional)</label>
-                    <input
-                      value={form.observerUrl}
-                      onChange={e => setForm(f => ({ ...f, observerUrl: e.target.value }))}
-                      placeholder="http://localhost:8080/v1"
-                    />
-                  </div>
-                  <div className="cg-field">
-                    <label>Observer model (optional)</label>
-                    <input
-                      value={form.observerModel}
-                      onChange={e => setForm(f => ({ ...f, observerModel: e.target.value }))}
-                      placeholder="e.g. devstral"
-                    />
-                    {fieldErrors.observerModel && (
-                      <span className="cg-field-error">{fieldErrors.observerModel}</span>
-                    )}
-                  </div>
-                </div>
-              )}
-              {showObserverWarning && (
-                <div className="cg-warning" style={{ marginTop: '0.5rem' }}>
-                  No LLM players and no observer URL — no AI commentary will be available. The debug panel will still capture game events.
-                </div>
-              )}
-            </div>
-
-            <div className="cg-divider" />
-
-            {/* Advanced */}
-            <div>
-              <button
-                type="button"
-                className="cg-advanced-toggle"
-                onClick={() => setShowAdvanced(v => !v)}
-              >
-                {showAdvanced ? '▼' : '▶'} Advanced options
-              </button>
-              {showAdvanced && (
-                <div className="cg-advanced-section" style={{ marginTop: '0.6rem' }}>
-                  <div className="cg-row">
-                    <div className="cg-field cg-field--shrink">
-                      <label>Max turns (0 = unlimited)</label>
-                      <input
-                        type="number"
-                        min={0}
-                        value={form.maxTurns}
-                        onChange={e => setForm(f => ({ ...f, maxTurns: e.target.value }))}
-                        style={{ width: '100px' }}
-                      />
-                    </div>
-                  </div>
-                  <label className="cg-check-row">
-                    <input
-                      type="checkbox"
-                      checked={form.verbose}
-                      onChange={e => setForm(f => ({ ...f, verbose: e.target.checked }))}
-                    />
-                    Verbose play-by-play logging
-                  </label>
-                </div>
-              )}
-            </div>
-
-            {/* Server error */}
-            {serverError && (
-              <div className="cg-error">{serverError}</div>
-            )}
-
-          </div>
-
-          {/* Footer */}
-          <div className="cg-footer">
-            <button type="button" className="cg-btn-cancel" onClick={onClose}>
-              Cancel
-            </button>
-            <button type="submit" className="cg-btn-start" disabled={isSubmitting}>
-              {isSubmitting ? 'Starting…' : hasHumanPlayer ? 'Start Game' : 'Start AI Game'}
-            </button>
-          </div>
-        </form>
-      </div>
+        <div className="cg-footer">
+          <button type="button" className="btn btn--ghost" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" className="btn btn--primary" disabled={isSubmitting}>
+            {isSubmitting ? 'Starting…' : hasHumanPlayer ? 'Start Game' : 'Start AI Game'}
+          </button>
+        </div>
+      </form>
     </div>
   )
 }
