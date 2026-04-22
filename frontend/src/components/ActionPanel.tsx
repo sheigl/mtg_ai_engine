@@ -62,9 +62,15 @@ export function ActionPanel({
       display: 'flex',
       flexDirection: 'column',
       alignItems: 'center',
-      gap: '0.5rem',
+      gap: 'var(--space-2)',
       zIndex: 300,
       pointerEvents: 'none',
+      background: 'var(--surface-elevated)',
+      border: '1px solid var(--border-default)',
+      borderRadius: 'var(--radius-lg)',
+      padding: 'var(--space-3) var(--space-4)',
+      boxShadow: 'var(--shadow-lg)',
+      minWidth: 200,
     }}>
       {/* Turn indicator */}
       <div style={{
