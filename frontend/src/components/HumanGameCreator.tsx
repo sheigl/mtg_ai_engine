@@ -15,6 +15,9 @@ interface FormState {
   commander2: string
   aiBaseUrl: string
   aiModel: string
+  enableDebug: boolean
+  observerUrl: string
+  observerModel: string
 }
 
 interface FieldErrors {
@@ -70,6 +73,9 @@ export function HumanGameCreator() {
     commander2: '',
     aiBaseUrl: 'http://localhost:8080/v1',
     aiModel: '',
+    enableDebug: false,
+    observerUrl: '',
+    observerModel: '',
   })
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({})
   const [serverError, setServerError] = useState<string | null>(null)
@@ -146,6 +152,7 @@ export function HumanGameCreator() {
         player1_deck: deck1,
         player2_deck: deck2,
         format: form.format,
+        debug: form.enableDebug,
         ...(form.format === 'commander' && {
           commander1,
           commander2,
@@ -155,6 +162,13 @@ export function HumanGameCreator() {
       if (form.opponentType === 'ai') {
         body.ai_base_url = form.aiBaseUrl.trim()
         body.ai_model = form.aiModel.trim()
+        // If observer fields are filled, send them too
+        if (form.observerUrl.trim()) {
+          body.observer_url = form.observerUrl.trim()
+        }
+        if (form.observerModel.trim()) {
+          body.observer_model = form.observerModel.trim()
+        }
       }
 
       const res = await fetch('/human-game', {
@@ -337,6 +351,40 @@ export function HumanGameCreator() {
                   placeholder="e.g. Atraxa, Praetors' Voice"
                 />
                 {fieldErrors.commander2 && <span className="form-error">{fieldErrors.commander2}</span>}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="form-card">
+          <div className="form-card-title">AI Commentary</div>
+          <label className="cg-check-row">
+            <input
+              type="checkbox"
+              checked={form.enableDebug}
+              onChange={e => setForm(f => ({ ...f, enableDebug: e.target.checked }))}
+            />
+            Enable AI commentary panel (shows prompts, responses, and move analysis)
+          </label>
+          {form.enableDebug && (
+            <div className="form-row" style={{ marginTop: 'var(--space-3)' }}>
+              <div className="form-field">
+                <label className="label">Observer endpoint URL (optional)</label>
+                <input
+                  className="input"
+                  value={form.observerUrl}
+                  onChange={e => setForm(f => ({ ...f, observerUrl: e.target.value }))}
+                  placeholder={form.aiBaseUrl || 'http://localhost:8080/v1'}
+                />
+              </div>
+              <div className="form-field">
+                <label className="label">Observer model (optional)</label>
+                <input
+                  className="input"
+                  value={form.observerModel}
+                  onChange={e => setForm(f => ({ ...f, observerModel: e.target.value }))}
+                  placeholder={form.aiModel || 'e.g. devstral'}
+                />
               </div>
             </div>
           )}
