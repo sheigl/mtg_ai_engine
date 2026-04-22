@@ -1641,27 +1641,43 @@ def get_stack(game_id: str) -> dict:
 
 # ─── Legal actions (TASK-17) ─────────────────────────────────────────────────
 
+def _has_meaningful_actions(actions) -> bool:
+    """Return True if there are actions other than pass or mana abilities.
+
+    Mana abilities (activate_mana_ability) are filtered out because they
+    are always available but rarely represent a meaningful decision.
+    """
+    for a in actions:
+        if a.action_type == "pass":
+            continue
+        if a.action_type == "activate_mana_ability":
+            continue
+        return True
+    return False
+
+
 @router.get("/{game_id}/legal-actions")
 def legal_actions(game_id: str) -> dict:
     """
     GET /game/{game_id}/legal-actions — compute all legal actions. REQ-S05, REQ-6.3.
     Must respond in under 200ms (REQ-P01).
 
-    Auto-pass: if the only legal action is "pass", automatically submit it
-    and return the next state's legal actions. This prevents the UI/AI from
-    being presented with an empty decision.
+    Auto-pass: if the only meaningful legal actions are "pass" (plus optional
+    mana abilities), automatically submit pass and return the next state's
+    legal actions. This prevents the UI/AI from being presented with an empty
+    decision.
     """
     from mtg_engine.export.store import get_export_store
     from mtg_engine.engine.turn_manager import pass_priority
     mgr = get_manager()
     gs = _get_gs(game_id)
 
-    # Auto-pass loop: if only "pass" is available, keep passing until
-    # someone has a real action or the game advances.
+    # Auto-pass loop: if only "pass" (+ mana abilities) is available,
+    # keep passing until someone has a real action or the game advances.
     max_auto_passes = 20
     for _ in range(max_auto_passes):
         actions = _compute_legal_actions(gs)
-        if len(actions) > 1 or (actions and actions[0].action_type != "pass"):
+        if _has_meaningful_actions(actions):
             break
         if gs.is_game_over:
             break
