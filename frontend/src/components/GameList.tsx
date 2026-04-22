@@ -109,7 +109,6 @@ export function GameList() {
       {showCreateForm && (
         <div
           className="modal-backdrop"
-          onClick={() => setShowCreateForm(false)}
           style={{
             position: 'fixed',
             inset: 0,
