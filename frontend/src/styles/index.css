@@ -101,6 +101,18 @@
   --z-modal: 400;
   --z-tooltip: 500;
   --z-toast: 600;
+
+  /* ── Backwards compatibility aliases ── */
+  --bg-primary: var(--surface-bg);
+  --bg-secondary: var(--surface-elevated);
+  --bg-tertiary: var(--surface-hover);
+  --bg-card: var(--surface-card);
+  --bg-elevated: var(--surface-hover);
+  --active-glow: var(--accent);
+  --border-muted: var(--border-subtle);
+  --life-high: var(--success);
+  --life-mid: var(--warning);
+  --life-low: var(--danger);
 }
 
 [data-theme="light"] {
@@ -135,6 +147,18 @@
   --shadow-lg: 0 8px 24px rgba(31, 35, 40, 0.12);
   --shadow-glow: 0 0 20px rgba(9, 105, 218, 0.12);
   --shadow-inset: inset 0 1px 2px rgba(31, 35, 40, 0.04);
+
+  /* ── Backwards compatibility aliases ── */
+  --bg-primary: var(--surface-bg);
+  --bg-secondary: var(--surface-elevated);
+  --bg-tertiary: var(--surface-hover);
+  --bg-card: var(--surface-card);
+  --bg-elevated: var(--surface-hover);
+  --active-glow: var(--accent);
+  --border-muted: var(--border-subtle);
+  --life-high: var(--success);
+  --life-mid: var(--warning);
+  --life-low: var(--danger);
 }
 
 * {
