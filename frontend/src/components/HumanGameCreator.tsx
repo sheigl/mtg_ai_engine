@@ -13,6 +13,8 @@ interface FormState {
   format: 'standard' | 'commander'
   commander1: string
   commander2: string
+  aiBaseUrl: string
+  aiModel: string
 }
 
 interface FieldErrors {
@@ -23,6 +25,8 @@ interface FieldErrors {
   deck2?: string
   commander1?: string
   commander2?: string
+  aiBaseUrl?: string
+  aiModel?: string
 }
 
 function parseDeck(raw: string): string[] {
@@ -64,6 +68,8 @@ export function HumanGameCreator() {
     format: 'standard',
     commander1: '',
     commander2: '',
+    aiBaseUrl: 'http://localhost:8080/v1',
+    aiModel: '',
   })
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({})
   const [serverError, setServerError] = useState<string | null>(null)
@@ -75,6 +81,12 @@ export function HumanGameCreator() {
     if (!form.opponentName.trim()) errors.opponentName = 'Name required'
     if (form.humanName.trim() && form.opponentName.trim() && form.humanName.trim() === form.opponentName.trim()) {
       errors.names = 'Names must be different'
+    }
+    if (form.opponentType === 'ai') {
+      if (!form.aiBaseUrl.trim() || (!form.aiBaseUrl.startsWith('http://') && !form.aiBaseUrl.startsWith('https://'))) {
+        errors.aiBaseUrl = 'Valid http(s) URL required'
+      }
+      if (!form.aiModel.trim()) errors.aiModel = 'Model is required'
     }
     if (form.format === 'commander') {
       if (!form.commander1.trim() && !isArchidektUrl(form.deck1Text))
@@ -126,7 +138,7 @@ export function HumanGameCreator() {
       const commander1 = form.commander1.trim() || detectedCommander1 || ''
       const commander2 = form.commander2.trim() || detectedCommander2 || ''
 
-      const body = {
+      const body: Record<string, unknown> = {
         player1_type: 'human',
         player2_type: form.opponentType,
         player1_name: form.humanName.trim(),
@@ -138,6 +150,11 @@ export function HumanGameCreator() {
           commander1,
           commander2,
         }),
+      }
+
+      if (form.opponentType === 'ai') {
+        body.ai_base_url = form.aiBaseUrl.trim()
+        body.ai_model = form.aiModel.trim()
       }
 
       const res = await fetch('/human-game', {
@@ -220,6 +237,30 @@ export function HumanGameCreator() {
               {fieldErrors.opponentName && <span className="form-error">{fieldErrors.opponentName}</span>}
             </div>
           </div>
+          {form.opponentType === 'ai' && (
+            <div className="form-row" style={{ marginTop: 'var(--space-3)' }}>
+              <div className="form-field">
+                <label className="label">LLM Endpoint URL</label>
+                <input
+                  className="input"
+                  value={form.aiBaseUrl}
+                  onChange={e => setForm(f => ({ ...f, aiBaseUrl: e.target.value }))}
+                  placeholder="http://localhost:8080/v1"
+                />
+                {fieldErrors.aiBaseUrl && <span className="form-error">{fieldErrors.aiBaseUrl}</span>}
+              </div>
+              <div className="form-field">
+                <label className="label">Model</label>
+                <input
+                  className="input"
+                  value={form.aiModel}
+                  onChange={e => setForm(f => ({ ...f, aiModel: e.target.value }))}
+                  placeholder="e.g. devstral"
+                />
+                {fieldErrors.aiModel && <span className="form-error">{fieldErrors.aiModel}</span>}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="form-card">
