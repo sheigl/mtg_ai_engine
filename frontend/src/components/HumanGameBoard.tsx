@@ -8,13 +8,13 @@ import { Battlefield } from './Battlefield'
 import { StackView } from './StackView'
 import { PhaseTracker } from './PhaseTracker'
 import { ConnectionStatus } from './ConnectionStatus'
-import { ActionLog } from './ActionLog'
+import { GameSidebar } from './GameSidebar'
 import { InteractiveHand } from './InteractiveHand'
 import { ActionPanel } from './ActionPanel'
 import { BlockerAssigner } from './BlockerAssigner'
 import { TargetChoiceModal, MulliganModal, DiscardModal } from './ChoiceModal'
 import { GameResultOverlay } from './GameResultOverlay'
-import { DebugPanel } from './DebugPanel'
+
 import type { GameState, Permanent } from '../types/game'
 import '../styles/board.css'
 import '../styles/debug.css'
@@ -91,7 +91,7 @@ export function HumanGameBoard() {
   useEffect(() => {
     if (!isMyTurn || !autoPassPriority || isPending) return
     if (legalActions.length === 1 && legalActions[0].action_type === 'pass') {
-      const timer = setTimeout(() => submitAction('pass', {}), 300)
+      const timer = setTimeout(() => submitAction('pass', {}), 50)
       return () => clearTimeout(timer)
     }
   }, [isMyTurn, autoPassPriority, isPending, legalActions, submitAction])
@@ -333,9 +333,9 @@ export function HumanGameBoard() {
         />
       </div>
 
-      {/* Action log sidebar */}
+      {/* Sidebar with Action Log / AI tabs */}
       <div className="action-log-container">
-        <ActionLog gameId={gs.game_id} />
+        <GameSidebar gameId={gs.game_id} isGameOver={gs.is_game_over} />
       </div>
 
       {/* Floating action panel */}
@@ -399,7 +399,6 @@ export function HumanGameBoard() {
         />
       )}
 
-      <DebugPanel gameId={gs.game_id} isGameOver={gs.is_game_over} debugEnabled={gs.debug_enabled} />
     </div>
   )
 }

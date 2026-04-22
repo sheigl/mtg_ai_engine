@@ -6,8 +6,7 @@ import { Battlefield } from './Battlefield'
 import { StackView } from './StackView'
 import { PhaseTracker } from './PhaseTracker'
 import { ConnectionStatus } from './ConnectionStatus'
-import { ActionLog } from './ActionLog'
-import { DebugPanel } from './DebugPanel'
+import { GameSidebar } from './GameSidebar'
 import type { GameState } from '../types/game'
 import '../styles/board.css'
 
@@ -145,18 +144,15 @@ export function GameBoard() {
         commanderDamage={isCommander ? gs.commander_damage[player1.name] : undefined}
       />
 
-      {/* Action Log sidebar */}
+      {/* Sidebar with Action Log / AI tabs */}
       <div className="action-log-container">
-        <ActionLog gameId={gs.game_id} />
+        <GameSidebar gameId={gs.game_id} isGameOver={gs.is_game_over} />
       </div>
 
       {/* Game over overlay */}
       {!gameOverDismissed && (
         <GameOverOverlay gs={gs} gameId={gs.game_id} onDismiss={() => setGameOverDismissed(true)} />
       )}
-
-      {/* Debug Panel */}
-      <DebugPanel gameId={gs.game_id} isGameOver={gs.is_game_over} debugEnabled={gs.debug_enabled} />
     </div>
   )
 }
