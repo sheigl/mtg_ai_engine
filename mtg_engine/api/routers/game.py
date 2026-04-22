@@ -1646,10 +1646,34 @@ def legal_actions(game_id: str) -> dict:
     """
     GET /game/{game_id}/legal-actions — compute all legal actions. REQ-S05, REQ-6.3.
     Must respond in under 200ms (REQ-P01).
+
+    Auto-pass: if the only legal action is "pass", automatically submit it
+    and return the next state's legal actions. This prevents the UI/AI from
+    being presented with an empty decision.
     """
     from mtg_engine.export.store import get_export_store
+    from mtg_engine.engine.turn_manager import pass_priority
     mgr = get_manager()
     gs = _get_gs(game_id)
+
+    # Auto-pass loop: if only "pass" is available, keep passing until
+    # someone has a real action or the game advances.
+    max_auto_passes = 20
+    for _ in range(max_auto_passes):
+        actions = _compute_legal_actions(gs)
+        if len(actions) > 1 or (actions and actions[0].action_type != "pass"):
+            break
+        if gs.is_game_over:
+            break
+        # Only auto-pass if the stack is empty (stack items need resolution,
+        # don't auto-skip those)
+        if gs.stack:
+            break
+        gs = pass_priority(gs, gs.priority_holder)
+        mgr.update(game_id, gs)
+    else:
+        logger.warning("Auto-pass loop exceeded %d iterations for game %s", max_auto_passes, game_id)
+
     actions = _compute_legal_actions(gs)
     actions_data = [a.model_dump() for a in actions]
     # Record snapshot at each priority grant (needed for UUID→name resolution in game log).

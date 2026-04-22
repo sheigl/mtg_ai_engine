@@ -53,10 +53,6 @@ export function ActionPanel({
   const isDeclareBlockers = step === 'declare_blockers'
   const canPass = legalActions.some(a => a.action_type === 'pass')
 
-  // When auto-pass is on and the only option is pass, hide the action buttons entirely
-  const onlyPassAvailable = legalActions.length === 1 && legalActions[0].action_type === 'pass'
-  const hideActions = autoPassPriority && onlyPassAvailable && !lastError
-
   return (
     <div style={{
       position: 'fixed',
@@ -103,21 +99,6 @@ export function ActionPanel({
         </div>
       )}
 
-      {/* Waiting indicator when auto-passing */}
-      {hideActions && (
-        <div style={{
-          fontSize: '0.7rem',
-          color: 'var(--text-muted)',
-          pointerEvents: 'none',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '0.4rem',
-        }}>
-          <span className="spinner" style={{ width: 12, height: 12, borderWidth: 2 }} />
-          Waiting for opponent...
-        </div>
-      )}
-
       {/* Attacker selection */}
       {isDeclareAttackers && eligibleAttackers && eligibleAttackers.length > 0 && (
         <div style={{ pointerEvents: 'all', textAlign: 'center' }}>
@@ -153,37 +134,35 @@ export function ActionPanel({
       )}
 
       {/* Action buttons */}
-      {!hideActions && (
-        <div style={{ display: 'flex', gap: '0.5rem', pointerEvents: 'all' }}>
-          {isDeclareAttackers && selectedAttackers.size > 0 && (
-            <button
-              onClick={onConfirmAttackers}
-              disabled={isPending}
-              style={btnStyle('#e55', '#fff')}
-            >
-              {isPending ? '…' : `Attack with ${selectedAttackers.size}`}
-            </button>
-          )}
-          {isDeclareBlockers && hasBlockerAssignments && (
-            <button
-              onClick={onConfirmBlockers}
-              disabled={isPending}
-              style={btnStyle('#4a9', '#fff')}
-            >
-              {isPending ? '…' : 'Confirm Blocks'}
-            </button>
-          )}
-          {canPass && (
-            <button
-              onClick={onPassPriority}
-              disabled={isPending}
-              style={btnStyle('var(--bg-secondary)', 'var(--text-secondary)', '1px solid var(--border-default)')}
-            >
-              {isPending ? '…' : isDeclareAttackers ? 'No Attacks' : isDeclareBlockers ? 'No Blocks' : 'Pass Priority'}
-            </button>
-          )}
-        </div>
-      )}
+      <div style={{ display: 'flex', gap: '0.5rem', pointerEvents: 'all' }}>
+        {isDeclareAttackers && selectedAttackers.size > 0 && (
+          <button
+            onClick={onConfirmAttackers}
+            disabled={isPending}
+            style={btnStyle('#e55', '#fff')}
+          >
+            {isPending ? '…' : `Attack with ${selectedAttackers.size}`}
+          </button>
+        )}
+        {isDeclareBlockers && hasBlockerAssignments && (
+          <button
+            onClick={onConfirmBlockers}
+            disabled={isPending}
+            style={btnStyle('#4a9', '#fff')}
+          >
+            {isPending ? '…' : 'Confirm Blocks'}
+          </button>
+        )}
+        {canPass && legalActions.length > 1 && (
+          <button
+            onClick={onPassPriority}
+            disabled={isPending}
+            style={btnStyle('var(--bg-secondary)', 'var(--text-secondary)', '1px solid var(--border-default)')}
+          >
+            {isPending ? '…' : isDeclareAttackers ? 'No Attacks' : isDeclareBlockers ? 'No Blocks' : 'Pass Priority'}
+          </button>
+        )}
+      </div>
 
       {/* Auto-pass toggle */}
       <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.7rem', color: 'var(--text-muted)', cursor: 'pointer', pointerEvents: 'all' }}>
