@@ -3,7 +3,7 @@ import copy
 import logging
 from typing import Any
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from mtg_engine.api.game_manager import get_manager
 from mtg_engine.persistence.player_defaults import get_merged_player_settings_sync
@@ -44,6 +44,11 @@ class GameSummary(BaseModel):
     step: str
     is_game_over: bool
     winner: str | None = None
+    # Series mode (032-game-series)
+    series_id: str | None = None
+    series_game_number: int = 1
+    series_total: int = 1
+    series_score: dict[str, int] = Field(default_factory=dict)
 
 
 # ─── Request bodies ───────────────────────────────────────────────────────────
@@ -232,6 +237,18 @@ def list_games() -> dict:
     mgr = get_manager()
     summaries = []
     for game_id, gs in mgr._games.items():
+        series_info = {}
+        if gs.series_id:
+            try:
+                sc = mgr.get_series(gs.series_id)
+                series_info = {
+                    "series_id": gs.series_id,
+                    "series_game_number": len(sc.results) + (1 if not gs.is_game_over else 0),
+                    "series_total": sc.total_games,
+                    "series_score": sc.wins,
+                }
+            except KeyError:
+                pass
         summaries.append(GameSummary(
             game_id=game_id,
             player1_name=gs.players[0].name,
@@ -242,6 +259,7 @@ def list_games() -> dict:
             step=gs.step.value,
             is_game_over=gs.is_game_over,
             winner=gs.winner,
+            **series_info,
         ).model_dump())
     return {"data": summaries}
 

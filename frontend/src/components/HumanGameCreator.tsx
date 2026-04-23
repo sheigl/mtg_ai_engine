@@ -18,6 +18,7 @@ interface FormState {
   enableDebug: boolean
   observerUrl: string
   observerModel: string
+  seriesCount: number
 }
 
 interface FieldErrors {
@@ -76,6 +77,7 @@ export function HumanGameCreator() {
     enableDebug: false,
     observerUrl: '',
     observerModel: '',
+    seriesCount: 1,
   })
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({})
   const [serverError, setServerError] = useState<string | null>(null)
@@ -153,6 +155,7 @@ export function HumanGameCreator() {
         player2_deck: deck2,
         format: form.format,
         debug: form.enableDebug,
+        series_count: form.seriesCount,
         ...(form.format === 'commander' && {
           commander1,
           commander2,
@@ -319,16 +322,30 @@ export function HumanGameCreator() {
         </div>
 
         <div className="form-card">
-          <div className="form-field form-field--shrink">
-            <label className="label">Format</label>
-            <select
-              className="select"
-              value={form.format}
-              onChange={e => setForm(f => ({ ...f, format: e.target.value as 'standard' | 'commander' }))}
-            >
-              <option value="standard">Standard</option>
-              <option value="commander">Commander</option>
-            </select>
+          <div className="form-row">
+            <div className="form-field form-field--shrink">
+              <label className="label">Format</label>
+              <select
+                className="select"
+                value={form.format}
+                onChange={e => setForm(f => ({ ...f, format: e.target.value as 'standard' | 'commander' }))}
+              >
+                <option value="standard">Standard</option>
+                <option value="commander">Commander</option>
+              </select>
+            </div>
+            <div className="form-field form-field--shrink">
+              <label className="label">Series count</label>
+              <input
+                className="input"
+                type="number"
+                min={1}
+                max={100}
+                value={form.seriesCount}
+                onChange={e => setForm(f => ({ ...f, seriesCount: Math.max(1, parseInt(e.target.value, 10) || 1) }))}
+                style={{ width: 80 }}
+              />
+            </div>
           </div>
           {form.format === 'commander' && (
             <div className="form-row" style={{ marginTop: 'var(--space-3)' }}>

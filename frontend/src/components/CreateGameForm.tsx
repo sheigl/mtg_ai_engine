@@ -23,6 +23,7 @@ interface FormState {
   debug: boolean
   observerUrl: string
   observerModel: string
+  seriesCount: number
 }
 
 interface FieldErrors {
@@ -66,6 +67,7 @@ const defaultForm = (): FormState => ({
   debug: false,
   observerUrl: 'http://localhost:8080/v1',
   observerModel: '',
+  seriesCount: 1,
 })
 
 function parseDeck(raw: string): string[] {
@@ -321,6 +323,7 @@ export function CreateGameForm({ onClose }: Props) {
           verbose: form.verbose,
           max_turns: parseInt(form.maxTurns, 10) || 200,
           debug: form.debug,
+          series_count: form.seriesCount,
         }
 
         const res = await fetch('/human-game', {
@@ -367,6 +370,7 @@ export function CreateGameForm({ onClose }: Props) {
           debug: form.debug,
           observer_url: form.debug ? (form.observerUrl.trim() || null) : null,
           observer_model: form.debug ? (form.observerModel.trim() || null) : null,
+          series_count: form.seriesCount,
         }
 
         const res = await fetch('/ai-game', {
@@ -482,6 +486,18 @@ export function CreateGameForm({ onClose }: Props) {
                   <option value="standard">Standard</option>
                   <option value="commander">Commander</option>
                 </select>
+              </div>
+              <div className="form-field form-field--shrink">
+                <label className="label">Series count</label>
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={form.seriesCount}
+                  onChange={e => setForm(f => ({ ...f, seriesCount: Math.max(1, parseInt(e.target.value, 10) || 1) }))}
+                  style={{ width: 80 }}
+                />
               </div>
             </div>
             {form.format === 'commander' && (

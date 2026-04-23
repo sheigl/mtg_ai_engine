@@ -146,6 +146,11 @@ export interface GameSummary {
   step: string
   is_game_over: boolean
   winner: string | null
+  // Series mode (032-game-series)
+  series_id?: string
+  series_game_number?: number
+  series_total?: number
+  series_score?: Record<string, number>
 }
 
 export interface TranscriptEntry {

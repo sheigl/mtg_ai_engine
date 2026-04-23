@@ -58,6 +58,7 @@ class AIGameRequest(BaseModel):
     debug: bool = False
     observer_url: str | None = None
     observer_model: str | None = None
+    series_count: int = 1
 
     @model_validator(mode="after")
     def _cross_field_validation(self) -> "AIGameRequest":
@@ -132,6 +133,28 @@ def create_ai_game(req: AIGameRequest, request: Request) -> dict:
         raise HTTPException(status_code=422, detail={"error": msg, "error_code": code})
 
     # Create game in-process (no HTTP round-trip)
+    # Series mode (032-game-series)
+    series_id: str | None = None
+    if req.series_count > 1:
+        series_settings = {
+            "player1": req.player1.model_dump(),
+            "player2": req.player2.model_dump(),
+            "deck1": req.deck1,
+            "deck2": req.deck2,
+            "format": req.format,
+            "commander1": req.commander1,
+            "commander2": req.commander2,
+            "verbose": req.verbose,
+            "max_turns": req.max_turns,
+            "debug": req.debug,
+            "observer_url": req.observer_url,
+            "observer_model": req.observer_model,
+            "request": {
+                "base_url": str(request.base_url).rstrip("/"),
+            },
+        }
+        series_id = mgr.create_series(req.series_count, series_settings)
+
     gs = mgr.create_game(
         req.player1.name,
         req.player2.name,
@@ -143,6 +166,10 @@ def create_ai_game(req: AIGameRequest, request: Request) -> dict:
         commander1_card=commander1_card if req.format == "commander" else None,
         commander2_card=commander2_card if req.format == "commander" else None,
     )
+    if series_id:
+        gs.series_id = series_id
+        mgr.get_series(series_id).active_game_id = gs.game_id
+        mgr.update(gs.game_id, gs)
     game_id = gs.game_id
 
     # Fetch and merge AI player defaults with request values (Feature 028)
@@ -177,14 +204,14 @@ def create_ai_game(req: AIGameRequest, request: Request) -> dict:
     thread = threading.Thread(
         target=_run_ai_loop,
         args=(req, game_id, engine_url, final_p1_url, final_p1_model, final_p1_thinking,
-              final_p2_url, final_p2_model, final_p2_thinking),
+              final_p2_url, final_p2_model, final_p2_thinking, series_id),
         daemon=False,
         name=f"ai-game-{game_id[:8]}",
     )
     thread.start()
-    logger.info("Started AI game loop thread for game %s", game_id)
+    logger.info("Started AI game loop thread for game %s (series=%s)", game_id, series_id)
 
-    return {"data": {"game_id": game_id}}
+    return {"data": {"game_id": game_id, "series_id": series_id}}
 
 
 def _run_ai_loop(
@@ -197,6 +224,7 @@ def _run_ai_loop(
     merged_p2_url: str = "",
     merged_p2_model: str = "",
     merged_p2_thinking: bool | None = None,
+    series_id: str | None = None,
 ) -> None:
     """
     Build the GameLoop from the request and run it.
@@ -212,6 +240,8 @@ def _run_ai_loop(
             print(f"[ai-game] Health check response: {resp.status_code} {resp.text}", flush=True)
     except Exception as e:
         print(f"[ai-game] Health check failed: {e}", flush=True)
+
+    summary = None
     try:
         # Import here to avoid circular imports at module load time
         from ai_client.models import GameConfig, PlayerConfig
@@ -294,10 +324,85 @@ def _run_ai_loop(
                 observer=observer,
                 game_id=game_id,  # skip game creation — already done above
             )
-            loop.run()
+            summary = loop.run()
 
     except Exception as e:
         import traceback
         print(f"[CRITICAL] AI game loop exception: {e}", flush=True)
         traceback.print_exc()
         logger.exception("AI game loop for %s raised an unhandled exception", game_id)
+
+    # Series continuation (032-game-series)
+    if series_id and summary:
+        from mtg_engine.api.game_manager import get_manager
+        mgr = get_manager()
+        try:
+            mgr.record_series_result(series_id, game_id, summary.winner, summary.total_turns)
+            if not mgr.is_series_complete(series_id):
+                sc = mgr.get_series(series_id)
+                print(f"[ai-game] Series {series_id[:8]}: spawning game {sc.completed_games + 1} of {sc.total_games}", flush=True)
+                _spawn_next_ai_game(req, series_id, engine_url, merged_p1_url, merged_p1_model, merged_p1_thinking,
+                                    merged_p2_url, merged_p2_model, merged_p2_thinking)
+        except Exception as e:
+            logger.warning("Series continuation failed for %s: %s", series_id, e)
+
+
+def _spawn_next_ai_game(
+    req: AIGameRequest,
+    series_id: str,
+    engine_url: str,
+    merged_p1_url: str,
+    merged_p1_model: str,
+    merged_p1_thinking: bool | None,
+    merged_p2_url: str,
+    merged_p2_model: str,
+    merged_p2_thinking: bool | None,
+) -> None:
+    """Create the next game in a series and start its loop."""
+    from mtg_engine.api.game_manager import get_manager
+    from mtg_engine.card_data.deck_loader import load_deck, load_commander_deck
+    from ai_client.prompts import DEFAULT_DECK, DEFAULT_COMMANDER_DECK
+    mgr = get_manager()
+    try:
+        sc = mgr.get_series(series_id)
+    except KeyError:
+        return
+
+    # Reload decks (new random seed each game)
+    if req.format == "commander":
+        d1 = req.deck1 if req.deck1 else [req.commander1] + list(DEFAULT_COMMANDER_DECK)
+        d2 = req.deck2 if req.deck2 else [req.commander2] + list(DEFAULT_COMMANDER_DECK)
+        deck1_cards, commander1_card = load_commander_deck(d1, req.commander1)
+        deck2_cards, commander2_card = load_commander_deck(d2, req.commander2)
+    else:
+        d1 = req.deck1 if req.deck1 else list(DEFAULT_DECK)
+        d2 = req.deck2 if req.deck2 else list(DEFAULT_DECK)
+        deck1_cards = load_deck(d1)
+        deck2_cards = load_deck(d2)
+        commander1_card = None
+        commander2_card = None
+
+    gs = mgr.create_game(
+        req.player1.name,
+        req.player2.name,
+        deck1_cards,
+        deck2_cards,
+        verbose=req.verbose,
+        debug=req.debug,
+        format=req.format,
+        commander1_card=commander1_card if req.format == "commander" else None,
+        commander2_card=commander2_card if req.format == "commander" else None,
+    )
+    gs.series_id = series_id
+    sc.active_game_id = gs.game_id
+    mgr.update(gs.game_id, gs)
+
+    thread = threading.Thread(
+        target=_run_ai_loop,
+        args=(req, gs.game_id, engine_url, merged_p1_url, merged_p1_model, merged_p1_thinking,
+              merged_p2_url, merged_p2_model, merged_p2_thinking, series_id),
+        daemon=False,
+        name=f"ai-game-{gs.game_id[:8]}",
+    )
+    thread.start()
+    logger.info("Started series game %s for series %s", gs.game_id, series_id)

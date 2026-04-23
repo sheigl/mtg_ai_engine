@@ -33,6 +33,7 @@ class HumanGameRequest(BaseModel):
     debug: bool = False
     commander1: str | None = None
     commander2: str | None = None
+    series_count: int = 1
 
     @model_validator(mode="after")
     def _validate(self) -> "HumanGameRequest":
@@ -106,6 +107,31 @@ def create_human_game(req: HumanGameRequest, request: Request) -> dict:
     def _persist_type(t: str) -> str:
         return "human" if t == "human" else "ai"
 
+    # Series mode (032-game-series)
+    series_id: str | None = None
+    if req.series_count > 1:
+        series_settings = {
+            "player1_type": req.player1_type,
+            "player2_type": req.player2_type,
+            "player1_name": req.player1_name,
+            "player2_name": req.player2_name,
+            "player1_deck": req.player1_deck,
+            "player2_deck": req.player2_deck,
+            "format": req.format,
+            "ai_model": req.ai_model,
+            "ai_base_url": req.ai_base_url,
+            "ai_enable_thinking": req.ai_enable_thinking,
+            "observer_model": req.observer_model,
+            "observer_url": req.observer_url,
+            "observer_enabled": req.observer_enabled,
+            "verbose": req.verbose,
+            "max_turns": req.max_turns,
+            "debug": req.debug,
+            "commander1": req.commander1,
+            "commander2": req.commander2,
+        }
+        series_id = mgr.create_series(req.series_count, series_settings)
+
     gs = mgr.create_game(
         req.player1_name,
         req.player2_name,
@@ -119,6 +145,10 @@ def create_human_game(req: HumanGameRequest, request: Request) -> dict:
         commander1_card=commander1_card,
         commander2_card=commander2_card,
     )
+    if series_id:
+        gs.series_id = series_id
+        mgr.get_series(series_id).active_game_id = gs.game_id
+        mgr.update(gs.game_id, gs)
     game_id = gs.game_id
 
     human_player_name = req.player1_name if req.player1_type == "human" else req.player2_name
@@ -146,12 +176,12 @@ def create_human_game(req: HumanGameRequest, request: Request) -> dict:
     thread = threading.Thread(
         target=_run_hybrid_loop,
         args=(req, game_id, engine_url, human_player_name, ai_player_name, ai_player_type,
-              final_ai_base_url, final_ai_model, final_ai_enable_thinking),
+              final_ai_base_url, final_ai_model, final_ai_enable_thinking, series_id),
         daemon=False,
         name=f"human-game-{game_id[:8]}",
     )
     thread.start()
-    logger.info("Started hybrid game loop thread for game %s (human=%s)", game_id, human_player_name)
+    logger.info("Started hybrid game loop thread for game %s (human=%s, series=%s)", game_id, human_player_name, series_id)
     _human_player_registry[game_id] = human_player_name
 
     return {"data": HumanGameResponse(
@@ -180,8 +210,10 @@ def _run_hybrid_loop(
     merged_ai_base_url: str = "",
     merged_ai_model: str = "",
     merged_ai_enable_thinking: bool | None = None,
+    series_id: str | None = None,
 ) -> None:
     """Build and run the HybridGameLoop in a daemon thread."""
+    summary = None
     try:
         from ai_client.models import GameConfig, PlayerConfig
         from ai_client.heuristic_player import HeuristicPlayer
@@ -241,12 +273,98 @@ def _run_hybrid_loop(
                 observer=observer,
                 game_id=game_id,
             )
-            loop.run()
+            summary = loop.run()
 
     except Exception as exc:
         import traceback
         logger.exception("Hybrid game loop for %s raised an unhandled exception", game_id)
         traceback.print_exc()
+
+    # Series continuation (032-game-series)
+    if series_id and summary:
+        from mtg_engine.api.game_manager import get_manager
+        mgr = get_manager()
+        try:
+            mgr.record_series_result(series_id, game_id, summary.winner, summary.total_turns)
+            if not mgr.is_series_complete(series_id):
+                sc = mgr.get_series(series_id)
+                print(f"[human-game] Series {series_id[:8]}: spawning game {sc.completed_games + 1} of {sc.total_games}", flush=True)
+                _spawn_next_human_game(req, series_id, engine_url, human_player_name, ai_player_name, ai_player_type,
+                                       merged_ai_base_url, merged_ai_model, merged_ai_enable_thinking)
+        except Exception as e:
+            logger.warning("Series continuation failed for %s: %s", series_id, e)
+
+
+def _spawn_next_human_game(
+    req: HumanGameRequest,
+    series_id: str,
+    engine_url: str,
+    human_player_name: str,
+    ai_player_name: str,
+    ai_player_type: str,
+    merged_ai_base_url: str,
+    merged_ai_model: str,
+    merged_ai_enable_thinking: bool | None,
+) -> None:
+    """Create the next game in a human vs AI series and start its loop."""
+    from mtg_engine.api.game_manager import get_manager
+    from mtg_engine.card_data.deck_loader import load_deck, load_commander_deck
+    from ai_client.prompts import DEFAULT_DECK, DEFAULT_COMMANDER_DECK
+    mgr = get_manager()
+    try:
+        sc = mgr.get_series(series_id)
+    except KeyError:
+        return
+
+    # Reload decks (new random seed each game)
+    if req.format == "commander":
+        fallback = list(DEFAULT_COMMANDER_DECK)
+        d1 = req.player1_deck if req.player1_deck else fallback
+        d2 = req.player2_deck if req.player2_deck else fallback
+        if req.commander1 not in d1:
+            d1 = d1 + [req.commander1]
+        if req.commander2 not in d2:
+            d2 = d2 + [req.commander2]
+        deck1_cards, commander1_card = load_commander_deck(d1, req.commander1)
+        deck2_cards, commander2_card = load_commander_deck(d2, req.commander2)
+    else:
+        d1 = req.player1_deck if req.player1_deck else list(DEFAULT_DECK)
+        d2 = req.player2_deck if req.player2_deck else list(DEFAULT_DECK)
+        deck1_cards = load_deck(d1)
+        deck2_cards = load_deck(d2)
+        commander1_card = None
+        commander2_card = None
+
+    def _persist_type(t: str) -> str:
+        return "human" if t == "human" else "ai"
+
+    gs = mgr.create_game(
+        req.player1_name,
+        req.player2_name,
+        deck1_cards,
+        deck2_cards,
+        verbose=req.verbose,
+        debug=req.debug,
+        format=req.format,
+        player1_type=_persist_type(req.player1_type),
+        player2_type=_persist_type(req.player2_type),
+        commander1_card=commander1_card,
+        commander2_card=commander2_card,
+    )
+    gs.series_id = series_id
+    sc.active_game_id = gs.game_id
+    mgr.update(gs.game_id, gs)
+
+    thread = threading.Thread(
+        target=_run_hybrid_loop,
+        args=(req, gs.game_id, engine_url, human_player_name, ai_player_name, ai_player_type,
+              merged_ai_base_url, merged_ai_model, merged_ai_enable_thinking, series_id),
+        daemon=False,
+        name=f"human-game-{gs.game_id[:8]}",
+    )
+    thread.start()
+    logger.info("Started series game %s for series %s", gs.game_id, series_id)
+    _human_player_registry[gs.game_id] = human_player_name
 
 
 def _make_ai(player_type: str, pc):

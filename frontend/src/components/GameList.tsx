@@ -290,6 +290,21 @@ function GameCard({ game, onDelete }: { game: any; onDelete: (id: string, e: Rea
             activePlayer={game.active_player}
           />
           <FormatBadge format={game.format} />
+          {game.series_id && game.series_total && game.series_total > 1 && (
+            <span className="badge badge--muted">
+              {game.series_game_number ?? 1} / {game.series_total}
+            </span>
+          )}
+          {game.series_id && game.series_score && Object.keys(game.series_score).length > 0 && (
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', fontWeight: 600 }}>
+              {Object.entries(game.series_score).map(([name, wins], i) => (
+                <span key={name}>
+                  {i > 0 && ' — '}
+                  {name}: {wins as number}
+                </span>
+              ))}
+            </span>
+          )}
           {!game.is_game_over && (
             <span style={{ fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
               Turn {game.turn} · {PHASE_LABELS[game.phase] || game.phase}

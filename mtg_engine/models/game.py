@@ -267,6 +267,8 @@ class GameState(BaseModel):
     is_game_over: bool = False
     winner: Optional[str] = None
     combat: Optional[CombatState] = None
+    # Series mode (032-game-series)
+    series_id: Optional[str] = None
     # Commander format
     format: str = "standard"
     commander_damage: dict[str, dict[str, int]] = Field(default_factory=dict)

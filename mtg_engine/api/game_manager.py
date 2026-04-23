@@ -13,12 +13,36 @@ from mtg_engine.export.transcript import TranscriptRecorder
 from mtg_engine.engine.verbose_log import VerboseLogger, ensure_zone_listener_registered
 
 
+class SeriesResult:
+    def __init__(self, game_id: str, winner: str | None, turn: int) -> None:
+        self.game_id = game_id
+        self.winner = winner
+        self.turn = turn
+
+
+class SeriesConfig:
+    def __init__(
+        self,
+        series_id: str,
+        total_games: int,
+        settings: dict,
+    ) -> None:
+        self.series_id = series_id
+        self.total_games = total_games
+        self.settings = settings
+        self.completed_games = 0
+        self.results: list[SeriesResult] = []
+        self.active_game_id: str | None = None
+        self.wins: dict[str, int] = {}
+
+
 class GameManager:
     def __init__(self) -> None:
         self._games: dict[str, GameState] = {}
         self._recorders: dict[str, TranscriptRecorder] = {}
         self._verbose_loggers: dict[str, VerboseLogger] = {}
         self._paused: set[str] = set()
+        self._series: dict[str, SeriesConfig] = {}
 
     def pause(self, game_id: str) -> None:
         self._paused.add(game_id)
@@ -157,6 +181,37 @@ class GameManager:
 
     def __contains__(self, game_id: str) -> bool:
         return game_id in self._games
+
+    # ── Series mode (032-game-series) ───────────────────────────────────────
+
+    def create_series(self, total_games: int, settings: dict) -> str:
+        """Register a new series and return its series_id."""
+        series_id = str(uuid.uuid4())
+        self._series[series_id] = SeriesConfig(series_id, total_games, settings)
+        return series_id
+
+    def get_series(self, series_id: str) -> SeriesConfig:
+        sc = self._series.get(series_id)
+        if sc is None:
+            raise KeyError(series_id)
+        return sc
+
+    def record_series_result(self, series_id: str, game_id: str, winner: str | None, turn: int) -> None:
+        """Record the result of one game in a series."""
+        sc = self._series.get(series_id)
+        if sc is None:
+            return
+        sc.results.append(SeriesResult(game_id, winner, turn))
+        sc.completed_games += 1
+        if winner and winner != "draw":
+            sc.wins[winner] = sc.wins.get(winner, 0) + 1
+
+    def is_series_complete(self, series_id: str) -> bool:
+        """Return True if the series has played all scheduled games."""
+        sc = self._series.get(series_id)
+        if sc is None:
+            return True
+        return sc.completed_games >= sc.total_games
 
 
 # Module-level singleton
