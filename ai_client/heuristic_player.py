@@ -1999,8 +1999,13 @@ class HeuristicPlayer:
             for pid in attacker_ids:
                 self._memory.trick_attackers.add(pid)
 
-        # Never return negative — pass is always score 0
-        return max(score, 0.0)
+        # Never return negative — pass is always score 0, but give a small
+        # baseline advantage over pass when we have attackers so the AI actually
+        # attacks instead of always passing due to tie-breaking in decide().
+        final_score = max(score, 0.0)
+        if attacker_perms and final_score == 0.0:
+            final_score = 0.1
+        return final_score
 
     # ------------------------------------------------------------------
     # Attack direction selection (US20, T063-T064)

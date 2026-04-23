@@ -8,8 +8,10 @@ export default defineConfig({
     proxy: {
       '/game': 'http://localhost:8999',
       '/ai-game': 'http://localhost:8999',
+      '/human-game': 'http://localhost:8999',
       '/export': 'http://localhost:8999',
       '/deck': 'http://localhost:8999',
+      '/card': 'http://localhost:8999',
       '/health': 'http://localhost:8999',
     },
   },

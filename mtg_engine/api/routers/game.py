@@ -44,6 +44,11 @@ class GameSummary(BaseModel):
     step: str
     is_game_over: bool
     winner: str | None = None
+    # Deck identity (033-deck-randomizer)
+    player1_deck_name: str | None = None
+    player2_deck_name: str | None = None
+    player1_color_identity: list[str] = Field(default_factory=list)
+    player2_color_identity: list[str] = Field(default_factory=list)
     # Series mode (032-game-series)
     series_id: str | None = None
     series_game_number: int = 1
@@ -259,6 +264,10 @@ def list_games() -> dict:
             step=gs.step.value,
             is_game_over=gs.is_game_over,
             winner=gs.winner,
+            player1_deck_name=gs.players[0].deck_name,
+            player2_deck_name=gs.players[1].deck_name,
+            player1_color_identity=gs.players[0].color_identity,
+            player2_color_identity=gs.players[1].color_identity,
             **series_info,
         ).model_dump())
     return {"data": summaries}

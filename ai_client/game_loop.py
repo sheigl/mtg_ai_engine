@@ -574,9 +574,13 @@ class GameLoop:
 
             # Clamp chosen index to valid range
             if chosen_index < 0 or chosen_index >= len(legal_actions):
-                chosen_index = 0
+                # For declare_attackers, prefer attacking over passing
+                attack_idx = next(
+                    (i for i, a in enumerate(legal_actions)
+                     if a.get("action_type") == "declare_attackers"), None)
+                chosen_index = attack_idx if attack_idx is not None else 0
                 fallback_used = True
-                reasoning = "(index out of range — fallback to pass)"
+                reasoning = "(index out of range — fallback)"
 
             chosen_action = legal_actions[chosen_index]
             action_desc = chosen_action.get("description", chosen_action.get("action_type", "?"))

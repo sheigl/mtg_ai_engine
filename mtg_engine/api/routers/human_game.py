@@ -34,6 +34,7 @@ class HumanGameRequest(BaseModel):
     commander1: str | None = None
     commander2: str | None = None
     series_count: int = 1
+    randomize_decks_per_game: bool = False
 
     @model_validator(mode="after")
     def _validate(self) -> "HumanGameRequest":
@@ -71,29 +72,49 @@ def create_human_game(req: HumanGameRequest, request: Request) -> dict:
 
     mgr = get_manager()
 
-    # Load decks
+    # Load decks — randomize from MTGGoldfish if not provided (033-deck-randomizer)
     try:
-        if req.format == "commander":
-            fallback = list(DEFAULT_COMMANDER_DECK)
-            d1 = req.player1_deck if req.player1_deck else fallback
-            d2 = req.player2_deck if req.player2_deck else fallback
-        else:
-            d1 = req.player1_deck if req.player1_deck else list(DEFAULT_DECK)
-            d2 = req.player2_deck if req.player2_deck else list(DEFAULT_DECK)
+        from mtg_engine.card_data.mtggoldfish import get_random_deck
+        deck1_names = req.player1_deck
+        deck2_names = req.player2_deck
+        commander1_name = req.commander1
+        commander2_name = req.commander2
+        deck_name1: str | None = None
+        deck_name2: str | None = None
+
+        if not deck1_names:
+            rd = get_random_deck(req.format)
+            if rd:
+                deck1_names = rd.to_card_names()
+                deck_name1 = rd.name
+                if req.format == "commander" and rd.commander:
+                    commander1_name = rd.commander
+        if not deck2_names:
+            rd = get_random_deck(req.format)
+            if rd:
+                deck2_names = rd.to_card_names()
+                deck_name2 = rd.name
+                if req.format == "commander" and rd.commander:
+                    commander2_name = rd.commander
 
         if req.format == "commander":
-            if not req.commander1 or not req.commander2:
+            fallback = list(DEFAULT_COMMANDER_DECK)
+            d1 = deck1_names if deck1_names else fallback
+            d2 = deck2_names if deck2_names else fallback
+            if not commander1_name or not commander2_name:
                 raise HTTPException(
                     status_code=422,
                     detail={"error": "Commander format requires commander1 and commander2", "error_code": "MISSING_COMMANDER"},
                 )
-            if req.commander1 not in d1:
-                d1 = d1 + [req.commander1]
-            if req.commander2 not in d2:
-                d2 = d2 + [req.commander2]
-            deck1_cards, commander1_card = load_commander_deck(d1, req.commander1)
-            deck2_cards, commander2_card = load_commander_deck(d2, req.commander2)
+            if commander1_name not in d1:
+                d1 = d1 + [commander1_name]
+            if commander2_name not in d2:
+                d2 = d2 + [commander2_name]
+            deck1_cards, commander1_card = load_commander_deck(d1, commander1_name)
+            deck2_cards, commander2_card = load_commander_deck(d2, commander2_name)
         else:
+            d1 = deck1_names if deck1_names else list(DEFAULT_DECK)
+            d2 = deck2_names if deck2_names else list(DEFAULT_DECK)
             deck1_cards = load_deck(d1)
             deck2_cards = load_deck(d2)
             commander1_card = None
@@ -129,6 +150,7 @@ def create_human_game(req: HumanGameRequest, request: Request) -> dict:
             "debug": req.debug,
             "commander1": req.commander1,
             "commander2": req.commander2,
+            "randomize_decks_per_game": req.randomize_decks_per_game,
         }
         series_id = mgr.create_series(req.series_count, series_settings)
 
@@ -144,6 +166,8 @@ def create_human_game(req: HumanGameRequest, request: Request) -> dict:
         player2_type=_persist_type(req.player2_type),
         commander1_card=commander1_card,
         commander2_card=commander2_card,
+        deck_name1=deck_name1,
+        deck_name2=deck_name2,
     )
     if series_id:
         gs.series_id = series_id
@@ -316,20 +340,44 @@ def _spawn_next_human_game(
     except KeyError:
         return
 
-    # Reload decks (new random seed each game)
+    # Reload decks — randomize per game if configured (033-deck-randomizer)
+    from mtg_engine.card_data.mtggoldfish import get_random_deck
+    deck1_names = req.player1_deck
+    deck2_names = req.player2_deck
+    commander1_name = req.commander1
+    commander2_name = req.commander2
+    deck_name1_spawn: str | None = None
+    deck_name2_spawn: str | None = None
+
+    randomize = sc.settings.get("randomize_decks_per_game", False)
+    if randomize or not deck1_names:
+        rd = get_random_deck(req.format)
+        if rd:
+            deck1_names = rd.to_card_names()
+            deck_name1_spawn = rd.name
+            if req.format == "commander" and rd.commander:
+                commander1_name = rd.commander
+    if randomize or not deck2_names:
+        rd = get_random_deck(req.format)
+        if rd:
+            deck2_names = rd.to_card_names()
+            deck_name2_spawn = rd.name
+            if req.format == "commander" and rd.commander:
+                commander2_name = rd.commander
+
     if req.format == "commander":
         fallback = list(DEFAULT_COMMANDER_DECK)
-        d1 = req.player1_deck if req.player1_deck else fallback
-        d2 = req.player2_deck if req.player2_deck else fallback
-        if req.commander1 not in d1:
-            d1 = d1 + [req.commander1]
-        if req.commander2 not in d2:
-            d2 = d2 + [req.commander2]
-        deck1_cards, commander1_card = load_commander_deck(d1, req.commander1)
-        deck2_cards, commander2_card = load_commander_deck(d2, req.commander2)
+        d1 = deck1_names if deck1_names else fallback
+        d2 = deck2_names if deck2_names else fallback
+        if commander1_name not in d1:
+            d1 = d1 + [commander1_name]
+        if commander2_name not in d2:
+            d2 = d2 + [commander2_name]
+        deck1_cards, commander1_card = load_commander_deck(d1, commander1_name)
+        deck2_cards, commander2_card = load_commander_deck(d2, commander2_name)
     else:
-        d1 = req.player1_deck if req.player1_deck else list(DEFAULT_DECK)
-        d2 = req.player2_deck if req.player2_deck else list(DEFAULT_DECK)
+        d1 = deck1_names if deck1_names else list(DEFAULT_DECK)
+        d2 = deck2_names if deck2_names else list(DEFAULT_DECK)
         deck1_cards = load_deck(d1)
         deck2_cards = load_deck(d2)
         commander1_card = None
@@ -350,6 +398,8 @@ def _spawn_next_human_game(
         player2_type=_persist_type(req.player2_type),
         commander1_card=commander1_card,
         commander2_card=commander2_card,
+        deck_name1=deck_name1_spawn,
+        deck_name2=deck_name2_spawn,
     )
     gs.series_id = series_id
     sc.active_game_id = gs.game_id

@@ -59,6 +59,7 @@ class AIGameRequest(BaseModel):
     observer_url: str | None = None
     observer_model: str | None = None
     series_count: int = 1
+    randomize_decks_per_game: bool = False
 
     @model_validator(mode="after")
     def _cross_field_validation(self) -> "AIGameRequest":
@@ -108,16 +109,39 @@ def create_ai_game(req: AIGameRequest, request: Request) -> dict:
     """
     mgr = get_manager()
 
-    # Load decks
+    # Load decks — randomize from MTGGoldfish if not provided (033-deck-randomizer)
     try:
+        from mtg_engine.card_data.mtggoldfish import get_random_deck
+        deck1_names = req.deck1
+        deck2_names = req.deck2
+        commander1_name = req.commander1
+        commander2_name = req.commander2
+        deck_name1: str | None = None
+        deck_name2: str | None = None
+
+        if not deck1_names:
+            random_deck = get_random_deck(req.format)
+            if random_deck:
+                deck1_names = random_deck.to_card_names()
+                deck_name1 = random_deck.name
+                if req.format == "commander" and random_deck.commander:
+                    commander1_name = random_deck.commander
+        if not deck2_names:
+            random_deck = get_random_deck(req.format)
+            if random_deck:
+                deck2_names = random_deck.to_card_names()
+                deck_name2 = random_deck.name
+                if req.format == "commander" and random_deck.commander:
+                    commander2_name = random_deck.commander
+
         if req.format == "commander":
-            d1 = req.deck1 if req.deck1 else [req.commander1] + list(DEFAULT_COMMANDER_DECK)
-            d2 = req.deck2 if req.deck2 else [req.commander2] + list(DEFAULT_COMMANDER_DECK)
-            deck1_cards, commander1_card = load_commander_deck(d1, req.commander1)
-            deck2_cards, commander2_card = load_commander_deck(d2, req.commander2)
+            d1 = deck1_names if deck1_names else [commander1_name] + list(DEFAULT_COMMANDER_DECK)
+            d2 = deck2_names if deck2_names else [commander2_name] + list(DEFAULT_COMMANDER_DECK)
+            deck1_cards, commander1_card = load_commander_deck(d1, commander1_name)
+            deck2_cards, commander2_card = load_commander_deck(d2, commander2_name)
         else:
-            d1 = req.deck1 if req.deck1 else list(DEFAULT_DECK)
-            d2 = req.deck2 if req.deck2 else list(DEFAULT_DECK)
+            d1 = deck1_names if deck1_names else list(DEFAULT_DECK)
+            d2 = deck2_names if deck2_names else list(DEFAULT_DECK)
             deck1_cards = load_deck(d1)
             deck2_cards = load_deck(d2)
             commander1_card = None
@@ -149,6 +173,7 @@ def create_ai_game(req: AIGameRequest, request: Request) -> dict:
             "debug": req.debug,
             "observer_url": req.observer_url,
             "observer_model": req.observer_model,
+            "randomize_decks_per_game": req.randomize_decks_per_game,
             "request": {
                 "base_url": str(request.base_url).rstrip("/"),
             },
@@ -165,6 +190,8 @@ def create_ai_game(req: AIGameRequest, request: Request) -> dict:
         format=req.format,
         commander1_card=commander1_card if req.format == "commander" else None,
         commander2_card=commander2_card if req.format == "commander" else None,
+        deck_name1=deck_name1,
+        deck_name2=deck_name2,
     )
     if series_id:
         gs.series_id = series_id
@@ -368,15 +395,39 @@ def _spawn_next_ai_game(
     except KeyError:
         return
 
-    # Reload decks (new random seed each game)
+    # Reload decks — randomize per game if configured (033-deck-randomizer)
+    from mtg_engine.card_data.mtggoldfish import get_random_deck
+    deck1_names = req.deck1
+    deck2_names = req.deck2
+    commander1_name = req.commander1
+    commander2_name = req.commander2
+    deck_name1_spawn: str | None = None
+    deck_name2_spawn: str | None = None
+
+    randomize = sc.settings.get("randomize_decks_per_game", False)
+    if randomize or not deck1_names:
+        rd = get_random_deck(req.format)
+        if rd:
+            deck1_names = rd.to_card_names()
+            deck_name1_spawn = rd.name
+            if req.format == "commander" and rd.commander:
+                commander1_name = rd.commander
+    if randomize or not deck2_names:
+        rd = get_random_deck(req.format)
+        if rd:
+            deck2_names = rd.to_card_names()
+            deck_name2_spawn = rd.name
+            if req.format == "commander" and rd.commander:
+                commander2_name = rd.commander
+
     if req.format == "commander":
-        d1 = req.deck1 if req.deck1 else [req.commander1] + list(DEFAULT_COMMANDER_DECK)
-        d2 = req.deck2 if req.deck2 else [req.commander2] + list(DEFAULT_COMMANDER_DECK)
-        deck1_cards, commander1_card = load_commander_deck(d1, req.commander1)
-        deck2_cards, commander2_card = load_commander_deck(d2, req.commander2)
+        d1 = deck1_names if deck1_names else [commander1_name] + list(DEFAULT_COMMANDER_DECK)
+        d2 = deck2_names if deck2_names else [commander2_name] + list(DEFAULT_COMMANDER_DECK)
+        deck1_cards, commander1_card = load_commander_deck(d1, commander1_name)
+        deck2_cards, commander2_card = load_commander_deck(d2, commander2_name)
     else:
-        d1 = req.deck1 if req.deck1 else list(DEFAULT_DECK)
-        d2 = req.deck2 if req.deck2 else list(DEFAULT_DECK)
+        d1 = deck1_names if deck1_names else list(DEFAULT_DECK)
+        d2 = deck2_names if deck2_names else list(DEFAULT_DECK)
         deck1_cards = load_deck(d1)
         deck2_cards = load_deck(d2)
         commander1_card = None
@@ -392,6 +443,8 @@ def _spawn_next_ai_game(
         format=req.format,
         commander1_card=commander1_card if req.format == "commander" else None,
         commander2_card=commander2_card if req.format == "commander" else None,
+        deck_name1=deck_name1_spawn,
+        deck_name2=deck_name2_spawn,
     )
     gs.series_id = series_id
     sc.active_game_id = gs.game_id

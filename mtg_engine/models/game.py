@@ -181,6 +181,9 @@ class PlayerState(BaseModel):
     lands_played_this_turn: int = 0
     has_lost: bool = False
     max_hand_size: int = 7
+    # Deck identity (033-deck-randomizer)
+    deck_name: Optional[str] = None
+    color_identity: list[str] = Field(default_factory=list)
     # Commander format
     command_zone: list[Card] = Field(default_factory=list)
     commander_name: Optional[str] = None

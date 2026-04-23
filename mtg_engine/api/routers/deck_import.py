@@ -194,3 +194,78 @@ def delete_imported_deck(deck_id: str) -> dict:
         raise _bad("Deck not found", "DECK_NOT_FOUND", 404)
     del _deck_store[deck_id]
     return {"data": {"deck_id": deck_id, "status": "deleted"}}
+
+
+# ── Metagame deck endpoints (033-deck-randomizer) ────────────────────────────
+
+@router.get("/metagame")
+def list_metagame_decks(format: str = "standard") -> dict:
+    """GET /deck/metagame?format=standard — list cached MTGGoldfish decks."""
+    from mtg_engine.card_data.mtggoldfish import get_decks_for_format, MetagameDeck
+    decks = get_decks_for_format(format.lower())
+    return {
+        "data": [
+            {
+                "name": d.name,
+                "format": d.format,
+                "card_count": sum(c["quantity"] for c in d.cards),
+                "commander": d.commander,
+            }
+            for d in decks
+        ]
+    }
+
+
+@router.post("/metagame/refresh")
+def refresh_metagame_decks(format: str = "standard") -> dict:
+    """POST /deck/metagame/refresh?format=standard — fetch fresh decks from MTGGoldfish."""
+    from mtg_engine.card_data.mtggoldfish import get_deck_cache
+    cache = get_deck_cache()
+    try:
+        decks = cache.refresh(format.lower())
+        return {
+            "data": {
+                "format": format,
+                "fetched": len(decks),
+                "decks": [d.name for d in decks],
+            }
+        }
+    except Exception as e:
+        logger.exception("Failed to refresh metagame decks")
+        raise _bad(f"Failed to fetch decks: {e}", "FETCH_ERROR", 500)
+
+
+@router.get("/metagame/random")
+def random_metagame_deck(format: str = "standard") -> dict:
+    """GET /deck/metagame/random?format=standard — return a random cached deck."""
+    from mtg_engine.card_data.mtggoldfish import get_random_deck
+    deck = get_random_deck(format.lower())
+    if deck is None:
+        raise _bad(f"No decks available for format '{format}'", "NO_DECKS", 404)
+    return {
+        "data": {
+            "name": deck.name,
+            "format": deck.format,
+            "cards": deck.cards,
+            "commander": deck.commander,
+        }
+    }
+
+
+@router.get("/metagame/deck")
+def get_named_metagame_deck(format: str = "standard", name: str = "") -> dict:
+    """GET /deck/metagame/deck?format=standard&name=... — return a specific cached deck."""
+    from mtg_engine.card_data.mtggoldfish import get_named_deck
+    if not name:
+        raise _bad("name parameter is required", "MISSING_NAME", 400)
+    deck = get_named_deck(format.lower(), name)
+    if deck is None:
+        raise _bad(f"Deck '{name}' not found for format '{format}'", "DECK_NOT_FOUND", 404)
+    return {
+        "data": {
+            "name": deck.name,
+            "format": deck.format,
+            "cards": deck.cards,
+            "commander": deck.commander,
+        }
+    }

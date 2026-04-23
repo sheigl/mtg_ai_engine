@@ -9,7 +9,5 @@ export function scryfallImageUrl(
   face: ScryfallFace = 'front',
   size: ScryfallImageSize = 'small'
 ): string {
-  const a = scryfallId[0]
-  const b = scryfallId[1]
-  return `https://cards.scryfall.io/${size}/${face}/${a}/${b}/${scryfallId}.jpg`
+  return `/card/image/${scryfallId}?size=${size}&face=${face}`
 }

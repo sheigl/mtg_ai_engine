@@ -67,6 +67,8 @@ class GameManager:
         commander2_card: Optional[Card] = None,
         player1_type: str = "ai",
         player2_type: str = "ai",
+        deck_name1: str | None = None,
+        deck_name2: str | None = None,
     ) -> GameState:
         """Create a new game, shuffle libraries, deal opening hands. REQ-G01, REQ-G04"""
         # Ensure the global zone-change listener is registered (once per process)
@@ -92,6 +94,14 @@ class GameManager:
 
         p1 = PlayerState(name=player1_name, hand=hand1, library=lib1, life=starting_life)
         p2 = PlayerState(name=player2_name, hand=hand2, library=lib2, life=starting_life)
+
+        # Set deck name and compute color identity (033-deck-randomizer)
+        p1.deck_name = deck_name1
+        p2.deck_name = deck_name2
+        ci1 = sorted({c for card in deck1 for c in card.color_identity})
+        ci2 = sorted({c for card in deck2 for c in card.color_identity})
+        p1.color_identity = ci1
+        p2.color_identity = ci2
 
         # Commander: set up command zones
         if format == "commander":

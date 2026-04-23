@@ -90,6 +90,8 @@ export interface PlayerState {
   command_zone: Card[]
   commander_name: string | null
   commander_cast_count: number
+  deck_name: string | null
+  color_identity: string[]
 }
 
 export interface AttackerInfo {
@@ -146,6 +148,11 @@ export interface GameSummary {
   step: string
   is_game_over: boolean
   winner: string | null
+  // Deck identity (033-deck-randomizer)
+  player1_deck_name: string | null
+  player2_deck_name: string | null
+  player1_color_identity: string[]
+  player2_color_identity: string[]
   // Series mode (032-game-series)
   series_id?: string
   series_game_number?: number

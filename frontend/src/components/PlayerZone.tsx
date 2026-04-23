@@ -1,5 +1,36 @@
 import type { PlayerState } from '../types/game'
 
+const COLOR_SYMBOLS: Record<string, string> = {
+  W: '\u2605', U: '\u25C6', B: '\u2620', R: '\u2666', G: '\u2726',
+}
+const COLOR_CSS: Record<string, string> = {
+  W: 'var(--mana-white, #f9fafb)',
+  U: 'var(--mana-blue, #3b82f6)',
+  B: 'var(--mana-black, #1e1e1e)',
+  R: 'var(--mana-red, #ef4444)',
+  G: 'var(--mana-green, #22c55e)',
+}
+
+function ColorIdentityPips({ colors }: { colors: string[] }) {
+  if (!colors || colors.length === 0) return null
+  return (
+    <span style={{ display: 'inline-flex', gap: 2, marginLeft: 4 }}>
+      {colors.map(c => (
+        <span
+          key={c}
+          style={{
+            fontSize: 'var(--text-xs, 11px)',
+            color: COLOR_CSS[c] ?? 'var(--text-tertiary)',
+            lineHeight: 1,
+          }}
+        >
+          {COLOR_SYMBOLS[c] ?? c}
+        </span>
+      ))}
+    </span>
+  )
+}
+
 interface PlayerZoneProps {
   player: PlayerState
   isActive: boolean
@@ -47,6 +78,12 @@ export function PlayerZone({ player, isActive, isOpponent = false, format, comma
         whiteSpace: 'nowrap',
       }}>
         {player.name}
+        {player.deck_name && (
+          <span style={{ fontWeight: 400, color: 'var(--text-tertiary)', fontSize: 'var(--text-sm)', marginLeft: 6 }}>
+            {player.deck_name}
+          </span>
+        )}
+        <ColorIdentityPips colors={player.color_identity} />
       </span>
 
       {/* Life */}

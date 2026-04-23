@@ -96,6 +96,17 @@
   margin-top: auto;
 }
 
+.card-oracle-text {
+  font-size: 0.52rem;
+  color: var(--text-secondary);
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin-top: 2px;
+}
+
 .card-mana-cost {
   position: absolute;
   top: 3px;

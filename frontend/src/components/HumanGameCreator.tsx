@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useMetagameDecks, fetchCachedDeck } from '../hooks/useMetagameDecks'
 import '../styles/create-game.css'
 
 type PlayerType = 'heuristic' | 'ai'
@@ -19,6 +20,12 @@ interface FormState {
   observerUrl: string
   observerModel: string
   seriesCount: number
+  // Deck source selection (033-deck-randomizer)
+  deck1Source: 'random' | 'cached' | 'custom'
+  deck2Source: 'random' | 'cached' | 'custom'
+  deck1Cached: string
+  deck2Cached: string
+  randomizeDecksPerGame: boolean
 }
 
 interface FieldErrors {
@@ -78,10 +85,16 @@ export function HumanGameCreator() {
     observerUrl: '',
     observerModel: '',
     seriesCount: 1,
+    deck1Source: 'random',
+    deck2Source: 'random',
+    deck1Cached: '',
+    deck2Cached: '',
+    randomizeDecksPerGame: false,
   })
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({})
   const [serverError, setServerError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const metagameDecks = useMetagameDecks(form.format)
 
   function validate(): FieldErrors {
     const errors: FieldErrors = {}
@@ -114,33 +127,59 @@ export function HumanGameCreator() {
 
     setIsSubmitting(true)
     try {
-      let deck1: string[]
-      let deck2: string[]
+      let deck1: string[] = []
+      let deck2: string[] = []
       let detectedCommander1: string | undefined
       let detectedCommander2: string | undefined
-      try {
-        if (isArchidektUrl(form.deck1Text)) {
-          const r = await resolveArchidektDeck(form.deck1Text)
+
+      // Parse deck1 based on source
+      if (form.deck1Source === 'custom') {
+        try {
+          if (isArchidektUrl(form.deck1Text)) {
+            const r = await resolveArchidektDeck(form.deck1Text)
+            deck1 = r.cards
+            detectedCommander1 = r.commander
+          } else {
+            deck1 = parseDeck(form.deck1Text)
+          }
+        } catch (err) {
+          setFieldErrors(prev => ({ ...prev, deck1: (err as Error).message }))
+          return
+        }
+      } else if (form.deck1Source === 'cached' && form.deck1Cached) {
+        try {
+          const r = await fetchCachedDeck(form.format, form.deck1Cached)
           deck1 = r.cards
-          detectedCommander1 = r.commander
-        } else {
-          deck1 = parseDeck(form.deck1Text)
+          if (r.commander) detectedCommander1 = r.commander
+        } catch {
+          setFieldErrors(prev => ({ ...prev, deck1: 'Failed to load cached deck' }))
+          return
         }
-      } catch (err) {
-        setFieldErrors(prev => ({ ...prev, deck1: (err as Error).message }))
-        return
       }
-      try {
-        if (isArchidektUrl(form.deck2Text)) {
-          const r = await resolveArchidektDeck(form.deck2Text)
-          deck2 = r.cards
-          detectedCommander2 = r.commander
-        } else {
-          deck2 = parseDeck(form.deck2Text)
+
+      // Parse deck2 based on source
+      if (form.deck2Source === 'custom') {
+        try {
+          if (isArchidektUrl(form.deck2Text)) {
+            const r = await resolveArchidektDeck(form.deck2Text)
+            deck2 = r.cards
+            detectedCommander2 = r.commander
+          } else {
+            deck2 = parseDeck(form.deck2Text)
+          }
+        } catch (err) {
+          setFieldErrors(prev => ({ ...prev, deck2: (err as Error).message }))
+          return
         }
-      } catch (err) {
-        setFieldErrors(prev => ({ ...prev, deck2: (err as Error).message }))
-        return
+      } else if (form.deck2Source === 'cached' && form.deck2Cached) {
+        try {
+          const r = await fetchCachedDeck(form.format, form.deck2Cached)
+          deck2 = r.cards
+          if (r.commander) detectedCommander2 = r.commander
+        } catch {
+          setFieldErrors(prev => ({ ...prev, deck2: 'Failed to load cached deck' }))
+          return
+        }
       }
 
       const commander1 = form.commander1.trim() || detectedCommander1 || ''
@@ -156,6 +195,7 @@ export function HumanGameCreator() {
         format: form.format,
         debug: form.enableDebug,
         series_count: form.seriesCount,
+        randomize_decks_per_game: form.randomizeDecksPerGame,
         ...(form.format === 'commander' && {
           commander1,
           commander2,
@@ -296,29 +336,91 @@ export function HumanGameCreator() {
         </div>
 
         <div className="form-card">
-          <div className="form-card-title">Decks (optional — leave blank for default)</div>
-          <div className="form-row">
-            <div className="form-field">
-              <label className="label">Your deck</label>
-              <textarea
-                className="textarea"
-                value={form.deck1Text}
-                onChange={e => { setFieldErrors(p => ({ ...p, deck1: undefined })); setForm(f => ({ ...f, deck1Text: e.target.value })) }}
-                placeholder="Comma-separated card names or Archidekt URL"
+          <div className="form-card-title">Decks</div>
+          {(['Your', 'Opponent'] as const).map((label, i) => {
+            const pn = i + 1
+            const source = pn === 1 ? form.deck1Source : form.deck2Source
+            const setSource = (v: 'custom' | 'random' | 'cached') =>
+              setForm(f => ({ ...f, [pn === 1 ? 'deck1Source' : 'deck2Source']: v }))
+            const cached = pn === 1 ? form.deck1Cached : form.deck2Cached
+            const setCached = (v: string) =>
+              setForm(f => ({ ...f, [pn === 1 ? 'deck1Cached' : 'deck2Cached']: v }))
+            const deckText = pn === 1 ? form.deck1Text : form.deck2Text
+            const setDeckText = (v: string) =>
+              setForm(f => ({ ...f, [pn === 1 ? 'deck1Text' : 'deck2Text']: v }))
+            const deckError = pn === 1 ? fieldErrors.deck1 : fieldErrors.deck2
+            const clearDeckError = () =>
+              setFieldErrors(prev => ({ ...prev, [pn === 1 ? 'deck1' : 'deck2']: undefined }))
+            return (
+              <div key={pn} style={{ marginBottom: 'var(--space-3)' }}>
+                <div className="form-row">
+                  <div className="form-field form-field--shrink">
+                    <label className="label">{label} deck</label>
+                    <select
+                      className="select"
+                      value={source}
+                      onChange={e => setSource(e.target.value as 'custom' | 'random' | 'cached')}
+                    >
+                      <option value="random">Random metagame deck</option>
+                      <option value="cached">Choose from metagame</option>
+                      <option value="custom">Custom deck list</option>
+                    </select>
+                  </div>
+                  {source === 'cached' && (
+                    <div className="form-field">
+                      <label className="label">Select deck</label>
+                      {metagameDecks.isLoading ? (
+                        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)' }}>Loading decks…</span>
+                      ) : metagameDecks.isError ? (
+                        <span style={{ fontSize: 'var(--text-sm)', color: 'var(--danger)' }}>Failed to load decks</span>
+                      ) : (
+                        <select
+                          className="select"
+                          value={cached}
+                          onChange={e => setCached(e.target.value)}
+                        >
+                          <option value="">— pick a deck —</option>
+                          {(metagameDecks.data ?? []).map(d => (
+                            <option key={d.name} value={d.name}>{d.name} ({d.card_count} cards)</option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+                  )}
+                </div>
+                {source === 'custom' && (
+                  <textarea
+                    className="textarea"
+                    value={deckText}
+                    onChange={e => { clearDeckError(); setDeckText(e.target.value) }}
+                    placeholder="Comma-separated card names or Archidekt URL"
+                    style={{ marginTop: 'var(--space-2)' }}
+                  />
+                )}
+                {source === 'random' && (
+                  <div style={{ fontSize: 'var(--text-sm)', color: 'var(--text-tertiary)', marginTop: 'var(--space-1)' }}>
+                    A random competitive deck will be assigned from MTGGoldfish.
+                  </div>
+                )}
+                {source === 'cached' && !cached && (
+                  <div style={{ fontSize: 'var(--text-sm)', color: 'var(--warning)', marginTop: 'var(--space-1)' }}>
+                    Select a deck from the dropdown above.
+                  </div>
+                )}
+                {deckError && <span className="form-error">{deckError}</span>}
+              </div>
+            )
+          })}
+          {form.seriesCount > 1 && (
+            <label className="cg-check-row" style={{ marginTop: 'var(--space-2)' }}>
+              <input
+                type="checkbox"
+                checked={form.randomizeDecksPerGame}
+                onChange={e => setForm(f => ({ ...f, randomizeDecksPerGame: e.target.checked }))}
               />
-              {fieldErrors.deck1 && <span className="form-error">{fieldErrors.deck1}</span>}
-            </div>
-            <div className="form-field">
-              <label className="label">Opponent deck</label>
-              <textarea
-                className="textarea"
-                value={form.deck2Text}
-                onChange={e => { setFieldErrors(p => ({ ...p, deck2: undefined })); setForm(f => ({ ...f, deck2Text: e.target.value })) }}
-                placeholder="Comma-separated card names or Archidekt URL"
-              />
-              {fieldErrors.deck2 && <span className="form-error">{fieldErrors.deck2}</span>}
-            </div>
-          </div>
+              Randomize decks per game in series
+            </label>
+          )}
         </div>
 
         <div className="form-card">

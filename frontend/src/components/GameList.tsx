@@ -3,6 +3,34 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useGameList } from '../hooks/useGameList'
 import { useQueryClient } from '@tanstack/react-query'
 
+const COLOR_CSS: Record<string, string> = {
+  W: '#f9fafb', U: '#3b82f6', B: '#1e1e1e', R: '#ef4444', G: '#22c55e',
+}
+
+function ColorPips({ colors }: { colors: string[] | undefined }) {
+  if (!colors || colors.length === 0) return null
+  return (
+    <span style={{ display: 'inline-flex', gap: 1, marginLeft: 4 }}>
+      {colors.map(c => (
+        <span
+          key={c}
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
+            color: COLOR_CSS[c] ?? 'var(--text-tertiary)',
+            background: c === 'B' ? 'var(--text-secondary, #666)' : 'transparent',
+            borderRadius: 2,
+            padding: '0 1px',
+            lineHeight: 1,
+          }}
+        >
+          {c}
+        </span>
+      ))}
+    </span>
+  )
+}
+
 const PHASE_LABELS: Record<string, string> = {
   beginning: 'Beginning',
   precombat_main: 'Main 1',
@@ -283,6 +311,21 @@ function GameCard({ game, onDelete }: { game: any; onDelete: (id: string, e: Rea
         }}>
           {game.player1_name} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>vs</span> {game.player2_name}
         </div>
+        {(game.player1_deck_name || game.player2_deck_name || (game.player1_color_identity?.length) || (game.player2_color_identity?.length)) && (
+          <div style={{ fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', marginBottom: 'var(--space-1)', display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
+            <span>
+              <span style={{ fontWeight: 600 }}>{game.player1_name}</span>
+              {game.player1_deck_name && <span style={{ color: 'var(--text-tertiary)' }}> {game.player1_deck_name}</span>}
+              <ColorPips colors={game.player1_color_identity} />
+            </span>
+            <span style={{ color: 'var(--text-muted)' }}>vs</span>
+            <span>
+              <span style={{ fontWeight: 600 }}>{game.player2_name}</span>
+              {game.player2_deck_name && <span style={{ color: 'var(--text-tertiary)' }}> {game.player2_deck_name}</span>}
+              <ColorPips colors={game.player2_color_identity} />
+            </span>
+          </div>
+        )}
         <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
           <GameStatusBadge
             isGameOver={game.is_game_over}

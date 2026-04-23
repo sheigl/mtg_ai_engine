@@ -139,6 +139,10 @@ export function CardView({ card, permanent, attachedAuras }: CardViewProps) {
 
       <span className="card-type">{card.type_line}</span>
 
+      {!showArt && card.oracle_text && (
+        <span className="card-oracle-text">{card.oracle_text}</span>
+      )}
+
       {isCreature && card.power != null && card.toughness != null && (
         <span className="card-pt">
           {permanent && permanent.damage_marked > 0
