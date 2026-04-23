@@ -29,7 +29,7 @@ class HumanGameRequest(BaseModel):
     observer_url: str | None = None
     observer_enabled: bool = True
     verbose: bool = False
-    max_turns: int = 200
+    max_turns: int = 0
     debug: bool = False
     commander1: str | None = None
     commander2: str | None = None

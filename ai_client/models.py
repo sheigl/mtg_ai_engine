@@ -181,7 +181,7 @@ class GameConfig:
     deck1: list[str] = field(default_factory=list)
     deck2: list[str] = field(default_factory=list)
     verbose: bool = False
-    max_turns: int = 200
+    max_turns: int = 0
     format: str = "standard"
     commander1: str | None = None
     commander2: str | None = None

@@ -54,7 +54,7 @@ class AIGameRequest(BaseModel):
     commander1: str | None = None
     commander2: str | None = None
     verbose: bool = False
-    max_turns: int = 200
+    max_turns: int = 0
     debug: bool = False
     observer_url: str | None = None
     observer_model: str | None = None

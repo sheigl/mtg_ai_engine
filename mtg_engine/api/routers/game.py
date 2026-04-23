@@ -72,7 +72,7 @@ class CreateGameRequest(BaseModel):
     observer_model: str | None = None
     observer_url: str | None = None
     observer_enabled: bool = True
-    max_turns: int = 200
+    max_turns: int = 0
 
     @model_validator(mode="after")
     def _validate(self) -> "CreateGameRequest":
