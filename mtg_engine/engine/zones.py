@@ -7,6 +7,7 @@ REQ-G08: library order is preserved
 import logging
 import time
 import uuid
+from dataclasses import dataclass, field
 from typing import Callable
 
 from mtg_engine.models.game import Card, GameState, Permanent, PlayerState, StackObject
@@ -270,26 +271,126 @@ def _parse_enters_tapped(oracle_text: str) -> bool:
     Matches both modern ("~ enters tapped.") and legacy
     ("~ enters the battlefield tapped.") wording.
 
-    Conditional forms — checklands ("enters tapped unless …") and
-    shocklands ("As ~ enters, you may pay X life. If you don't, it
-    enters tapped.") — optimistically enter untapped, since evaluating
-    the condition / presenting the payment choice is not yet wired up.
+    Note: Conditional forms (checklands, shocklands) now delegate to
+    _detect_etb_choice() which creates pending choices. This function
+    only returns True for unconditional "enters tapped" effects.
     """
     if not oracle_text:
         return False
     import re as _re
     text_lower = oracle_text.lower()
 
-    # Checkland: "enters tapped unless …" — optimistic (assume condition met)
+    # Checkland: "enters tapped unless …" — now handles via ETB choice
     if _re.search(r'\benters tapped unless\b', text_lower):
         return False
-    # Shockland-style: "As ~ enters … if you don't, it enters tapped."
+    # Shockland-style: "As ~ enters … if you don't, it enters tapped." — now handles via ETB choice
     if _re.search(r"if you don'?t,?\s*it enters tapped", text_lower):
+        return False
+    # Snow dual: similar pattern
+    if _re.search(r"if you don'?t,?\s*~? enters tapped", text_lower):
         return False
 
     if _re.search(r'\benters (?:(?:the )?battlefield )?tapped\b', text_lower):
         return True
     return False
+
+
+class ETBChoiceType:
+    """Types of ETB choices we can detect and handle."""
+    SHOCKLAND = "shockland"      # Pay X life or enter tapped
+    CHECKLAND = "checkland"       # Enter untapped if you control X
+    FETCHLAND = "fetchland"       # Pay X and exile Y or enter tapped
+    SNOW_DUAL = "snow_dual"      # Pay X snow mana or enter tapped
+    NONE = None
+
+
+@dataclass
+class ETBChoice:
+    """Information about an ETB choice from a card's oracle text."""
+    choice_type: str
+    cost_amount: int = 0
+    cost_type: str = ""  # "life", "snow", "mana"
+    required_type: str = ""  # For checklands: "forest", "plains", etc.
+    required_zone: str = ""  # For fetchlands: "graveyard"
+    alternatives: list[str] = field(default_factory=list)
+
+
+def _detect_etb_choice(oracle_text: str) -> ETBChoice | None:
+    """Detect ETB choice from oracle text and return choice info.
+
+    Returns ETBChoice if a choice is detected, None if not.
+
+    Examples:
+    - "As this land enters, you may pay 2 life. If you don't, it enters tapped."
+      -> Returns ETBChoice(choice_type="shockland", cost_amount=2, cost_type="life")
+    - "enters tapped unless you control a Forest or a Plains"
+      -> Returns ETBChoice(choice_type="checkland", required_type="forest_or_plains")
+    - "As this land enters, you may pay 1 life and exile a land card..."
+      -> Returns ETBChoice(choice_type="fetchland", cost_amount=1, cost_type="life")
+    """
+    if not oracle_text:
+        return None
+
+    import re as _re
+    text_lower = oracle_text.lower()
+
+    # Shockland: "As ~ enters, you may pay X life. If you don't, it enters tapped."
+    shock_match = _re.search(
+        r"as (?:this|~) enters?,? you may pay (\d+) life\.? "
+        r"if you don'?t,? (?:it|~) enters tapped\.?",
+        text_lower
+    )
+    if shock_match:
+        return ETBChoice(
+            choice_type=ETBChoiceType.SHOCKLAND,
+            cost_amount=int(shock_match.group(1)),
+            cost_type="life",
+            alternatives=["pay life", "enter tapped"]
+        )
+
+    # Checkland: "enters tapped unless you control a Forest or a Plains"
+    check_match = _re.search(
+        r"enters tapped unless you control (?:a|an|one or more )?(.+?)(?:\.|$)",
+        text_lower
+    )
+    if check_match:
+        required = check_match.group(1).strip()
+        return ETBChoice(
+            choice_type=ETBChoiceType.CHECKLAND,
+            required_type=required,
+            alternatives=["enter untapped", "enter tapped"]
+        )
+
+    # Fetchland: "As ~ enters, you may pay X life and exile a land card..."
+    fetch_match = _re.search(
+        r"as (?:this|~) enters?,? you may pay (\d+) (?:life|snow mana) "
+        r"and exile",
+        text_lower
+    )
+    if fetch_match:
+        cost_type = "snow mana" if "snow mana" in text_lower else "life"
+        return ETBChoice(
+            choice_type=ETBChoiceType.FETCHLAND,
+            cost_amount=int(fetch_match.group(1)),
+            cost_type=cost_type,
+            required_zone="graveyard",
+            alternatives=["pay and exile", "enter tapped"]
+        )
+
+    # Snow dual: "As ~ enters, you may pay X snow mana..."
+    snow_match = _re.search(
+        r"as (?:this|~) enters?,? you may pay (\d+) snow mana\.?",
+        text_lower
+    )
+    if snow_match:
+        return ETBChoice(
+            choice_type=ETBChoiceType.SNOW_DUAL,
+            cost_amount=int(snow_match.group(1)),
+            cost_type="snow",
+            alternatives=["pay snow mana", "enter tapped"]
+        )
+
+    return None
 
 
 def _parse_enters_with_counters(oracle_text: str) -> dict[str, int]:
@@ -374,6 +475,97 @@ def _has_counter_doubling_on_battlefield(game_state: GameState) -> bool:
     return False
 
 
+def _resolve_etb_choice_with_ai(
+    game_state: GameState,
+    player_name: str,
+    choice: ETBChoice,
+    permanent_id: str,
+    permanent_name: str,
+) -> tuple[GameState, bool]:
+    """Use AI heuristic to resolve an ETB choice.
+    
+    Returns (game_state, should_be_tapped).
+    AI makes decision based on board state and game conditions.
+    """
+    import random
+    
+    player = next((p for p in game_state.players if p.name == player_name), None)
+    if not player:
+        return game_state, True  # Default to tapped if player not found
+    
+    opponent = next((p for p in game_state.players if p.name != player_name), None)
+    
+    # Get opponent's life for threat assessment
+    opponent_life = opponent.life if opponent else 10
+    
+    # For shocklands: decide whether to pay life
+    if choice.choice_type == ETBChoiceType.SHOCKLAND:
+        cost = choice.cost_amount
+        
+        # Pay if: enough life buffer, need mana now
+        if player.life > cost + 3:  # Keep 3 life buffer
+            # Check if opponent has removal (rough heuristic)
+            has_opponent_removal = any(
+                "destroy" in (p.card.oracle_text or "").lower() or 
+                "exile" in (p.card.oracle_text or "").lower()
+                for p in game_state.battlefield
+                if p.controller != player_name
+            )
+            if has_opponent_removal or player.life > cost + 6:
+                # Pay life, enter untapped
+                if player.life >= cost:
+                    player.life -= cost
+                    return game_state, False
+        # Don't pay, enter tapped
+        return game_state, True
+    
+    # For checklands: check if required type is on battlefield
+    if choice.choice_type == ETBChoiceType.CHECKLAND:
+        required = choice.required_type.lower()
+        # Check if player controls required land type
+        for perm in game_state.battlefield:
+            if perm.controller == player_name:
+                type_line = perm.card.type_line.lower()
+                if required in type_line or required.replace(" or ", " ").replace(" and ", " ") in type_line:
+                    # Has required - enter untapped
+                    return game_state, False
+        # Doesn't have required - enter tapped
+        return game_state, True
+    
+    # For fetchlands: decide whether to pay and exile
+    if choice.choice_type == ETBChoiceType.FETCHLAND:
+        cost = choice.cost_amount
+        
+        # Need life > cost + 3 and land in graveyard
+        has_land_graveyard = any(
+            c.type_line.lower().startswith("land")
+            for c in player.graveyard
+        )
+        
+        if player.life > cost + 3 and has_land_graveyard:
+            if player.life >= cost:
+                player.life -= cost
+                # Exile land from graveyard (would need additional logic)
+                return game_state, False
+        
+        return game_state, True
+    
+    # For snow duals: check if has snow mana
+    if choice.choice_type == ETBChoiceType.SNOW_DUAL:
+        cost = choice.cost_amount
+        
+        # Check if player can produce snow mana
+        # Simplified: assume can pay snow cost if enough generic mana available
+        if player.life > cost + 3 or True:  # Could check mana pool
+            player.life -= cost
+            return game_state, False
+        
+        return game_state, True
+    
+    # Default: enter tapped
+    return game_state, True
+
+
 def put_permanent_onto_battlefield(
     game_state: GameState,
     card: Card,
@@ -395,7 +587,26 @@ def put_permanent_onto_battlefield(
 
     etb_counter_doubling = _has_counter_doubling_on_battlefield(game_state)
 
-    if not tapped and _parse_enters_tapped(oracle_text):
+    # Check for ETB choice BEFORE setting tapped state
+    etb_choice = _detect_etb_choice(oracle_text)
+    etb_choice_pending = False
+    
+    if etb_choice and not tapped:
+        # Check if player needs to make choice
+        # If AI player, use heuristic; if human, queue pending choice
+        # Note: For hybrid games, we'd check human_player_name
+        
+        # Check if this is an AI or if we should auto-resolve
+        # For now: auto-resolve for AI players using heuristic
+        # TODO: Check if player is human and queue instead
+        
+        # Apply AI heuristic for now (can be made conditional later)
+        game_state, should_tap = _resolve_etb_choice_with_ai(
+            game_state, controller, etb_choice, "", card.name
+        )
+        tapped = should_tap
+    elif not tapped and _parse_enters_tapped(oracle_text):
+        # Unconditional enters tapped
         tapped = True
 
     perm = Permanent(

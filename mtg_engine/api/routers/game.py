@@ -1481,6 +1481,41 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
             gs.pending_echo_payment = None
             mgr.update(game_id, gs)
 
+    elif choice_id == "etb_pay":
+        # 034-etb-choices: Player pays cost for ETB choice (e.g., shockland)
+        if gs.pending_etb_choice:
+            cost = gs.pending_etb_choice.get("cost_amount", 0)
+            cost_type = gs.pending_etb_choice.get("cost_type", "life")
+            player_name = gs.pending_etb_choice.get("player", gs.priority_holder)
+            permanent_id = gs.pending_etb_choice.get("permanent_id", "")
+            
+            # Apply cost payment
+            player = get_player(gs, player_name)
+            if cost_type == "life" and player.life >= cost:
+                player.life -= cost
+            
+            # Mark permanent as untapped (it's already on battlefield)
+            perm = next((p for p in gs.battlefield if p.id == permanent_id), None)
+            if perm:
+                perm.tapped = False
+            
+            logger.info("ETB choice: %s paid %d %s for %s to enter untapped", 
+                    player_name, cost, cost_type, perm.card.name)
+            
+            gs.pending_etb_choice = None
+            mgr.update(game_id, gs)
+    
+    elif choice_id == "etb_tapped":
+        # 034-etb-choices: Player chooses not to pay — permanent enters tapped (already set)
+        if gs.pending_etb_choice:
+            permanent_id = gs.pending_etb_choice.get("permanent_id", "")
+            perm = next((p for p in gs.battlefield if p.id == permanent_id), None)
+            if perm:
+                logger.info("ETB choice: %s entered tapped (no payment)", perm.card.name)
+            
+            gs.pending_etb_choice = None
+            mgr.update(game_id, gs)
+
     elif choice_id == "tutor_pick":
         # T040: Player picks a card from library (tutor)
         if gs.pending_tutor_choice:
@@ -1965,6 +2000,34 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
     is_active = gs.active_player == player_name
     is_main = gs.step == Step.MAIN
     stack_empty = not gs.stack
+
+    # Early-exit: ETB choice pending (034-etb-choices)
+    if gs.pending_etb_choice and gs.pending_etb_choice.get("player") == player_name:
+        etb = gs.pending_etb_choice
+        perm_name = etb.get("permanent_name", "that land")
+        choice_type = etb.get("choice_type", "")
+        
+        if choice_type == "shockland":
+            cost = etb.get("cost_amount", 2)
+            actions.append(LegalAction(
+                action_type="choice",
+                card_name="etb_pay",
+                description=f"Pay {cost} life → {perm_name} enters untapped",
+                valid_targets=[etb.get("permanent_id", "")],
+            ))
+            actions.append(LegalAction(
+                action_type="choice",
+                card_name="etb_tapped",
+                description=f"Don't pay → {perm_name} enters tapped",
+                valid_targets=[etb.get("permanent_id", "")],
+            ))
+            if not any(a.action_type == "pass" for a in actions):
+                actions.append(LegalAction(action_type="pass", description="Pass priority"))
+            return actions
+        
+        # For other choice types, add similar logic
+        # For now, default to enter tapped for checklands/fetchlands without pending
+        # TODO: implement checkland/fetchland handling
 
     # Early-exit: pending blocking choices — these block all other actions until resolved
     if gs.pending_scry_choice and gs.pending_scry_choice.get("player") == player_name:

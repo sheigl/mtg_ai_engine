@@ -333,6 +333,11 @@ class GameState(BaseModel):
     pending_morph_payment: Optional[dict] = None
     # US27: Echo payment
     pending_echo_payment: Optional[dict] = None
+    # ETB choice (034-etb-choices): shockland, checkland, fetchland, snow dual
+    # Format: {"player": str, "permanent_id": str, "permanent_name": str, 
+    #         "choice_type": str, "cost_amount": int, "cost_type": str,
+    #         "required_type": str, "alternatives": [str]}
+    pending_etb_choice: Optional[dict] = None
     # Transcript for persistence (034-game-persistence)
     transcript_entries: list[dict] = Field(default_factory=list)
 
