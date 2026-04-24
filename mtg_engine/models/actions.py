@@ -91,7 +91,7 @@ class AssignCombatDamageRequest(BaseModel):
 
 class ChoiceRequest(BaseModel):
     choice_id: str
-    selection: Any
+    selection: Any = None
     dry_run: bool = False
 
 
