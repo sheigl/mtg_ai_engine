@@ -270,3 +270,40 @@ AI Agent (LLM / bot)
   and flash were untested at the unit level.
 - **Fix**: Added 76 unit tests across 7 classes covering every action type in
   both standard and commander formats (inclusion and exclusion cases).
+
+---
+
+## 2026-04-24 — Human Game Fixes
+
+**BUG-12: Human turn phases auto-skipping**
+- **Files**: `mtg_engine/engine/turn_manager.py`, `mtg_engine/api/routers/game.py`, `ai_client/game_loop.py`
+- **Root cause**: Auto-pass and stuck detection loops ran for all players, including humans. Also phase-skip logic skipped phases when only pass was available.
+- **Effect**: Human player's phases auto-advanced without their input.
+- **Fix**: Added human player checks to:
+  - `can_skip_phase()` - returns False when human_player_name is set
+  - `_should_auto_pass()` - returns False for human player
+  - Auto-pass loop in game.py - breaks when human has priority
+  - Stuck detection in game_loop.py - skips for human player
+
+**BUG-13: No pass action available in UI**
+- **File**: `mtg_engine/api/routers/game.py`
+- **Root cause**: Pass action was only added in certain early-return cases, not universally.
+- **Effect**: Human player couldn't pass priority.
+- **Fix**: Added pass action at end of every code path in `_compute_legal_actions()`.
+
+**BUG-14: Token creation with prowess/multi-color not working**
+- **File**: `mtg_engine/engine/stack.py`
+- **Root cause**: Token creation with "with prowess" or "blue and red" patterns weren't matched, and stub functions existed.
+- **Effect**: Stormchaser's Talent ETB created no token.
+- **Fix**: Added regex patterns and implemented token creation functions.
+
+**BUG-15: ETB choice not detected for shocklands**
+- **File**: `mtg_engine/engine/zones.py`
+- **Root cause**: Regex pattern was too strict: `it enters tapped` vs `it enters tapped.` (with period).
+- **Fix**: Changed to greedy match: `r"as .*? enters.*? you may pay (\d+) life.*?enters tapped"`
+
+**BUG-16: Duress-type discard effects not working**
+- **File**: `mtg_engine/engine/stack.py`, `frontend/src/components/HumanGameBoard.tsx`
+- **Root cause**: Engine didn't detect "target opponent reveals their hand...discard" pattern, and frontend didn't render the choice.
+- **Effect**: Casting Duress resolved without showing opponent's hand or letting player choose.
+- **Fix**: Added pattern detection, pending choice queue, and UI rendering for discard choice.
