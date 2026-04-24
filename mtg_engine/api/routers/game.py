@@ -1712,16 +1712,21 @@ def legal_actions(game_id: str) -> dict:
 
     # Auto-pass loop: if only "pass" (+ mana abilities) is available,
     # keep passing until someone has a real action or the game advances.
-    # When a human has priority, NEVER auto-pass - they need to see priority to act.
     max_auto_passes = 20
     for _ in range(max_auto_passes):
         is_human_priority = bool(
             gs.human_player_name and gs.priority_holder == gs.human_player_name
         )
-        # Never auto-pass when human has priority - break immediately
-        if is_human_priority:
-            break
         actions = _compute_legal_actions(gs)
+        
+        # If human has priority and ONLY pass action (no real choices), auto-pass immediately
+        # This handles cases like untap phase where pass is the only legal action
+        if is_human_priority and len(actions) == 1 and actions[0].action_type == "pass":
+            logger.info("Auto-passing human in %s/%s (only pass available)", gs.phase.value, gs.step.value)
+            gs = pass_priority(gs, gs.priority_holder)
+            mgr.update(game_id, gs)
+            continue
+        
         if _has_meaningful_actions(actions, strict=False):
             break
         if gs.is_game_over:
