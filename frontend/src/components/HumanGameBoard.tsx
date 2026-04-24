@@ -405,7 +405,7 @@ export function HumanGameBoard() {
       )}
       {isMyTurn && isDuressPhase && gs.pending_discard_choice && (
         <DiscardModal
-          hand={(gs.pending_discard_choice.opponent_hand ?? []).map((c: any) => typeof c === 'string' ? c : c.name ?? c.id ?? '?')}
+          hand={(gs.pending_discard_choice.opponent_hand ?? []) as any}
           count={gs.pending_discard_choice.count ?? 1}
           onDiscard={(cardId) => submitAction('choice', { choice_id: 'discard_pick', selection: cardId })}
         />

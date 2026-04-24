@@ -1545,7 +1545,8 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
             
             if is_duress and opponent_name:
                 # Duress effect: discard from opponent's hand
-                opponent = get_player(gs, opponent_name)
+                from mtg_engine.engine.zones import get_player as _get_player_opponent
+                opponent = _get_player_opponent(gs, opponent_name)
                 if opponent:
                     selected_id = req.selection if isinstance(req.selection, str) else None
                     card = next((c for c in opponent.hand if c.id == selected_id), None) if selected_id else None
