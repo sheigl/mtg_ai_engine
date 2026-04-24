@@ -18,6 +18,10 @@ class HybridGameLoop(GameLoop):
         self._human_prev_gs: dict = {}
         self._human_prev_legal_data: dict = {}
 
+    def _should_skip_stuck_detection(self, priority_player: str, legal_data: dict) -> bool:
+        """Skip stuck detection for human player - they're not stuck, they're waiting to act."""
+        return priority_player == self._human_player_name
+
     def _skip_player_turn(self, priority_player: str, legal_data: dict) -> bool:
         if priority_player != self._human_player_name:
             # AI has priority — reset human tracking state

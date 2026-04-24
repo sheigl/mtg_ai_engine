@@ -119,7 +119,17 @@ export function ScryModal({ topCards, onChoice }: ScryModalProps) {
     <div style={overlayStyle}>
       <div style={modalStyle}>
         <div style={{ fontWeight: 700, fontSize: '1rem', marginBottom: '0.5rem' }}>
-          Scry: {topCards.join(', ')}
+          Scry {topCards.length}
+        </div>
+        <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '0.75rem' }}>
+          The top card{topCards.length > 1 ? 's' : ''} of your library:
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem', marginBottom: '0.75rem', maxHeight: '160px', overflowY: 'auto' }}>
+          {topCards.map((name, i) => (
+            <div key={i} style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-default)', borderRadius: '4px', padding: '0.3rem 0.6rem', fontSize: '0.85rem', color: 'var(--text-primary)' }}>
+              {name}
+            </div>
+          ))}
         </div>
         <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
           <button onClick={() => onChoice(false)} style={cancelBtnStyle}>Put on Bottom</button>

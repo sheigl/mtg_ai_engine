@@ -129,11 +129,17 @@ export interface GameState {
   battlefield: Permanent[]
   players: PlayerState[]
   pending_triggers: PendingTrigger[]
+  pending_scry_choice?: {
+    player: string
+    cards: { name: string; id?: string }[]
+    n: number
+  } | null
   state_hash: string
   is_game_over: boolean
   winner: string | null
   combat: CombatState | null
   format: string
+  human_player_name?: string | null
   commander_damage: Record<string, Record<string, number>>
   debug_enabled: boolean
 }

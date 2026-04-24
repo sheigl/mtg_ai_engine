@@ -12,7 +12,7 @@ import { GameSidebar } from './GameSidebar'
 import { InteractiveHand } from './InteractiveHand'
 import { ActionPanel } from './ActionPanel'
 import { BlockerAssigner } from './BlockerAssigner'
-import { TargetChoiceModal, MulliganModal, DiscardModal } from './ChoiceModal'
+import { TargetChoiceModal, MulliganModal, DiscardModal, ScryModal } from './ChoiceModal'
 import { GameResultOverlay } from './GameResultOverlay'
 import type { GameState, Permanent } from '../types/game'
 import '../styles/board.css'
@@ -62,7 +62,12 @@ export function HumanGameBoard() {
   }, [gameId, humanPlayerName])
 
   const { data: gs, isLoading, isError, error } = useGameState(gameId)
-  const { isMyTurn, legalActions, legalActionsByCard, step, phase } = useLegalActions(gameId, humanPlayerName)
+
+  // Fallback: use human_player_name from game state if not yet resolved
+  const resolvedHumanPlayerName = humanPlayerName || gs?.human_player_name || ''
+  console.log('[HGB] humanPlayerName:', humanPlayerName, 'gs?.human_player_name:', gs?.human_player_name, 'resolved:', resolvedHumanPlayerName, 'gs?.players:', gs?.players?.map(p => p.name))
+
+  const { isMyTurn, legalActions, legalActionsByCard, step, phase } = useLegalActions(gameId, resolvedHumanPlayerName)
   const { submitAction, isPending, lastError, clearError } = useHumanAction(gameId)
 
   const [selectedAttackers, setSelectedAttackers] = useState<Set<string>>(new Set())
@@ -95,8 +100,8 @@ export function HumanGameBoard() {
   }, [isMyTurn, autoPassPriority, isPending, legalActions, submitAction])
 
   useEffect(() => {
-    if (!gs || !humanPlayerName) return
-    const human = gs.players.find(p => p.name === humanPlayerName) ?? gs.players[0]
+    if (!gs || !resolvedHumanPlayerName) return
+    const human = gs.players.find(p => p.name === resolvedHumanPlayerName) ?? gs.players[0]
     if (!human) return
     const handIds = new Set(human.hand.map(c => c.id))
     setHandOrder(prev => {
@@ -104,13 +109,13 @@ export function HumanGameBoard() {
       const newIds = human.hand.map(c => c.id).filter(id => !prev.includes(id))
       return [...kept, ...newIds]
     })
-    const permIds = new Set(gs.battlefield.filter(p => p.controller === humanPlayerName).map(p => p.id))
+    const permIds = new Set(gs.battlefield.filter(p => p.controller === resolvedHumanPlayerName).map(p => p.id))
     setPermanentOrder(prev => {
       const kept = prev.filter(id => permIds.has(id))
       const newIds = [...permIds].filter(id => !prev.includes(id))
       return [...kept, ...newIds]
     })
-  }, [gs, humanPlayerName])
+  }, [gs, resolvedHumanPlayerName])
 
   const handlePlayLand = useCallback((cardId: string) => {
     submitAction('play_land', { card_id: cardId })
@@ -207,6 +212,9 @@ export function HumanGameBoard() {
   const discardActions = legalActions.filter(a => a.action_type === 'discard')
   const isDiscardPhase = discardActions.length > 0 && legalActions.every(a => a.action_type === 'discard')
 
+  const scryActions = legalActions.filter(a => a.action_type === 'choice' && (a.card_name === 'scry_keep' || a.card_name === 'scry_bottom'))
+  const isScryPhase = scryActions.length > 0 && gs?.pending_scry_choice?.player === resolvedHumanPlayerName
+
   if (isError) {
     const isNotFound = error instanceof Error && error.message === 'GAME_NOT_FOUND'
     return (
@@ -220,7 +228,7 @@ export function HumanGameBoard() {
     )
   }
 
-  if (isLoading || !gs || !humanPlayerName) {
+  if (isLoading || !gs || !resolvedHumanPlayerName) {
     return (
       <div className="center-message">
         <div className="spinner" style={{ marginBottom: 'var(--space-4)' }} />
@@ -229,8 +237,8 @@ export function HumanGameBoard() {
     )
   }
 
-  const humanPlayer = gs.players.find(p => p.name === humanPlayerName) ?? gs.players[0]
-  const opponentPlayer = gs.players.find(p => p.name !== humanPlayerName) ?? gs.players[1]
+  const humanPlayer = gs.players.find(p => p.name === resolvedHumanPlayerName) ?? gs.players[0]
+  const opponentPlayer = gs.players.find(p => p.name !== resolvedHumanPlayerName) ?? gs.players[1]
   const humanPermanents = getPlayerPermanents(gs, humanPlayer.name)
   const opponentPermanents = getPlayerPermanents(gs, opponentPlayer.name)
   const isCommander = gs.format === 'commander'
@@ -384,6 +392,12 @@ export function HumanGameBoard() {
           hand={humanPlayer.hand}
           count={discardActions.length}
           onDiscard={(cardId) => submitAction('discard', { card_id: cardId })}
+        />
+      )}
+      {isMyTurn && isScryPhase && gs.pending_scry_choice && (
+        <ScryModal
+          topCards={(gs.pending_scry_choice.cards ?? []).map((c: any) => typeof c === 'string' ? c : c.name ?? c.id ?? '?')}
+          onChoice={(keepOnTop) => submitAction('choice', { choice_id: keepOnTop ? 'scry_keep' : 'scry_bottom' })}
         />
       )}
 

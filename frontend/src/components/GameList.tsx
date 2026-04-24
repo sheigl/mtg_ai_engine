@@ -265,10 +265,11 @@ export function GameList() {
 
 function GameCard({ game, onDelete }: { game: any; onDelete: (id: string, e: React.MouseEvent) => void }) {
   const isOver = game.is_game_over
+  const gameUrl = game.has_human_player && !isOver ? `/human-game/${game.game_id}` : `/game/${game.game_id}`
 
   return (
     <Link
-      to={isOver ? `/game/${game.game_id}` : `/game/${game.game_id}`}
+      to={gameUrl}
       className="card-surface"
       style={{
         display: 'flex',

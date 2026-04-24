@@ -272,6 +272,14 @@ class GameState(BaseModel):
     combat: Optional[CombatState] = None
     # Series mode (032-game-series)
     series_id: Optional[str] = None
+    # Human player name for resume (034-game-persistence)
+    human_player_name: Optional[str] = None
+    # AI player config for restarting loop on restore
+    ai_player_type: Optional[str] = None
+    ai_player_name: Optional[str] = None
+    ai_base_url: Optional[str] = None
+    ai_model: Optional[str] = None
+    ai_enable_thinking: Optional[bool] = None
     # Commander format
     format: str = "standard"
     commander_damage: dict[str, dict[str, int]] = Field(default_factory=dict)
@@ -325,6 +333,8 @@ class GameState(BaseModel):
     pending_morph_payment: Optional[dict] = None
     # US27: Echo payment
     pending_echo_payment: Optional[dict] = None
+    # Transcript for persistence (034-game-persistence)
+    transcript_entries: list[dict] = Field(default_factory=list)
 
     def compute_hash(self) -> str:
         """Compute deterministic hash of state, excluding state_hash itself. REQ-API05"""

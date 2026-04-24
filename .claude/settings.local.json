@@ -116,7 +116,8 @@
       "WebSearch",
       "Bash(grep -E \"\\\\.\\(py|tsx|ts\\)$\")",
       "Bash(curl *)",
-      "Bash(journalctl --user -n 100)"
+      "Bash(journalctl --user -n 100)",
+      "Bash(python *)"
     ]
   }
 }

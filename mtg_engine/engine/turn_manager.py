@@ -32,6 +32,15 @@ def _has_non_pass_actions(actions: list) -> bool:
     return any(a.action_type != "pass" for a in actions)
 
 
+def _is_human_player(gs: GameState, player_name: str) -> bool:
+    """Check if a player is the human player (for hybrid games).
+
+    Returns True if this game has a human player and the given player_name
+    matches that human player.
+    """
+    return bool(gs.human_player_name and gs.human_player_name == player_name)
+
+
 def can_skip_phase(gs: GameState) -> bool:
     """Evaluate whether the current phase can be skipped.
 
@@ -44,6 +53,7 @@ def can_skip_phase(gs: GameState) -> bool:
       - Any pending_*_choice is set
       - Pending echo payment exists
       - Current step is UNTAP (no priority granted anyway)
+      - Any player is the human player (never skip phases during human turns)
     """
     # Skip-prevention: untap step has no priority anyway
     if gs.step == Step.UNTAP:
@@ -66,6 +76,10 @@ def can_skip_phase(gs: GameState) -> bool:
     for attr in pending_choice_attrs:
         if getattr(gs, attr, None):
             return False
+
+    # Skip-prevention: never skip phases when a human player exists in the game
+    if gs.human_player_name:
+        return False
 
     # Evaluate both players for non-pass actions
     for player in gs.players:
@@ -300,7 +314,7 @@ def begin_step(game_state: GameState) -> GameState:
         if dredgeable_cards:
             game_state.pending_dredge_choice = {
                 "player": game_state.active_player,
-                "dredgeable_cards": [c[0] for c in dredgeable_cards],
+                "dredgeable_cards": [c[0].model_dump() for c in dredgeable_cards],
                 "dredge_numbers": {c[0].id: c[1] for c in dredgeable_cards},
             }
             # Return current game state without drawing
@@ -512,7 +526,8 @@ def process_cleanup_step(game_state: GameState) -> GameState:
         excess_cards = active.hand[active.max_hand_size:]
         game_state.pending_discard_choice = {
             "player": game_state.active_player,
-            "cards": excess_cards,
+            "cards": [c.model_dump() for c in excess_cards],
+            "card_ids": [c.id for c in excess_cards],
         }
         logger.info("Cleanup: %s has %d cards (max %d), setting discard choice",
                    game_state.active_player, len(active.hand), active.max_hand_size)
@@ -569,7 +584,12 @@ def _should_auto_pass(game_state: GameState, player_name: str) -> bool:
     """Feature 029: Check if a player has only pass actions (no non-pass options).
 
     Returns True if the player should be auto-passed without presentation.
+    Never auto-pass the human player in hybrid games.
     """
+    # Never auto-pass the human player - they need to see priority to act
+    if _is_human_player(game_state, player_name):
+        return False
+
     try:
         actions = _get_legal_actions_for_player(game_state, player_name)
         return not _has_non_pass_actions(actions)

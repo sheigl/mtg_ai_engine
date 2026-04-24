@@ -1,9 +1,10 @@
 """
-In-memory game store. REQ-P03, REQ-P02.
+In-memory game store with MongoDB persistence. REQ-P03, REQ-P02.
 GameManager is a singleton dict of game_id → GameState.
 Never share mutable state between games.
 """
 import copy
+import logging
 import random
 import uuid
 from typing import Optional
@@ -11,6 +12,8 @@ from mtg_engine.models.game import GameState, PlayerState, Phase, Step, Card
 from mtg_engine.export.store import get_export_store
 from mtg_engine.export.transcript import TranscriptRecorder
 from mtg_engine.engine.verbose_log import VerboseLogger, ensure_zone_listener_registered
+
+logger = logging.getLogger(__name__)
 
 
 class SeriesResult:
@@ -43,6 +46,12 @@ class GameManager:
         self._verbose_loggers: dict[str, VerboseLogger] = {}
         self._paused: set[str] = set()
         self._series: dict[str, SeriesConfig] = {}
+        self._store = None
+        try:
+            from mtg_engine.persistence.game_state_store import get_game_state_store
+            self._store = get_game_state_store()
+        except Exception:
+            logger.warning("GameManager: game state store unavailable", exc_info=True)
 
     def pause(self, game_id: str) -> None:
         self._paused.add(game_id)
@@ -172,16 +181,18 @@ class GameManager:
     def update(self, game_id: str, gs: GameState) -> None:
         gs.refresh_hash()
         self._games[game_id] = gs
+        self._persist(game_id)
 
     def delete(self, game_id: str) -> GameState:
         gs = self._games.pop(game_id, None)
         if gs is None:
             raise KeyError(game_id)
-        # Clean up recorder and logger
         self._recorders.pop(game_id, None)
         vlogger = self._verbose_loggers.pop(game_id, None)
         if vlogger:
             vlogger.disable()
+        if self._store and gs:
+            self._store.mark_complete(game_id)
         return gs
 
     def snapshot(self, game_id: str) -> GameState:
@@ -191,6 +202,112 @@ class GameManager:
 
     def __contains__(self, game_id: str) -> bool:
         return game_id in self._games
+
+    # ── Persistence (034-game-persistence) ─────────────────────────────────
+
+    def _persist(self, game_id: str) -> None:
+        """Persist the current game state to MongoDB (fire-and-forget)."""
+        if not self._store:
+            return
+        gs = self._games.get(game_id)
+        if gs is None:
+            return
+        try:
+            series_config = None
+            if gs.series_id and gs.series_id in self._series:
+                sc = self._series[gs.series_id]
+                series_config = {
+                    "series_id": sc.series_id,
+                    "total_games": sc.total_games,
+                    "settings": sc.settings,
+                    "completed_games": sc.completed_games,
+                    "active_game_id": sc.active_game_id,
+                    "wins": sc.wins,
+                }
+            # Sync transcript entries from recorder to GameState for persistence
+            recorder = self._recorders.get(game_id)
+            if recorder:
+                gs.transcript_entries = [e.model_dump(mode='json') for e in recorder._entries]
+            state_dict = gs.model_dump(mode='json')
+            self._store.upsert(
+                game_id,
+                state_dict,
+                series_config=series_config,
+                is_complete=gs.is_game_over,
+            )
+        except Exception:
+            logger.warning("GameManager: failed to persist %s", game_id, exc_info=True)
+
+    def save_game(self, game_id: str) -> None:
+        """Explicitly save a game state to MongoDB."""
+        self._persist(game_id)
+
+    def mark_complete(self, game_id: str) -> None:
+        """Mark a game as complete in MongoDB."""
+        if self._store:
+            try:
+                self._store.mark_complete(game_id)
+            except Exception:
+                logger.warning("GameManager: failed to mark complete %s", game_id, exc_info=True)
+
+    def restore_games(self) -> int:
+        """Load all non-completed games from MongoDB. Returns count of restored games."""
+        if not self._store:
+            logger.info("GameManager: no persistence store, skipping restore")
+            return 0
+        try:
+            docs = self._store.load_all_active()
+            count = 0
+            for doc in docs:
+                try:
+                    gs = GameState.model_validate(doc["state"])
+                    self._games[gs.game_id] = gs
+                    if doc.get("series_config"):
+                        sc_data = doc["series_config"]
+                        sc = SeriesConfig(
+                            series_id=sc_data["series_id"],
+                            total_games=sc_data["total_games"],
+                            settings=sc_data.get("settings", {}),
+                        )
+                        sc.completed_games = sc_data.get("completed_games", 0)
+                        sc.active_game_id = sc_data.get("active_game_id")
+                        sc.wins = sc_data.get("wins", {})
+                        self._series[sc.series_id] = sc
+                    # Recreate export store, recorder, and verbose logger
+                    store = get_export_store(gs.game_id)
+                    recorder = store.transcript
+                    # Restore transcript entries from saved state
+                    if gs.transcript_entries:
+                        from mtg_engine.export.transcript import TranscriptEntry
+                        for entry_data in gs.transcript_entries:
+                            entry = TranscriptEntry.model_validate(entry_data)
+                            recorder._entries.append(entry)
+                            recorder._seq = max(recorder._seq, entry.seq)
+                    p1 = gs.players[0] if gs.players else None
+                    p2 = gs.players[1] if len(gs.players) > 1 else None
+                    vlogger = VerboseLogger(gs.game_id, enabled=gs.debug_enabled)
+                    recorder.register_listener(vlogger.on_event)
+                    self._recorders[gs.game_id] = recorder
+                    self._verbose_loggers[gs.game_id] = vlogger
+                    # Register persister for future events
+                    if store.persister is not None:
+                        store.persister.register_on_store(store)
+                        store.persister.init_game_document(
+                            p1.name if p1 else "Player 1",
+                            p1.player_type if p1 and hasattr(p1, 'player_type') else "ai",
+                            p2.name if p2 else "Player 2",
+                            p2.player_type if p2 and hasattr(p2, 'player_type') else "ai",
+                            gs.format,
+                        )
+                    count += 1
+                    logger.info("GameManager: restored game %s", gs.game_id)
+                except Exception:
+                    logger.warning("GameManager: failed to restore game from doc", exc_info=True)
+            logger.info("GameManager: restored %d games from MongoDB", count)
+            return count
+        except Exception:
+            logger.warning("GameManager: failed to restore games", exc_info=True)
+            return 0
 
     # ── Series mode (032-game-series) ───────────────────────────────────────
 

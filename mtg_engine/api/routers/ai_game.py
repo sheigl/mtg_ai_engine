@@ -197,6 +197,8 @@ def create_ai_game(req: AIGameRequest, request: Request) -> dict:
         gs.series_id = series_id
         mgr.get_series(series_id).active_game_id = gs.game_id
         mgr.update(gs.game_id, gs)
+    else:
+        mgr.save_game(gs.game_id)
     game_id = gs.game_id
 
     # Fetch and merge AI player defaults with request values (Feature 028)

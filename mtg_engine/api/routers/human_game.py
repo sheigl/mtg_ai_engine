@@ -14,6 +14,59 @@ logger = logging.getLogger(__name__)
 _human_player_registry: dict[str, str] = {}
 
 
+def _restart_hybrid_loop(gs: "GameState", engine_url: str) -> None:
+    """Restart the hybrid AI loop for a restored human game."""
+    import threading
+    if not gs.human_player_name or not gs.ai_player_type:
+        logger.warning("Cannot restart hybrid loop for game %s: missing player info", gs.game_id)
+        return
+    human_player_name = gs.human_player_name
+    ai_player_type = gs.ai_player_type or "heuristic"
+    ai_player_name = gs.ai_player_name or "Bot"
+
+    from ai_client.models import PlayerConfig
+    from ai_client.heuristic_player import HeuristicPlayer
+    from ai_client.hybrid_game_loop import HybridGameLoop
+    from ai_client.client import EngineClient
+
+    human_pc = PlayerConfig(name=human_player_name, base_url="", model="", player_type="heuristic")
+    ai_pc = PlayerConfig(name=ai_player_name, base_url="", model="", player_type=ai_player_type)
+    player1_is_human = gs.players[0].name == human_player_name
+    if player1_is_human:
+        players = [HeuristicPlayer(human_pc), _make_ai(ai_player_type, ai_pc)]
+        pc_list = [human_pc, ai_pc]
+    else:
+        players = [_make_ai(ai_player_type, ai_pc), HeuristicPlayer(human_pc)]
+        pc_list = [ai_pc, human_pc]
+
+    from ai_client.models import GameConfig
+    game_config = GameConfig(
+        players=pc_list,
+        engine_url=engine_url,
+        deck1=[],
+        deck2=[],
+        max_turns=0,
+    )
+
+    def _run():
+        try:
+            with EngineClient(engine_url) as engine:
+                loop = HybridGameLoop(
+                    human_player_name=human_player_name,
+                    config=game_config,
+                    engine=engine,
+                    players=players,
+                    game_id=gs.game_id,
+                )
+                loop.run()
+        except Exception:
+            logger.exception("Restarted hybrid loop for game %s raised an exception", gs.game_id)
+
+    thread = threading.Thread(target=_run, daemon=False, name=f"human-game-restore-{gs.game_id[:8]}")
+    thread.start()
+    logger.info("Restarted hybrid loop for restored game %s", gs.game_id)
+
+
 class HumanGameRequest(BaseModel):
     player1_type: str = "human"
     player2_type: str = "heuristic"
@@ -128,6 +181,10 @@ def create_human_game(req: HumanGameRequest, request: Request) -> dict:
     def _persist_type(t: str) -> str:
         return "human" if t == "human" else "ai"
 
+    human_player_name = req.player1_name if req.player1_type == "human" else req.player2_name
+    ai_player_type = req.player2_type if req.player1_type == "human" else req.player1_type
+    ai_player_name = req.player2_name if req.player1_type == "human" else req.player1_name
+
     # Series mode (032-game-series)
     series_id: str | None = None
     if req.series_count > 1:
@@ -171,13 +228,17 @@ def create_human_game(req: HumanGameRequest, request: Request) -> dict:
     )
     if series_id:
         gs.series_id = series_id
+        gs.human_player_name = human_player_name
+        gs.ai_player_type = ai_player_type
+        gs.ai_player_name = ai_player_name
         mgr.get_series(series_id).active_game_id = gs.game_id
         mgr.update(gs.game_id, gs)
+    else:
+        gs.human_player_name = human_player_name
+        gs.ai_player_type = ai_player_type
+        gs.ai_player_name = ai_player_name
+        mgr.save_game(gs.game_id)
     game_id = gs.game_id
-
-    human_player_name = req.player1_name if req.player1_type == "human" else req.player2_name
-    ai_player_type = req.player2_type if req.player1_type == "human" else req.player1_type
-    ai_player_name = req.player2_name if req.player1_type == "human" else req.player1_name
 
     # Fetch and merge AI player defaults with request values (Feature 028)
     ai_request_values = {
@@ -219,6 +280,16 @@ def create_human_game(req: HumanGameRequest, request: Request) -> dict:
 def get_human_player(game_id: str) -> dict:
     """Return the human player name for a human game."""
     name = _human_player_registry.get(game_id)
+    if name is None:
+        try:
+            from mtg_engine.api.game_manager import get_manager
+            mgr = get_manager()
+            gs = mgr.get(game_id)
+            if gs and gs.human_player_name:
+                name = gs.human_player_name
+                _human_player_registry[game_id] = name
+        except Exception:
+            pass
     if name is None:
         raise HTTPException(status_code=404, detail="Not a human game or game not found")
     return {"data": {"human_player_name": name}}
@@ -402,6 +473,9 @@ def _spawn_next_human_game(
         deck_name2=deck_name2_spawn,
     )
     gs.series_id = series_id
+    gs.human_player_name = human_player_name
+    gs.ai_player_type = ai_player_type
+    gs.ai_player_name = ai_player_name
     sc.active_game_id = gs.game_id
     mgr.update(gs.game_id, gs)
 

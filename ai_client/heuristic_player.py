@@ -483,18 +483,20 @@ class HeuristicPlayer:
             return copied_score * 0.9
 
         if action_type == "choice":
-            # Scry/surveil choice: score the revealed card and set selection (US8, T033)
-            choice_subtype = action.get("choice_subtype", "")
-            revealed_card = action.get("revealed_card", {})
+            # Scry/surveil choice: score based on card_name field
+            card_name = action.get("card_name", "")
             turn = game_state.get("turn", 1)
-            if choice_subtype == "scry":
-                selection = self._score_scry_choice(revealed_card, turn)
-                action["selection"] = selection
-                return 5.0
-            elif choice_subtype == "surveil":
-                selection = self._score_surveil_choice(revealed_card, turn)
-                action["selection"] = selection
-                return 5.0
+            if card_name == "scry_keep":
+                # Evaluate whether the top card is worth keeping
+                # If early game and card is low CMC, keep; otherwise bottom
+                return self._score_scry_keep(action, game_state, turn)
+            elif card_name == "scry_bottom":
+                return self._score_scry_bottom(action, game_state, turn)
+            elif card_name == "surveil_keep":
+                return 3.0
+            elif card_name == "surveil_graveyard":
+                return 2.0
+            # Generic choice — prefer first option
             return 5.0
 
         # Unknown action type — prefer over passing
@@ -1671,6 +1673,42 @@ class HeuristicPlayer:
     # ------------------------------------------------------------------
     # Scry / Surveil decisions (US8, T032-T033)
     # ------------------------------------------------------------------
+
+    def _score_scry_keep(self, action: dict, game_state: dict, current_turn: int) -> float:
+        """Score the 'keep on top' option for scry. Higher = more want to keep."""
+        names = action.get("valid_targets", [])
+        if not names:
+            return 5.0
+        my_name = game_state.get("priority_player", self._config.name)
+        my_lands = [p for p in self._extract_battlefield(game_state, my_name)
+                     if "land" in (p.get("card", {}).get("type_line") or "").lower()]
+        land_count = len(my_lands)
+        keep_score = 0.0
+        for name in names:
+            name_lower = name.lower()
+            if "land" in name_lower:
+                keep_score += 3.0 if land_count < 4 else -1.0
+            else:
+                keep_score += 2.0
+        return keep_score
+
+    def _score_scry_bottom(self, action: dict, game_state: dict, current_turn: int) -> float:
+        """Score the 'put on bottom' option. Inverse of keep for comparison."""
+        my_name = game_state.get("priority_player", self._config.name)
+        my_lands = [p for p in self._extract_battlefield(game_state, my_name)
+                     if "land" in (p.get("card", {}).get("type_line") or "").lower()]
+        land_count = len(my_lands)
+        names = action.get("valid_targets", [])
+        if not names:
+            return -5.0
+        bottom_score = 0.0
+        for name in names:
+            name_lower = name.lower()
+            if "land" in name_lower:
+                bottom_score += -3.0 if land_count < 4 else 1.0
+            else:
+                bottom_score += -2.0
+        return bottom_score
 
     def _score_scry_choice(self, revealed_card: dict, current_turn: int) -> str:
         """Return 'top' or 'bottom' for a scry decision."""

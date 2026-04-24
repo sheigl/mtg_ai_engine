@@ -172,6 +172,12 @@ def _map_action_to_request(action: dict, mana_pool: dict | None = None, player_n
         }
 
     if action_type == "choice":
+        card_name = action.get("card_name", "")
+        if card_name in ("scry_keep", "scry_bottom", "surveil_keep", "surveil_graveyard"):
+            return "choice", {
+                "choice_id": card_name,
+                "selection": "top" if "keep" in card_name else "bottom",
+            }
         return "choice", {
             "choice_id": action.get("choice_id", ""),
             "selection": action.get("selection", "top"),
@@ -274,6 +280,10 @@ class GameLoop:
 
     def _skip_player_turn(self, priority_player: str, legal_data: dict) -> bool:
         """Return True to skip AI decision and re-poll. Override in subclasses."""
+        return False
+
+    def _should_skip_stuck_detection(self, priority_player: str, legal_data: dict) -> bool:
+        """Return True to skip stuck detection loop prevention. Override in subclasses."""
         return False
 
     def _observe_action(
@@ -382,6 +392,10 @@ class GameLoop:
         }
         # Per-player AIMemory instances (one per game, created in run())
         self._memories: dict[str, AIMemory] = {}
+        # Stuck detection: track consecutive identical state hashes
+        self._last_state_hash: str | None = None
+        self._stuck_count: int = 0
+        self._MAX_STUCK_ITERATIONS = 5
 
     def run(self) -> GameSummary:
         """
@@ -447,6 +461,10 @@ class GameLoop:
                 termination_reason = "engine_error"
                 break
 
+            priority_player = legal_data.get("priority_player", "?")
+            legal_actions = legal_data.get("legal_actions", [])
+            print(f"[LOOP] game={game_id[:8]} priority={priority_player} actions={len(legal_actions)} is_over={legal_data.get('is_game_over')} phase={legal_data.get('phase','?')}/{legal_data.get('step','?')}", flush=True)
+
             # Hold while paused (UI pause button)
             if legal_data.get("is_paused"):
                 print("[PAUSED] Game paused — resume from the debug panel to continue.")
@@ -472,6 +490,28 @@ class GameLoop:
             phase = legal_data.get("phase", "?")
             step = legal_data.get("step", "?")
             snapshot_id = legal_data.get("snapshot_id")
+
+            # Stuck detection: if same player has priority and same legal actions
+            # for many consecutive iterations, force a pass to break the cycle.
+            # Allow subclasses to bypass this check (e.g., HybridGameLoop skips for human player).
+            if self._should_skip_stuck_detection(priority_player, legal_data):
+                # Reset stuck count for this player
+                self._stuck_count = 0
+            else:
+                current_state_hash = f"{priority_player}:{phase}:{step}:{sorted(a.get('action_type', '') for a in legal_actions)}"
+                if current_state_hash == self._last_state_hash:
+                    self._stuck_count += 1
+                else:
+                    self._stuck_count = 0
+                    self._last_state_hash = current_state_hash
+                if self._stuck_count >= self._MAX_STUCK_ITERATIONS:
+                    print(f"[STUCK] Detected stuck loop for {priority_player} in {phase}/{step} — forcing pass", flush=True)
+                    try:
+                        self._engine.submit_action(game_id, "pass", {})
+                    except EngineError:
+                        pass
+                    self._stuck_count = 0
+                    continue
 
             # Allow subclasses (e.g. HybridGameLoop) to skip AI decision for a player
             if self._skip_player_turn(priority_player, legal_data):
@@ -583,6 +623,7 @@ class GameLoop:
                 reasoning = "(index out of range — fallback)"
 
             chosen_action = legal_actions[chosen_index]
+            print(f"[AI] {priority_player} chose [{chosen_index}] {chosen_action.get('action_type', '?')} — {reasoning}", flush=True)
             action_desc = chosen_action.get("description", chosen_action.get("action_type", "?"))
 
             # Build turn record and print
@@ -714,7 +755,10 @@ class GameLoop:
         Mana abilities are detected by "Add {" in their description.
         """
         priority_player = legal_data.get("priority_player", "")
-        while True:
+        max_mana_iterations = 20
+        iteration = 0
+        while iteration < max_mana_iterations:
+            iteration += 1
             # Stop as soon as the current pool can already pay the target cost.
             if mana_cost and priority_player:
                 try:
@@ -758,6 +802,8 @@ class GameLoop:
                 break
             if legal_data.get("is_game_over") or legal_data.get("is_paused"):
                 break
+        if iteration >= max_mana_iterations:
+            print(f"[WARN] _auto_tap_mana hit iteration limit ({max_mana_iterations}) for {priority_player}", flush=True)
         return legal_data
 
     def _print_verbose_state(self, gs: dict) -> None:

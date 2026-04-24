@@ -44,6 +44,10 @@ class GameSummary(BaseModel):
     step: str
     is_game_over: bool
     winner: str | None = None
+    active_player: str | None = None
+    priority_holder: str | None = None
+    has_human_player: bool = False
+    human_player_name: str | None = None
     # Deck identity (033-deck-randomizer)
     player1_deck_name: str | None = None
     player2_deck_name: str | None = None
@@ -264,6 +268,10 @@ def list_games() -> dict:
             step=gs.step.value,
             is_game_over=gs.is_game_over,
             winner=gs.winner,
+            active_player=gs.active_player,
+            priority_holder=gs.priority_holder,
+            has_human_player=bool(gs.human_player_name),
+            human_player_name=gs.human_player_name,
             player1_deck_name=gs.players[0].deck_name,
             player2_deck_name=gs.players[1].deck_name,
             player1_color_identity=gs.players[0].color_identity,
@@ -1668,16 +1676,19 @@ def get_stack(game_id: str) -> dict:
 
 # ─── Legal actions (TASK-17) ─────────────────────────────────────────────────
 
-def _has_meaningful_actions(actions) -> bool:
-    """Return True if there are actions other than pass or mana abilities.
+def _has_meaningful_actions(actions, strict: bool = False) -> bool:
+    """Return True if there are actions other than pass.
 
-    Mana abilities (activate_mana_ability) are filtered out because they
-    are always available but rarely represent a meaningful decision.
+    Mana abilities (activate_mana_ability) are normally filtered out since
+    they're always available but rarely represent a meaningful decision on
+    their own. When ``strict`` is True (e.g. priority held by a human),
+    mana abilities are kept — so we don't auto-pass a human who might want
+    to tap lands toward a cast.
     """
     for a in actions:
         if a.action_type == "pass":
             continue
-        if a.action_type == "activate_mana_ability":
+        if not strict and a.action_type == "activate_mana_ability":
             continue
         return True
     return False
@@ -1701,10 +1712,17 @@ def legal_actions(game_id: str) -> dict:
 
     # Auto-pass loop: if only "pass" (+ mana abilities) is available,
     # keep passing until someone has a real action or the game advances.
+    # When a human has priority, NEVER auto-pass - they need to see priority to act.
     max_auto_passes = 20
     for _ in range(max_auto_passes):
+        is_human_priority = bool(
+            gs.human_player_name and gs.priority_holder == gs.human_player_name
+        )
+        # Never auto-pass when human has priority - break immediately
+        if is_human_priority:
+            break
         actions = _compute_legal_actions(gs)
-        if _has_meaningful_actions(actions):
+        if _has_meaningful_actions(actions, strict=False):
             break
         if gs.is_game_over:
             break
@@ -1779,7 +1797,7 @@ def copy_spell(game_id: str, req) -> dict:
     except ValueError as e:
         raise _err(str(e), "COPY_SPELL_ERROR")
     mgr = get_manager()
-    mgr.save(game_id, gs)
+    mgr.update(game_id, gs)
     return _ok(gs)
 
 
@@ -1864,7 +1882,7 @@ def activate_loyalty(game_id: str, req: dict) -> dict:
     perm.loyalty_activated_this_turn = True
 
     mgr = get_manager()
-    mgr.save(game_id, gs)
+    mgr.update(game_id, gs)
     return {
         "loyalty_change": ability.loyalty_change,
         "old_loyalty": old_loyalty,
@@ -1899,7 +1917,7 @@ def cascade_choice(game_id: str, req: dict) -> dict:
     gs.pending_cascade = None
 
     mgr = get_manager()
-    mgr.save(game_id, gs)
+    mgr.update(game_id, gs)
     return {
         "cast": cast_it,
         "card_name": card_name,
@@ -1959,6 +1977,8 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
             valid_targets=card_ids,
             card_name="scry_bottom",
         ))
+        if not any(a.action_type == "pass" for a in actions):
+            actions.append(LegalAction(action_type="pass", description="Pass priority"))
         return actions
 
     if gs.pending_surveil_choice and gs.pending_surveil_choice.get("player") == player_name:
@@ -1976,6 +1996,8 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
             valid_targets=card_ids,
             card_name="surveil_graveyard",
         ))
+        if not any(a.action_type == "pass" for a in actions):
+            actions.append(LegalAction(action_type="pass", description="Pass priority"))
         return actions
 
     if gs.pending_tutor_choice and gs.pending_tutor_choice.get("player") == player_name:
@@ -1988,6 +2010,8 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
             description=f"Search library for {filter_type} → {destination}",
             valid_targets=lib_card_ids,
         ))
+        if not any(a.action_type == "pass" for a in actions):
+            actions.append(LegalAction(action_type="pass", description="Pass priority"))
         return actions
 
     if gs.pending_discard_choice and gs.pending_discard_choice.get("player") == player_name:
@@ -1999,6 +2023,8 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
             description=f"Discard {count} card(s)",
             valid_targets=hand_ids,
         ))
+        if not any(a.action_type == "pass" for a in actions):
+            actions.append(LegalAction(action_type="pass", description="Pass priority"))
         return actions
 
     if gs.pending_ward_payment and gs.pending_ward_payment.get("player") == player_name:
@@ -2010,6 +2036,9 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
             description=f"Pay ward {ward_cost} (spell targeting your permanent continues)",
             valid_targets=[targeting_spell_id],
         ))
+        if not any(a.action_type == "pass" for a in actions):
+            actions.append(LegalAction(action_type="pass", description="Pass priority"))
+        return actions
         actions.append(LegalAction(
             action_type="choice",
             card_name="ward_counter",
@@ -2035,6 +2064,8 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
             description=f"Don't pay echo {echo_cost} ({permanent_name} is sacrificed)",
             valid_targets=[permanent_id],
         ))
+        if not any(a.action_type == "pass" for a in actions):
+            actions.append(LegalAction(action_type="pass", description="Pass priority"))
         return actions
 
     if gs.pending_cascade and gs.pending_cascade.get("player") == player_name:
@@ -2055,6 +2086,8 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
             description=f"Cascade: exile {cascade_card_name} (skip)",
             valid_targets=[],
         ))
+        if not any(a.action_type == "pass" for a in actions):
+            actions.append(LegalAction(action_type="pass", description="Pass priority"))
         return actions
 
     if gs.pending_dredge_choice and gs.pending_dredge_choice.get("player") == player_name:
@@ -2871,5 +2904,10 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                     mana_options=[{"mana_cost": base_cost, "commander_tax": tax}],
                     description=f"Cast {cmd_card.name} from command zone (cost: {base_cost}{tax_str})",
                 ))
+
+    # Always allow passing priority (CR 500.2.11)
+    # Add pass as the last action - it's always available
+    if not any(a.action_type == "pass" for a in actions):
+        actions.append(LegalAction(action_type="pass", description="Pass priority"))
 
     return actions

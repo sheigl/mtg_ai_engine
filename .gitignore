@@ -175,3 +175,4 @@ frontend/dist/
 .env.development.local
 .env.test.local
 .env.production.local
+mtg_engine/card_data/cache.db

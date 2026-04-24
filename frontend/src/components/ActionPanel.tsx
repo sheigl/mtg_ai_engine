@@ -159,7 +159,7 @@ export function ActionPanel({
             {isPending ? '…' : 'Confirm Blocks'}
           </button>
         )}
-        {canPass && legalActions.length > 1 && (
+        {canPass && legalActions.length >= 1 && (
           <button
             onClick={onPassPriority}
             disabled={isPending}

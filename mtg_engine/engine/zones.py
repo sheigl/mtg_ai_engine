@@ -265,12 +265,29 @@ def move_permanent_to_zone(
 
 
 def _parse_enters_tapped(oracle_text: str) -> bool:
-    """Parse 'enters tapped' replacement effect from oracle text."""
+    """Parse 'enters tapped' replacement effect from oracle text.
+
+    Matches both modern ("~ enters tapped.") and legacy
+    ("~ enters the battlefield tapped.") wording.
+
+    Conditional forms — checklands ("enters tapped unless …") and
+    shocklands ("As ~ enters, you may pay X life. If you don't, it
+    enters tapped.") — optimistically enter untapped, since evaluating
+    the condition / presenting the payment choice is not yet wired up.
+    """
     if not oracle_text:
         return False
     import re as _re
     text_lower = oracle_text.lower()
-    if _re.search(r'enters (the )?battlefield tapped', text_lower):
+
+    # Checkland: "enters tapped unless …" — optimistic (assume condition met)
+    if _re.search(r'\benters tapped unless\b', text_lower):
+        return False
+    # Shockland-style: "As ~ enters … if you don't, it enters tapped."
+    if _re.search(r"if you don'?t,?\s*it enters tapped", text_lower):
+        return False
+
+    if _re.search(r'\benters (?:(?:the )?battlefield )?tapped\b', text_lower):
         return True
     return False
 

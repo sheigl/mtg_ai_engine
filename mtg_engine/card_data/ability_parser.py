@@ -70,7 +70,7 @@ KEYWORDS: frozenset[str] = frozenset({
     "ward", "blitz", "casualty", "connive", "domain", "enlist",
     "read ahead", "reconfigure", "training", "cleave", "compleated",
     "prototype", "backup", "bargain", "disguise", "cloak", "plot",
-    "suspect", "manifest dread", "saddle", "gift",
+    "suspect", "manifest dread", "saddle", "gift", "class",
 })
 
 _LOYALTY_RE = re.compile(
@@ -83,10 +83,20 @@ _TRIGGERED_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _ACTIVATED_RE = re.compile(
-    r"^(\{[^}]+\}(?:,\s*\{[^}]+\})*(?:,\s*[^:,]+)?)\s*:\s*(.+)$",
+    r"^((?:\{[^}]+\})+(?:,\s*(?:(?:\{[^}]+\})+|[^:,]+))*)\s*:\s*(.+)$",
     re.DOTALL,
 )
 _TIMING_RE = re.compile(r"\(activate only (?:as a sorcery|during [^)]+)\)", re.IGNORECASE)
+
+# Static / replacement-effect patterns the engine knows about but doesn't
+# structure as an Ability (e.g. ETB-tapped on lands is handled by
+# `_parse_enters_tapped` in zones.py). Matching segments are still returned
+# as UnparsedAbility, but don't emit a warning since they're expected.
+_KNOWN_STATIC_PATTERNS = [
+    re.compile(r"\benters (?:(?:the )?battlefield )?tapped\b", re.IGNORECASE),
+    re.compile(r"^as (?:this|\w[\w ']*) enters\b", re.IGNORECASE),
+    re.compile(r"^if you don'?t,? it enters tapped", re.IGNORECASE),
+]
 
 
 def parse_oracle_text(oracle_text: str, type_line: str = "") -> list[Ability]:
@@ -158,8 +168,10 @@ def _parse_segment(text: str) -> list[Ability]:
     if lower in KEYWORDS:
         return [KeywordAbility(name=lower)]
 
-    # Unknown — log warning per REQ-C03
-    logger.warning("UnparsedAbility: %r", text)
+    # Unknown — log warning per REQ-C03, except for known static / replacement
+    # effects (handled elsewhere) which would otherwise spam the logs.
+    if not any(p.search(text) for p in _KNOWN_STATIC_PATTERNS):
+        logger.warning("UnparsedAbility: %r", text)
     return [UnparsedAbility(raw_text=text)]
 
 

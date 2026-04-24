@@ -21,8 +21,8 @@ const ENDPOINT_MAP: Record<string, string> = {
   'activate-loyalty': 'activate-loyalty',
   'cascade-choice': 'cascade-choice',
   choice: 'choice',
-  scry_choice: 'scry-choice',
-  surveil_choice: 'surveil-choice',
+  scry_choice: 'choice',
+  surveil_choice: 'choice',
   discard: 'discard',
 }
 

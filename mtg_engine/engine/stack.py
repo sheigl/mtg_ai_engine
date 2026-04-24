@@ -451,17 +451,25 @@ def _trigger_cascade(game_state: GameState, caster_name: str, cascade_cmc: int) 
 def _apply_triggered_effect(game_state: GameState, stack_obj: StackObject) -> GameState:
     """
     Apply the effect text of a resolved triggered or activated ability. CR 608.2.
-    Handles common patterns; unknown effects are logged and skipped.
+    Delegates to the shared pattern matcher in _apply_single_effect_text so
+    triggered abilities support the same effect vocabulary as spells
+    (token creation, card draw, destroy, life gain, counters, etc.).
+    Handles self-referential "return this to its owner's hand" separately
+    since that pattern has no `target` clause.
     """
     for effect_text in stack_obj.effects:
         effect_lower = effect_text.lower()
 
-        # "return [card_name] to its owner's hand"
-        if "return" in effect_lower and "hand" in effect_lower:
+        # Self-referential "return CARDNAME to its owner's hand" (e.g. dies triggers).
+        # The spell pattern requires "target" and wouldn't match.
+        if (
+            "return" in effect_lower
+            and "hand" in effect_lower
+            and "target" not in effect_lower
+        ):
             card_name = stack_obj.source_card.name
             controller = stack_obj.controller
             player = get_player(game_state, controller)
-            # Search graveyard for the card
             target_card = next((c for c in player.graveyard if c.name == card_name), None)
             if target_card:
                 player.graveyard[:] = [c for c in player.graveyard if c.id != target_card.id]
@@ -469,15 +477,7 @@ def _apply_triggered_effect(game_state: GameState, stack_obj: StackObject) -> Ga
                 logger.info("Triggered effect: returned %s to %s's hand", card_name, controller)
             continue
 
-        # Damage effects (e.g. "deals 1 damage to target creature")
-        dmg_match = re.search(r"deals?\s+(\d+)\s+damage", effect_lower)
-        if dmg_match and stack_obj.targets:
-            damage = int(dmg_match.group(1))
-            for target_id in stack_obj.targets:
-                game_state = _deal_damage(game_state, target_id, damage, stack_obj.source_card)
-            continue
-
-        logger.debug("Triggered effect not implemented: %r", effect_text)
+        game_state = _apply_single_effect_text(game_state, stack_obj, effect_text)
 
     return game_state
 
@@ -495,11 +495,25 @@ def _apply_single_effect_text(game_state: GameState, stack_obj: StackObject, eff
          lambda m: _destroy_permanent(game_state, stack_obj.targets[0] if stack_obj.targets else None)),
         (r"exile target [\w ]+",
          lambda m: _exile_permanent(game_state, stack_obj.targets[0] if stack_obj.targets else None)),
-        (r"return target [\w ]+ to (?:its owner'?s?|your) hand",
+(r"return target [\w ]+ to (?:its owner'?s?|your) hand",
          lambda m: _bounce_permanent(game_state, stack_obj.targets[0] if stack_obj.targets else None)),
+        # Token with prowess keyword and optional colors
+        (r"create (a|an|one|two|three|\d+) (\d+)/(\d+) ((?:blue|red|white|black|green) and (?:blue|red|white|black|green) )?([\w ]+) creature tokens? with prowess",
+         lambda m: _create_token_with_keywords(game_state, stack_obj.controller,
+                                   m.group(1), m.group(5).strip() if m.group(5) else m.group(4),
+                                   "prowess")),
+        # Token with multiple colors (e.g., "blue and red")
+        (r"create (a|an|one|two|three|\d+) (\d+)/(\d+) (blue|red|white|black|green) and (blue|red|white|black|green) ([\w ]+) creature tokens?",
+         lambda m: _create_token_with_pt_and_keywords(game_state, stack_obj.controller,
+                                   m.group(1), m.group(2), m.group(3), m.group(5),
+                                   f"{m.group(3)} {m.group(4)}")),
+        # Simple token with prowess
+        (r"create (a|an|one|two|three|\d+) (\d+)/(\d+) ([\w ]+) creature tokens? with prowess",
+         lambda m: _create_token_with_keywords(game_state, stack_obj.controller,
+                                   m.group(1), m.group(4), "prowess")),
         (r"create (a|an|one|two|three|\d+) (\d+)/(\d+) ([\w ]+) creature tokens?",
          lambda m: _create_tokens(game_state, stack_obj.controller,
-                                  m.group(1), m.group(2), m.group(3), m.group(4))),
+                                   m.group(1), m.group(2), m.group(3), m.group(4))),
         (r"gain(?:s)? (\d+|x) life",
          lambda m: _gain_life(game_state, stack_obj.controller,
                               int(m.group(1)) if m.group(1).isdigit() else x_value)),
@@ -1213,16 +1227,53 @@ def _create_token_with_pt(game_state: GameState, controller: str, count_str: str
 
 
 def _create_token_with_keywords(game_state: GameState, controller: str, count_str: str, subtype: str, keywords: str) -> GameState:
-    """Create token with keywords."""
-    # Token with keywords creation - for now, just log it
-    logger.info("%s creates token with keywords", controller)
+    """Create token with keywords (e.g., prowess,飞行, etc)."""
+    count_map = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3}
+    count = count_map.get(count_str.lower(), int(count_str) if count_str.isdigit() else 1)
+    
+    token_name = f"{subtype} Token"
+    token_card = Card(
+        name=token_name,
+        type_line="Token Creature — " + subtype,
+        power="1",
+        toughness="1",
+        mana_cost="",
+        colors=[],
+        keywords=keywords.split(),
+        parse_status="ok"
+    )
+    
+    for _ in range(count):
+        _, new_perm = put_permanent_onto_battlefield(game_state, token_card, controller, from_zone="hand", is_token=True)
+    
+    logger.info("%s creates %d %s token(s) with %s", controller, count, token_name, keywords)
     return game_state
 
 
 def _create_token_with_pt_and_keywords(game_state: GameState, controller: str, count_str: str, power: str, toughness: str, subtype: str, keywords: str) -> GameState:
     """Create token with power/toughness and keywords."""
-    # Token with PT and keywords creation - for now, just log it
-    logger.info("%s creates token with PT and keywords", controller)
+    count_map = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3}
+    count = count_map.get(count_str.lower(), int(count_str) if count_str.isdigit() else 1)
+    
+    p = int(power) if power.isdigit() else 1
+    t = int(toughness) if toughness.isdigit() else 1
+    
+    token_name = f"{subtype} Token"
+    token_card = Card(
+        name=token_name,
+        type_line="Token Creature — " + subtype,
+        power=str(p),
+        toughness=str(t),
+        mana_cost="",
+        colors=[],
+        keywords=keywords.split(),
+        parse_status="ok"
+    )
+    
+    for _ in range(count):
+        _, new_perm = put_permanent_onto_battlefield(game_state, token_card, controller, from_zone="hand", is_token=True)
+    
+    logger.info("%s creates %d %s/%s %s token(s) with %s", controller, p, t, token_name, count, keywords)
     return game_state
 
 

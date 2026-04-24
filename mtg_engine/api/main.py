@@ -36,6 +36,26 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.warning("MongoDB: failed to create indexes", exc_info=True)
         await ensure_indexes()
+    # Restore persisted games from MongoDB (034-game-persistence)
+    try:
+        from mtg_engine.api.game_manager import get_manager
+        mgr = get_manager()
+        restored = mgr.restore_games()
+        if restored:
+            logger.info("Restored %d games from persistence", restored)
+            # Repopulate human player registry and restart AI loops for restored games
+            from mtg_engine.api.routers.human_game import _human_player_registry, _restart_hybrid_loop
+            import os as _os
+            _port = _os.environ.get("PORT", "8085")
+            engine_url = f"http://127.0.0.1:{_port}"
+            for game_id, gs in mgr._games.items():
+                if gs.human_player_name:
+                    _human_player_registry[game_id] = gs.human_player_name
+                    # Restart the AI loop if it's the AI's turn and the game is still going
+                    if not gs.is_game_over and gs.priority_holder != gs.human_player_name:
+                        _restart_hybrid_loop(gs, engine_url)
+    except Exception:
+        logger.warning("Failed to restore games from persistence", exc_info=True)
     yield
 
 
