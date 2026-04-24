@@ -144,17 +144,25 @@ interface DiscardModalProps {
   hand: Card[]
   count: number
   onDiscard: (cardId: string) => void
+  isOwnHand?: boolean  // If true, show "Don't discard" option
+  drawAfterDiscard?: number  // Number of cards to draw if you do discard
 }
 
-export function DiscardModal({ hand, count, onDiscard }: DiscardModalProps) {
+export function DiscardModal({ hand, count, onDiscard, isOwnHand = false, drawAfterDiscard = 1 }: DiscardModalProps) {
+  const isOptional = isOwnHand && drawAfterDiscard > 0
+  
   return (
     <div style={overlayStyle}>
       <div style={modalStyle}>
         <div style={{ fontWeight: 700, fontSize: '1rem', marginBottom: '0.5rem' }}>
-          Pick card for opponent to discard
+          {isOwnHand ? "Pick a card to discard" : "Pick card for opponent to discard"}
         </div>
         <div style={{ fontSize: '0.8rem', marginBottom: '0.5rem', color: 'var(--text-secondary)' }}>
-          Choose which card your opponent will discard:
+          {isOwnHand 
+            ? (isOptional 
+                ? `Discard 1 card to draw ${drawAfterDiscard}. Or don't discard and draw nothing.`
+                : `Discard ${count} card(s):`)
+            : "Choose which card your opponent will discard:"}
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem', maxHeight: '200px', overflowY: 'auto' }}>
           {hand.map(card => (

@@ -1541,7 +1541,43 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
         # T040: Player picks a card to discard
         if gs.pending_discard_choice:
             is_duress = gs.pending_discard_choice.get("is_duress_effect", False)
+            is_optional = gs.pending_discard_choice.get("is_optional_discard", False)
             opponent_name = gs.pending_discard_choice.get("opponent")
+            selected_id = req.selection if isinstance(req.selection, str) else None
+            
+            if is_optional:
+                # Optional discard (e.g., Abandon Attachments)
+                # If selected_id: discard AND draw | If no selection: don't discard, don't draw
+                if selected_id:
+                    from mtg_engine.engine.zones import get_player as _get_player_draw, draw_card as _draw_card
+                    player_name = gs.pending_discard_choice.get("player", gs.priority_holder)
+                    player = _get_player_draw(gs, player_name)
+                    if player:
+                        # Find and discard selected card
+                        card = next((c for c in player.hand if c.id == selected_id), None)
+                        if card is None and player.hand:
+                            card = player.hand[0]
+                        if card:
+                            logger.info("Optional discard: %s discards %s", player_name, card.name)
+                            player.hand[:] = [c for c in player.hand if c.id != card.id]
+                            player.graveyard.append(card)
+                        
+                        # Draw cards (if draw_after_discard is set)
+                        draw_count = gs.pending_discard_choice.get("draw_after_discard", 1)
+                        for _ in range(draw_count):
+                            gs, _ = draw_card(gs, player_name)
+                    gs.pending_discard_choice = None
+                else:
+                    # Chose NOT to discard - don't draw any cards, spell fizzles
+                    logger.info("Optional discard: chose not to discard")
+                    from mtg_engine.engine.zones import get_player as _gp
+                    player_name = gs.pending_discard_choice.get("player", gs.priority_holder)
+                    player = _gp(gs, player_name)
+                    if player:
+                        player.graveyard.append(type('Card', (), {'name': gs.pending_discard_choice.get('source_card', 'Abandon Attachments')})())
+                    gs.pending_discard_choice = None
+                mgr.update(game_id, gs)
+                return _ok(gs)
             
             if is_duress and opponent_name:
                 # Duress effect: discard from opponent's hand

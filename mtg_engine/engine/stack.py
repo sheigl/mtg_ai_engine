@@ -290,12 +290,15 @@ def _resolve_duress_effect(game_state: GameState, caster_name: str, card: Card) 
     General handling for effects like Duress, Thought Erasure, Coercion, etc.
     Also handles "you may discard" (own hand choice).
     
-    1. Check if this is caster's own hand choice or opponent
-    2. Filter hand by restriction (noncreature, nonland, etc.)
-    3. If 0-1 valid cards: auto-discard (or resolve normally)
-    4. If 2+ valid cards: queue choice for caster
+    For "you may discard" effects (optional):
+    - Queue choice (discard or don't discard)
+    - Don't resolve spell effect until choice is made
+    
+    For opponent discard effects:
+    - Queue choice, resolve immediately
     """
     from mtg_engine.engine.zones import get_player
+    from mtg_engine.engine.zones import draw_card
     
     oracle = (card.oracle_text or "").lower()
     
@@ -304,39 +307,34 @@ def _resolve_duress_effect(game_state: GameState, caster_name: str, card: Card) 
     caster_is_target = "you may discard" in oracle or "discard a card" in oracle
     
     if caster_is_target:
-        # Caster decides what to discard from their own hand
+        # Optional discard from own hand - e.g., Abandon Attachments
+        # DON'T resolve yet - queue choice
         discard_player = get_player(game_state, caster_name)
         if not discard_player:
             _move_to_graveyard(game_state, caster_name, card)
             return game_state
         
-        restriction = _parse_discard_restriction(oracle, for_self=True)
-        valid_cards = [c for c in discard_player.hand if restriction(c)]
+        # Check how many cards to draw (default 1, look for "draw X cards")
+        draw_count = 1
+        import re as _re
+        draw_match = _re.search(r'draw (\w+) cards?', oracle)
+        if draw_match:
+            draw_word = draw_match.group(1)
+            draw_map = {"one": 1, "two": 2, "three": 3, "four": 4}
+            draw_count = draw_map.get(draw_word, 1)
         
-        if not valid_cards:
-            # No valid cards - spell resolves (you chose not to discard implicitly)
-            logger.info("%s: %s has no valid cards to discard", card.name, discard_player.name)
-            _move_to_graveyard(game_state, caster_name, card)
-            return game_state
-        
-        if len(valid_cards) == 1:
-            # Auto-discard single valid card
-            logger.info("%s: %s discards %s", card.name, discard_player.name, valid_cards[0].name)
-            discard_player.hand.remove(valid_cards[0])
-            discard_player.graveyard.append(valid_cards[0])
-            _move_to_graveyard(game_state, caster_name, card)
-            return game_state
-        
-        # Multiple valid cards - queue choice for caster
         game_state.pending_discard_choice = {
             "player": caster_name,
-            "opponent": discard_player.name,  # Same person for self-discard
-            "opponent_hand": [c.model_dump() for c in valid_cards],
+            "opponent": discard_player.name,
+            "opponent_hand": [c.model_dump() for c in discard_player.hand],
             "count": 1,
             "is_duress_effect": True,
             "source_card": card.name,
+            "is_optional_discard": True,
+            "draw_after_discard": draw_count,
+            "spell_card_id": card.id,  # Remember spell to resolve after choice
         }
-        _move_to_graveyard(game_state, caster_name, card)
+        logger.info("%s: %s queued optional discard choice", card.name, discard_player.name)
         return game_state
     
     # Original: opponent discards
