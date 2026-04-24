@@ -307,3 +307,16 @@ AI Agent (LLM / bot)
 - **Root cause**: Engine didn't detect "target opponent reveals their hand...discard" pattern, and frontend didn't render the choice.
 - **Effect**: Casting Duress resolved without showing opponent's hand or letting player choose.
 - **Fix**: Added pattern detection, pending choice queue, and UI rendering for discard choice.
+
+**BUG-17: Optional discard from own hand (e.g., Abandon Attachments)**
+- **Files**: `mtg_engine/engine/stack.py`, `mtg_engine/api/routers/game.py`, `frontend/src/components/ChoiceModal.tsx`
+- **Root cause**: "You may discard" spells resolved immediately without choice.
+- **Effect**: Cards like Abandon Attachments resolved without letting player choose.
+- **Fix**: Queue choice instead of resolving immediately. Two options:
+  - Choose to discard → discard card, draw X cards  
+  - Choose not to discard → spell goes to graveyard, no cards drawn
+
+**Pattern Examples**:
+- "You may discard a card. If you do, draw two cards."
+- "You may discard a card."
+- "Target opponent reveals their hand..."
