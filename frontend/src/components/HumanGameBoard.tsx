@@ -217,8 +217,8 @@ export function HumanGameBoard() {
   const isScryPhase = scryActions.length > 0 && gs?.pending_scry_choice?.player === resolvedHumanPlayerName
 
   // Discard choice detection (Duress-type effects)
-  const discardActions = legalActions.filter(a => a.action_type === 'choice' && a.card_name === 'discard_pick')
-  const isDiscardPhase = discardActions.length > 0 && gs?.pending_discard_choice?.player === resolvedHumanPlayerName
+  const duressActions = legalActions.filter(a => a.action_type === 'choice' && a.card_name === 'discard_pick')
+  const isDuressPhase = duressActions.length > 0 && gs?.pending_discard_choice?.player === resolvedHumanPlayerName
 
   // ETB choice detection (034-etb-choices)
   const etbActions = legalActions.filter(a => a.card_name === 'etb_pay' || a.card_name === 'etb_tapped')
@@ -403,7 +403,7 @@ export function HumanGameBoard() {
           onDiscard={(cardId) => submitAction('discard', { card_id: cardId })}
         />
       )}
-      {isMyTurn && isDiscardPhase && gs.pending_discard_choice && (
+      {isMyTurn && isDuressPhase && gs.pending_discard_choice && (
         <DiscardModal
           hand={(gs.pending_discard_choice.opponent_hand ?? []).map((c: any) => typeof c === 'string' ? c : c.name ?? c.id ?? '?')}
           count={gs.pending_discard_choice.count ?? 1}
