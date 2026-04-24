@@ -134,6 +134,14 @@ export interface GameState {
     cards: { name: string; id?: string }[]
     n: number
   } | null
+  pending_discard_choice?: {
+    player: string
+    opponent?: string
+    opponent_hand?: { name: string; id?: string }[]
+    count: number
+    is_duress_effect?: boolean
+    source_card?: string
+  } | null
   pending_etb_choice?: {
     player: string
     permanent_id: string

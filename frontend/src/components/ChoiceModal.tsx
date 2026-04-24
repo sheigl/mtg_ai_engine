@@ -151,7 +151,10 @@ export function DiscardModal({ hand, count, onDiscard }: DiscardModalProps) {
     <div style={overlayStyle}>
       <div style={modalStyle}>
         <div style={{ fontWeight: 700, fontSize: '1rem', marginBottom: '0.5rem' }}>
-          Discard {count} card{count > 1 ? 's' : ''}
+          Pick card for opponent to discard
+        </div>
+        <div style={{ fontSize: '0.8rem', marginBottom: '0.5rem', color: 'var(--text-secondary)' }}>
+          Choose which card your opponent will discard:
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem', maxHeight: '200px', overflowY: 'auto' }}>
           {hand.map(card => (
