@@ -260,6 +260,8 @@ def _check_duress_effect(oracle_text: str) -> bool:
     - "each opponent discards a card"
     - "each opponent discards..."
     - "opponent discards a card"
+    - "you may discard a card" (own hand choice)
+    - "you may discard" (own hand choice)
     """
     if not oracle_text:
         return False
@@ -271,6 +273,8 @@ def _check_duress_effect(oracle_text: str) -> bool:
         r"opponent reveals their hand.*?discard",
         r"each opponent discards",
         r"opponent discards a card",
+        r"you may discard a card",
+        r"you may discard\.",
         r"choose.*?opponent.*?discards",
     ]
     import re as _re
@@ -284,20 +288,95 @@ def _resolve_duress_effect(game_state: GameState, caster_name: str, card: Card) 
     """Resolve discard-from-hand effect: make opponent discard.
     
     General handling for effects like Duress, Thought Erasure, Coercion, etc.
-    1. Find opponent
-    2. Filter opponent's hand by restriction (noncreature, nonland, etc.)
-    3. If 0-1 valid cards: auto-discard
+    Also handles "you may discard" (own hand choice).
+    
+    1. Check if this is caster's own hand choice or opponent
+    2. Filter hand by restriction (noncreature, nonland, etc.)
+    3. If 0-1 valid cards: auto-discard (or resolve normally)
     4. If 2+ valid cards: queue choice for caster
     """
     from mtg_engine.engine.zones import get_player
     
     oracle = (card.oracle_text or "").lower()
     
+    # Check if this is caster's own hand choice ("you may discard")
+    # vs opponent's hand ("target opponent")
+    caster_is_target = "you may discard" in oracle or "discard a card" in oracle
+    
+    if caster_is_target:
+        # Caster decides what to discard from their own hand
+        discard_player = get_player(game_state, caster_name)
+        if not discard_player:
+            _move_to_graveyard(game_state, caster_name, card)
+            return game_state
+        
+        restriction = _parse_discard_restriction(oracle, for_self=True)
+        valid_cards = [c for c in discard_player.hand if restriction(c)]
+        
+        if not valid_cards:
+            # No valid cards - spell resolves (you chose not to discard implicitly)
+            logger.info("%s: %s has no valid cards to discard", card.name, discard_player.name)
+            _move_to_graveyard(game_state, caster_name, card)
+            return game_state
+        
+        if len(valid_cards) == 1:
+            # Auto-discard single valid card
+            logger.info("%s: %s discards %s", card.name, discard_player.name, valid_cards[0].name)
+            discard_player.hand.remove(valid_cards[0])
+            discard_player.graveyard.append(valid_cards[0])
+            _move_to_graveyard(game_state, caster_name, card)
+            return game_state
+        
+        # Multiple valid cards - queue choice for caster
+        game_state.pending_discard_choice = {
+            "player": caster_name,
+            "opponent": discard_player.name,  # Same person for self-discard
+            "opponent_hand": [c.model_dump() for c in valid_cards],
+            "count": 1,
+            "is_duress_effect": True,
+            "source_card": card.name,
+        }
+        _move_to_graveyard(game_state, caster_name, card)
+        return game_state
+    
+    # Original: opponent discards
     # Find opponent (player who is not the caster)
     opponent = next((p for p in game_state.players if p.name != caster_name), None)
     if not opponent:
         _move_to_graveyard(game_state, caster_name, card)
         return game_state
+    
+    # Parse restriction from card text
+    # Default: noncreature, nonland
+    restriction = _parse_discard_restriction(oracle)
+    
+    # Filter opponent's hand
+    valid_cards = [c for c in opponent.hand if restriction(c)]
+    
+    if not valid_cards:
+        logger.info("%s: opponent %s has no valid cards to discard", card.name, opponent.name)
+        _move_to_graveyard(game_state, caster_name, card)
+        return game_state
+    
+    if len(valid_cards) == 1:
+        # Auto-discard single valid card
+        logger.info("%s: %s discards %s", card.name, opponent.name, valid_cards[0].name)
+        opponent.hand.remove(valid_cards[0])
+        opponent.graveyard.append(valid_cards[0])
+        _move_to_graveyard(game_state, caster_name, card)
+        return game_state
+    
+    # Multiple valid cards - queue choice for caster
+    game_state.pending_discard_choice = {
+        "player": caster_name,
+        "opponent": opponent.name,
+        "opponent_hand": [c.model_dump() for c in valid_cards],
+        "count": 1,
+        "is_duress_effect": True,  # Flag to show it's a choice, not mandatory discard
+        "source_card": card.name,  # For logging
+    }
+    _move_to_graveyard(game_state, caster_name, card)
+    return game_state
     
     # Parse restriction from card text
     # Default: noncreature, nonland
@@ -336,12 +415,18 @@ def _resolve_duress_effect(game_state: GameState, caster_name: str, card: Card) 
     return game_state
 
 
-def _parse_discard_restriction(oracle_text: str):
+def _parse_discard_restriction(oracle_text: str, for_self: bool = False):
     """Parse what card types can be chosen for discard.
     
     Returns a filter function.
+    
+    for_self: if True, allow discarding any card (for "you may discard" effects)
     """
     text = oracle_text.lower()
+    
+    # For own hand choice ("you may discard"), can discard anything
+    if for_self:
+        return lambda c: True
     
     if "noncreature, nonland" in text:
         return lambda c: not _is_creature_or_land(c)
