@@ -496,6 +496,12 @@ class HeuristicPlayer:
                 return 3.0
             elif card_name == "surveil_graveyard":
                 return 2.0
+            elif card_name == "reveal_put_hand":
+                # Reveal-and-choose (e.g., Sleight of Hand): pick best card for hand
+                return self._score_reveal_put_hand(action, game_state)
+            elif card_name == "reveal_put_hand_multi":
+                # Multi-select (e.g., Stock Up)
+                return self._score_reveal_put_hand(action, game_state)
             # Generic choice — prefer first option
             return 5.0
 
@@ -1727,6 +1733,23 @@ class HeuristicPlayer:
             return "graveyard"
         result = self._score_scry_choice(revealed_card, current_turn)
         return "graveyard" if result == "bottom" else "top"
+
+    def _score_reveal_put_hand(self, action: dict, game_state: dict) -> float:
+        """Score reveal-and-choose (e.g., Sleight of Hand) - pick best card for hand."""
+        valid_targets = action.get("valid_targets", [])
+        if not valid_targets:
+            return 5.0
+        
+        # Score each card and pick highest
+        best_score = 0.0
+        for card_id in valid_targets:
+            # Find card in pending_scry_choice cards
+            # For now, just pick first (could be improved with more scoring logic)
+            score = 5.0
+            if score > best_score:
+                best_score = score
+        
+        return best_score
 
     # ------------------------------------------------------------------
     # Modal spell mode selection (US9, T034-T035)

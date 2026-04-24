@@ -411,10 +411,18 @@ export function HumanGameBoard() {
         />
       )}
       {isMyTurn && isScryPhase && gs.pending_scry_choice && (
-        <ScryModal
-          topCards={(gs.pending_scry_choice.cards ?? []).map((c: any) => typeof c === 'string' ? c : c.name ?? c.id ?? '?')}
-          onChoice={(keepOnTop) => submitAction('choice', { choice_id: keepOnTop ? 'scry_keep' : 'scry_bottom' })}
-        />
+        gs.pending_scry_choice.effect_type === 'reveal_and_choose' ? (
+          <DiscardModal
+            hand={(gs.pending_scry_choice.cards ?? []) as any}
+            count={1}
+            onDiscard={(cardId) => submitAction('choice', { choice_id: 'reveal_put_hand', selection: cardId })}
+          />
+        ) : (
+          <ScryModal
+            topCards={(gs.pending_scry_choice.cards ?? []).map((c: any) => typeof c === 'string' ? c : c.name ?? c.id ?? '?')}
+            onChoice={(keepOnTop) => submitAction('choice', { choice_id: keepOnTop ? 'scry_keep' : 'scry_bottom' })}
+          />
+        )
       )}
       {isMyTurn && isETBPhase && gs.pending_etb_choice && (
         <ETBChoiceModal

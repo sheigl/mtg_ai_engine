@@ -129,6 +129,27 @@ def cast_spell(
             cost = (card.mana_cost or "")
     else:
         cost = alternative_cost if alternative_cost is not None else (card.mana_cost or "")
+    
+    # Auto-calculate payment if not provided (BUG fix for bots/empty payment)
+    if not mana_payment:
+        from mtg_engine.engine.mana import parse_mana_cost as _parse_cost
+        cost_dict = _parse_cost(cost)
+        mana_payment = {}
+        pool_dict = {"W": player.mana_pool.W, "U": player.mana_pool.U, "B": player.mana_pool.B, "R": player.mana_pool.R, "G": player.mana_pool.G, "C": player.mana_pool.C}
+        # Pay colored first
+        for color in ("W", "U", "B", "R", "G"):
+            needed = cost_dict.get(color, 0)
+            if needed and pool_dict.get(color, 0) >= needed:
+                mana_payment[color] = needed
+                pool_dict[color] -= needed
+        # Pay generic with whatever's left
+        generic_needed = cost_dict.get("generic", 0)
+        if generic_needed:
+            from collections import Counter
+            pool_available = sum(v for v in pool_dict.values() if v > 0)
+            if pool_available >= generic_needed:
+                mana_payment["C"] = min(generic_needed, pool_available)
+    
     if not can_pay_cost(player.mana_pool, cost, mana_payment):
         raise ValueError(
             f"Insufficient mana to cast {card.name!r}: cost={cost!r}, payment={mana_payment}"
@@ -275,6 +296,8 @@ def _check_duress_effect(oracle_text: str) -> bool:
         r"opponent discards a card",
         r"you may discard a card",
         r"you may discard\.",
+        r"draw three cards\.? then discard",
+        r"draw \w+ cards\.? then discard",
         r"choose.*?opponent.*?discards",
     ]
     import re as _re
@@ -302,11 +325,16 @@ def _resolve_duress_effect(game_state: GameState, caster_name: str, card: Card) 
     
     oracle = (card.oracle_text or "").lower()
     
-    # Check if this is caster's own hand choice ("you may discard")
-    # vs opponent's hand ("target opponent")
-    caster_is_target = "you may discard" in oracle or "discard a card" in oracle
+    # Check if this is caster's own hand choice
+    # - "you may discard" (Abandon Attachments)
+    # - "draw X cards...then discard" (Winternight Stories)
+    caster_is_target = "you may discard" in oracle or "discard a card" in oracle or "then discard" in oracle
+    
+    # Check for Winternight Stories pattern: "draw three cards. Then discard two cards unless you discard a creature card."
+    is_winternight_stories = "draw three cards" in oracle and "unless you discard a creature" in oracle
     
     if caster_is_target:
+        import re as _re
         # Optional discard from own hand - e.g., Abandon Attachments
         # DON'T resolve yet - queue choice
         discard_player = get_player(game_state, caster_name)
@@ -316,12 +344,29 @@ def _resolve_duress_effect(game_state: GameState, caster_name: str, card: Card) 
         
         # Check how many cards to draw (default 1, look for "draw X cards")
         draw_count = 1
-        import re as _re
         draw_match = _re.search(r'draw (\w+) cards?', oracle)
         if draw_match:
             draw_word = draw_match.group(1)
             draw_map = {"one": 1, "two": 2, "three": 3, "four": 4}
             draw_count = draw_map.get(draw_word, 1)
+        
+        # Handle Winternight Stories: draw 3 cards first, then conditional discard
+        if is_winternight_stories:
+            for _ in range(draw_count):
+                game_state, _ = draw_card(game_state, discard_player.name)
+            game_state.pending_discard_choice = {
+                "player": caster_name,
+                "opponent": discard_player.name,
+                "opponent_hand": [c.model_dump() for c in discard_player.hand],
+                "count": 2,  # default: discard 2 unless...
+                "is_duress_effect": True,
+                "source_card": card.name,
+                "is_optional_discard": True,
+                "is_winternight_stories": True,
+                "spell_card_id": card.id,
+            }
+            logger.info("%s: %s queued winternight stories choice (draw %d, discard 2 unless 1 creature)", card.name, discard_player.name, draw_count)
+            return game_state
         
         game_state.pending_discard_choice = {
             "player": caster_name,
@@ -727,42 +772,28 @@ def _apply_single_effect_text(game_state: GameState, stack_obj: StackObject, eff
                                    m.group(1), m.group(2), m.group(3), m.group(4))),
         (r"gain(?:s)? (\d+|x) life",
          lambda m: _gain_life(game_state, stack_obj.controller,
-                              int(m.group(1)) if m.group(1).isdigit() else x_value)),
-        (r"discard(?:s)? (\d+|x) cards?",
-         lambda m: _discard_cards(game_state, stack_obj.controller,
-                                  int(m.group(1)) if m.group(1).isdigit() else x_value)),
-        (r"search your library for (?:a|an) ([\w ]+)",
-         lambda m: _tutor(game_state, stack_obj.controller, m.group(1).strip(), "hand")),
+int(m.group(1)) if m.group(1).isdigit() else x_value)),
         (r"put (\d+|x) \+1/\+1 counters? on target creature",
          lambda m: _add_counters(game_state, stack_obj.targets[0] if stack_obj.targets else None,
                                  "+1/+1", int(m.group(1)) if m.group(1).isdigit() else x_value)),
+        # "put a +1/+1 counter on this creature" (self-target for landfall)
+        (r"put a \+1/\+1 counter on (?:this|~)",
+         lambda m: _add_counters(game_state, stack_obj.source_permanent_id,
+                                 "+1/+1", 1)),
         (r"scry (\d+|x)",
-         lambda m: _apply_scry(game_state, stack_obj.controller,
-                               int(m.group(1)) if m.group(1).isdigit() else x_value)),
+          lambda m: _apply_scry(game_state, stack_obj.controller,
+                                int(m.group(1)) if m.group(1).isdigit() else x_value)),
         (r"surveil (\d+|x)",
          lambda m: _apply_surveil(game_state, stack_obj.controller,
                                   int(m.group(1)) if m.group(1).isdigit() else x_value)),
-        (r"deals?\s+(\d+)\s+damage",
-         lambda m: _deal_damage(game_state, stack_obj.targets[0] if stack_obj.targets else None,
-                                int(m.group(1)), card) if stack_obj.targets else None),
-        (r"target creature gets \+(\d+)/\+(\d+) until your next turn",
-         lambda m: _pump_creature(
-             game_state, stack_obj.targets[0] if stack_obj.targets else None,
-             int(m.group(1)), int(m.group(2)),
-             expires=f"player:{stack_obj.controller}",
-         ) if stack_obj.targets else None),
-        (r"target creature gets \+(\d+)/\+(\d+) until end of turn",
-         lambda m: _pump_creature(game_state, stack_obj.targets[0] if stack_obj.targets else None,
-                                  int(m.group(1)), int(m.group(2))) if stack_obj.targets else None),
-        (r"counter target spell",
-         lambda m: _counter_spell(game_state, stack_obj.targets[0] if stack_obj.targets else None)
-         if stack_obj.targets else None),
-        (r"draw a card, then discard a card",
-         lambda m: _draw_discard(game_state, stack_obj.controller)),
-        (r"mill (\d+)",
-         lambda m: _mill(game_state, stack_obj.controller, int(m.group(1)))),
-        (r"shuffle your library",
-         lambda m: _shuffle_library(game_state, stack_obj.controller)),
+        # "look at the top X of your library. Put Y of them into your hand..." (e.g., Stock Up)
+        (r"look at the top (\d+) cards? of your library\.? put (\d+) of them into your hand",
+         lambda m: _apply_reveal_and_choose_multi(game_state, stack_obj.controller,
+                                          int(m.group(1)), int(m.group(2)))),
+        # "look at the top X of your library. put one into your hand..." (e.g., Sleight of Hand)
+        (r"look at the top (\d+) cards? of your library",
+         lambda m: _apply_reveal_and_choose(game_state, stack_obj.controller,
+                                          int(m.group(1)) if m.group(1).isdigit() else 2)),
     ]
 
     oracle_lower = effect_text.lower()
@@ -1156,6 +1187,53 @@ def _apply_scry(game_state: GameState, player_name: str, n: int) -> GameState:
     }
     
     logger.info("%s scrys %d cards", player_name, n)
+    return game_state
+
+
+def _apply_reveal_and_choose(game_state: GameState, player_name: str, n: int) -> GameState:
+    """
+    Apply "look at the top N cards, put one in hand, put rest on bottom" effect.
+    (e.g., Sleight of Hand)
+    """
+    player = get_player(game_state, player_name)
+    if n <= 0 or not player.library:
+        return game_state
+    
+    # Get top N cards
+    revealed_cards = player.library[:min(n, len(player.library))]
+    
+    # Set pending reveal-and-choose choice
+    game_state.pending_scry_choice = {
+        "player": player_name,
+        "cards": [c.model_dump() for c in revealed_cards],
+        "n": n,
+        "effect_type": "reveal_and_choose",  # distinguishes from regular scry
+    }
+    
+    logger.info("%s reveals %d cards from top of library", player_name, n)
+    return game_state
+
+
+def _apply_reveal_and_choose_multi(game_state: GameState, player_name: str, n: int, put_count: int) -> GameState:
+    """
+    Apply "look at the top N cards, put M into hand, rest on bottom" effect.
+    (e.g., Stock Up - look at top 5, put 2 in hand)
+    """
+    player = get_player(game_state, player_name)
+    if n <= 0 or not player.library:
+        return game_state
+    
+    revealed_cards = player.library[:min(n, len(player.library))]
+    
+    game_state.pending_scry_choice = {
+        "player": player_name,
+        "cards": [c.model_dump() for c in revealed_cards],
+        "n": n,
+        "effect_type": "reveal_and_choose_multi",
+        "put_count": put_count,
+    }
+    
+    logger.info("%s reveals %d cards from top of library, choose %d for hand", player_name, n, put_count)
     return game_state
 
 

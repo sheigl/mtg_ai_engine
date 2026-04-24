@@ -56,6 +56,10 @@ def _on_zone_change(event: ZoneChangeEvent, game_state: GameState) -> None:
     for perm in list(game_state.battlefield):
         card = perm.card
         abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+        
+        # Check for Landfall keyword in type_line (inline ability without keyword parsing)
+        has_landfall = "landfall" in (card.type_line or "").lower()
+        
         for ab in abilities:
             if not isinstance(ab, TriggeredAbility):
                 continue
@@ -76,6 +80,32 @@ def _on_zone_change(event: ZoneChangeEvent, game_state: GameState) -> None:
                     "Trigger queued: %r from %s (controller: %s)",
                     ab.trigger_condition, card.name, perm.controller,
                 )
+        
+        # Handle Landfall triggers separately (keyword inline with triggered ability)
+        if has_landfall and event.get("to_zone") == "battlefield":
+            # Check if the entering card is a land
+            entering_card_id = event.get("card_id", "")
+            entering_perm = next((p for p in game_state.battlefield if p.id == entering_card_id), None)
+            if entering_perm and "land" in entering_perm.card.type_line.lower():
+                # Parse the inline triggered ability from oracle text
+                oracle = card.oracle_text or ""
+                if "landfall" in oracle.lower() and "enters" in oracle.lower():
+                    # Extract effect: "put a +1/+1 counter on this creature"
+                    import re as _re_lf
+                    counter_match = _re_lf.search(r"put a \+1/\+1 counter on (?:this|~)", oracle, _re_lf.IGNORECASE)
+                    if counter_match:
+                        effect = "put a +1/+1 counter on this creature"
+                        trigger = PendingTrigger(
+                            id=str(uuid.uuid4()),
+                            source_permanent_id=perm.id,
+                            controller=perm.controller,
+                            trigger_type="zone_change",
+                            effect_description=effect,
+                            source_card_name=card.name,
+                            is_optional=False,
+                        )
+                        game_state.pending_triggers.append(trigger)
+                        logger.debug("Landfall trigger queued from %s", card.name)
 
 
 def _matches_zone_change(
@@ -113,6 +143,13 @@ def _matches_zone_change(
         if "this" in cond:
             return event_card_id == source_perm.id
         return True
+    
+    # "whenever a land you control enters" / landfall triggers
+    if "landfall" in cond and "enters" in cond and to_z == "battlefield":
+        event_card = next((c for c in game_state.battlefield if c.id == event_card_id), None)
+        if event_card and "land" in event_card.card.type_line.lower():
+            return True
+        return False
 
     return False
 

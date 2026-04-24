@@ -731,11 +731,40 @@ def cast(game_id: str, req: CastRequest) -> dict:
                 player_for_delve.graveyard.remove(delve_card)
                 player_for_delve.exile.append(delve_card)
         req = req.model_copy(update={"targets": []})
+    
+    # Find the card in hand OR graveyard (needed for payment calculation)
+    _card_for_payment = next((c for c in player_gs.hand if c.id == req.card_id), None)
+    if not _card_for_payment:
+        _card_for_payment = next((c for c in player_gs.graveyard if c.id == req.card_id), None)
+    
+    # Auto-calculate mana_payment if not provided (BUG-22 fix)
+    if not req.mana_payment and _card_for_payment:
+        player = get_player(gs, gs.priority_holder)
+        cost_for_payment = _card_for_payment.mana_cost or ""
+        if player and cost_for_payment:
+            from mtg_engine.engine.mana import parse_mana_cost as _pmc
+            cost_dict = _pmc(cost_for_payment)
+            payment = {}
+            pool = {"W": player.mana_pool.W, "U": player.mana_pool.U, "B": player.mana_pool.B, "R": player.mana_pool.R, "G": player.mana_pool.G, "C": player.mana_pool.C}
+            # Pay colored first
+            for color in ("W", "U", "B", "R", "G"):
+                needed = cost_dict.get(color, 0)
+                if needed and pool.get(color, 0) >= needed:
+                    payment[color] = needed
+                    pool[color] -= needed
+            # Pay generic
+            generic_needed = cost_dict.get("generic", 0)
+            if generic_needed:
+                pool_avail = sum(v for v in pool.values() if v > 0)
+                if pool_avail >= generic_needed:
+                    payment["C"] = min(generic_needed, pool_avail)
+            # Always update req with payment (even if empty to trigger fix in stack.py)
+            req = req.model_copy(update={"mana_payment": payment})
 
     # Graveyard cast (US11, T039): temporarily move card to hand for cast_spell
     _graveyard_card = None
     _foretold_card = None
-    if req.from_graveyard and req.alternative_cost in {"flashback", "escape", "unearth", "disturb"}:
+    if req.from_graveyard and req.alternative_cost in {"flashback", "escape", "unearth", "disturb", "harmonize"}:
         _graveyard_card = next((c for c in player_gs.graveyard if c.id == req.card_id), None)
         if _graveyard_card is None:
             raise _err(f"Card {req.card_id!r} not found in graveyard", "INVALID_ACTION")
@@ -1400,11 +1429,91 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
             n = gs.pending_scry_choice["n"]
             from mtg_engine.engine.zones import get_player
             scry_player = get_player(gs, player_name)
-            if scry_player.library:
+            if scry_player and scry_player.library:
                 cards_to_bottom = scry_player.library[:n]
                 scry_player.library = scry_player.library[n:] + cards_to_bottom
             gs.pending_scry_choice = None
+        mgr.update(game_id, gs)
+        
+    # Handling reveal-and-choose from library (e.g., Sleight of Hand)
+    elif choice_id == "reveal_put_hand":
+        # Player puts one of the revealed cards into hand, puts rest on bottom
+        if gs.pending_scry_choice and gs.pending_scry_choice.get("effect_type") == "reveal_and_choose":
+            player_name = gs.pending_scry_choice.get("player")
+            from mtg_engine.engine.zones import get_player as _get_player_lib
+            player = _get_player_lib(gs, player_name)
+            selected_id = req.selection if isinstance(req.selection, str) else None
+            scry_cards = gs.pending_scry_choice.get("cards", [])
+            n = gs.pending_scry_choice.get("n", 2)
+            
+            if player and selected_id:
+                # Find card in the revealed cards list
+                for c in scry_cards:
+                    if c.get("id") == selected_id:
+                        # Create a Card object for it
+                        from mtg_engine.models.game import Card
+                        from mtg_engine.models.game import Card as _Card
+                        
+                        # Try to find in library by name (simplified)
+                        lib_top = player.library[:n]
+                        chosen = next((c2 for c2 in lib_top if c2.name == c.get("name")), None)
+                        if chosen:
+                            # Move it to hand
+                            player.hand.append(chosen)
+                            logger.info("Reveal choose: %s puts %s into hand", player_name, chosen.name)
+                        else:
+                            # Fallback: reconstruct from dict
+                            reconstructed = type('Card', (), {
+                                'id': c.get('id'),
+                                'name': c.get('name'),
+                                'type_line': c.get('type_line', ''),
+                            })()
+                            player.hand.append(reconstructed)
+                            logger.info("Reveal choose: %s puts %s into hand (reconstructed)", player_name, reconstructed.name)
+                        break
+                
+                # Move remaining cards to bottom (those that weren't selected)
+                if player and player.library:
+                    remaining_cards = player.library[:n]
+                    player.library = player.library[n:] + remaining_cards
+                
+            gs.pending_scry_choice = None
             mgr.update(game_id, gs)
+            return _ok(gs)
+    
+    # Handling reveal-and-choose multi (e.g., Stock Up - choose multiple cards)
+    elif choice_id == "reveal_put_hand_multi":
+        if gs.pending_scry_choice and gs.pending_scry_choice.get("effect_type") == "reveal_and_choose_multi":
+            player_name = gs.pending_scry_choice.get("player")
+            from mtg_engine.engine.zones import get_player as _get_player_multi
+            player = _get_player_multi(gs, player_name)
+            selected_ids = req.selection if isinstance(req.selection, list) else []
+            if isinstance(req.selection, str):
+                selected_ids = [req.selection]
+            scry_cards = gs.pending_scry_choice.get("cards", [])
+            n = gs.pending_scry_choice.get("n", 5)
+            put_count = gs.pending_scry_choice.get("put_count", 2)
+            
+            if player and selected_ids:
+                for selected_id in selected_ids[:put_count]:
+                    for c in scry_cards:
+                        if c.get("id") == selected_id:
+                            lib_top = player.library[:n]
+                            chosen = next((c2 for c2 in lib_top if c2.name == c.get("name")), None)
+                            if chosen:
+                                player.hand.append(chosen)
+                                logger.info("Reveal choose multi: %s puts %s into hand", player_name, chosen.name)
+                            break
+            
+            # Move remaining cards to bottom
+            if player and player.library:
+                remaining_cards = player.library[:n]
+                player.library = player.library[n:] + remaining_cards
+            
+            gs.pending_scry_choice = None
+            mgr.update(game_id, gs)
+            return _ok(gs)
+    
     elif choice_id == "surveil_keep":
         # Keep surveiled cards on top of library
         gs.pending_surveil_choice = None
@@ -1483,6 +1592,7 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
 
     elif choice_id == "etb_pay":
         # 034-etb-choices: Player pays cost for ETB choice (e.g., shockland)
+        from mtg_engine.engine.zones import get_player as _etb_get_player
         if gs.pending_etb_choice:
             cost = gs.pending_etb_choice.get("cost_amount", 0)
             cost_type = gs.pending_etb_choice.get("cost_type", "life")
@@ -1490,7 +1600,7 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
             permanent_id = gs.pending_etb_choice.get("permanent_id", "")
             
             # Apply cost payment
-            player = get_player(gs, player_name)
+            player = _etb_get_player(gs, player_name)
             if cost_type == "life" and player.life >= cost:
                 player.life -= cost
             
@@ -1548,6 +1658,10 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
             if is_optional:
                 # Optional discard (e.g., Abandon Attachments)
                 # If selected_id: discard AND draw | If no selection: don't discard, don't draw
+                
+                # Check for Winternight Stories conditional discard
+                is_winternight = gs.pending_discard_choice.get("is_winternight_stories", False)
+                
                 if selected_id:
                     from mtg_engine.engine.zones import get_player as _get_player_draw, draw_card as _draw_card
                     player_name = gs.pending_discard_choice.get("player", gs.priority_holder)
@@ -1561,21 +1675,37 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
                             logger.info("Optional discard: %s discards %s", player_name, card.name)
                             player.hand[:] = [c for c in player.hand if c.id != card.id]
                             player.graveyard.append(card)
-                        
-                        # Draw cards (if draw_after_discard is set)
-                        draw_count = gs.pending_discard_choice.get("draw_after_discard", 1)
-                        for _ in range(draw_count):
-                            gs, _ = draw_card(gs, player_name)
-                    gs.pending_discard_choice = None
-                else:
-                    # Chose NOT to discard - don't draw any cards, spell fizzles
-                    logger.info("Optional discard: chose not to discard")
-                    from mtg_engine.engine.zones import get_player as _gp
-                    player_name = gs.pending_discard_choice.get("player", gs.priority_holder)
-                    player = _gp(gs, player_name)
-                    if player:
-                        player.graveyard.append(type('Card', (), {'name': gs.pending_discard_choice.get('source_card', 'Abandon Attachments')})())
-                    gs.pending_discard_choice = None
+                            
+                            # Winternight Stories: if discarded creature, done; if not, need another discard
+                            if is_winternight:
+                                is_creature = "creature" in (card.type_line or "").lower()
+                                remaining = gs.pending_discard_choice.get("count", 2)
+                                if is_creature or remaining <= 1:
+                                    # Spell resolves (discarded creature OR already discarded 2)
+                                    gs.pending_discard_choice = None
+                                else:
+                                    # Need to discard another card
+                                    new_hand = [c.model_dump() for c in player.hand]
+                                    gs.pending_discard_choice = {
+                                        **gs.pending_discard_choice,
+                                        "opponent_hand": new_hand,
+                                        "count": remaining - 1,
+                                    }
+                                    logger.info("Winternight Stories: need another discard (creature=%s, remaining=%d)", is_creature, remaining - 1)
+                                    mgr.update(game_id, gs)
+                                    return _ok(gs)
+                                draw_count = gs.pending_discard_choice.get("draw_after_discard", 1)
+                            for _ in range(draw_count):
+                                gs, _ = draw_card(gs, player_name)
+                    else:
+                        # Chose NOT to discard - don't draw any cards, spell fizzles
+                        logger.info("Optional discard: chose not to discard")
+                        from mtg_engine.engine.zones import get_player as _gp
+                        player_name = gs.pending_discard_choice.get("player", gs.priority_holder)
+                        player = _gp(gs, player_name)
+                        if player:
+                            player.graveyard.append(type('Card', (), {'name': gs.pending_discard_choice.get('source_card', 'Abandon Attachments')})())
+                        gs.pending_discard_choice = None
                 mgr.update(game_id, gs)
                 return _ok(gs)
             
@@ -2091,6 +2221,37 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
     if gs.pending_scry_choice and gs.pending_scry_choice.get("player") == player_name:
         scry_cards = gs.pending_scry_choice.get("cards", [])
         card_ids = [c.get("id", c.get("name", "?")) if isinstance(c, dict) else c for c in scry_cards]
+        
+        # Check if this is a reveal-and-choose effect (e.g., Sleight of Hand)
+        effect_type = gs.pending_scry_choice.get("effect_type", "")
+        
+        if effect_type == "reveal_and_choose":
+            # Player chooses one card to put into hand, rest go to bottom
+            actions.append(LegalAction(
+                action_type="choice",
+                description=f"Choose a card to put in your hand",
+                valid_targets=card_ids,
+                card_name="reveal_put_hand",
+            ))
+            if not any(a.action_type == "pass" for a in actions):
+                actions.append(LegalAction(action_type="pass", description="Pass priority"))
+            return actions
+        
+        if effect_type == "reveal_and_choose_multi":
+            # Player chooses multiple cards to put into hand (e.g., Stock Up - choose 2)
+            put_count = gs.pending_scry_choice.get("put_count", 2)
+            actions.append(LegalAction(
+                action_type="choice",
+                description=f"Choose {put_count} cards to put in your hand",
+                valid_targets=card_ids,
+                card_name="reveal_put_hand_multi",
+                selection=put_count,
+            ))
+            if not any(a.action_type == "pass" for a in actions):
+                actions.append(LegalAction(action_type="pass", description="Pass priority"))
+            return actions
+        
+        # Regular scry: keep on top or put all on bottom
         actions.append(LegalAction(
             action_type="choice",
             description=f"Scry {len(scry_cards)}: keep on top",
@@ -2674,8 +2835,8 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                 description=f"Mutate {card.name} on target non-Human creature",
             ))
 
-    # Graveyard casting (US11, T038) — flashback, escape, unearth, disturb
-    _GRAVEYARD_CAST_KW = {"flashback", "escape", "unearth", "disturb"}
+    # Graveyard casting (US11, T038) — flashback, escape, unearth, disturb, harmonize
+    _GRAVEYARD_CAST_KW = {"flashback", "escape", "unearth", "disturb", "harmonize"}
     if _can_cast_at_sorcery_speed(gs, player_name) and not _has_split_second(gs):
         for card in player.graveyard:
             if "land" in card.type_line.lower():

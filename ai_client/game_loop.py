@@ -178,6 +178,25 @@ def _map_action_to_request(action: dict, mana_pool: dict | None = None, player_n
                 "choice_id": card_name,
                 "selection": "top" if "keep" in card_name else "bottom",
             }
+        if card_name == "reveal_put_hand":
+            # Reveal-and-choose (e.g., Sleight of Hand): pick a card to put in hand
+            valid_targets = action.get("valid_targets", [])
+            # Select the first card (heuristic could be improved)
+            selection = valid_targets[0] if valid_targets else ""
+            return "choice", {
+                "choice_id": card_name,
+                "selection": selection,
+            }
+        if card_name == "reveal_put_hand_multi":
+            # Multi-select (e.g., Stock Up): pick N cards to put in hand
+            valid_targets = action.get("valid_targets", [])
+            put_count = action.get("selection", 2)
+            # For now, pick first N cards
+            selection = valid_targets[:put_count] if valid_targets else []
+            return "choice", {
+                "choice_id": card_name,
+                "selection": selection,
+            }
         return "choice", {
             "choice_id": action.get("choice_id", ""),
             "selection": action.get("selection", "top"),

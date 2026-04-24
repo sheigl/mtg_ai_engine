@@ -325,11 +325,57 @@ AI Agent (LLM / bot)
 - **File**: `mtg_engine/engine/mana.py`
 - **Root cause**: `{2}{U}` being parsed incorrectly
 - **Effect**: Cards costing {2}{U} incorrectly require red mana
-- **Status**: Investigating
+- **Status**: Unable to reproduce - mana parsing appears correct. Need more context to verify.
 
 **BUG-19: Winternight Stories effect not resolving**
-- **Files**: `mtg_engine/engine/stack.py`
+- **Files**: `mtg_engine/engine/stack.py`, `mtg_engine/api/routers/game.py`
 - **Root cause**: Card has complex multi-part effect not handled
 - **Card text**: "Draw three cards. Then discard two cards unless you discard a creature card."
 - **Effect**: Spell resolves to graveyard without effect
-- **Status**: Not yet fixed
+- **Status**: Fixed (draws 3, queues conditional discard, handles creature check)
+
+**BUG-20: Harmonize not supported**
+- **Files**: `mtg_engine/api/routers/game.py`
+- **Root cause**: "harmonize" keyword not in graveyard cast keywords
+- **Effect**: Cannot cast cards with harmonize from graveyard
+- **Status**: Fixed (added harmonize to _GRAVEYARD_CAST_KW)
+
+**BUG-21: Sleight of Hand effect not resolving**
+- **Files**: `mtg_engine/engine/stack.py`, `mtg_engine/api/routers/game.py`, `frontend/.../HumanGameBoard.tsx`, `ai_client/...`
+- **Root cause**: Card has "look at top N, put one in hand" pattern not handled
+- **Card text**: "Look at the top two cards of your library. Put one of them into your hand and the other on the bottom of your library."
+- **Effect**: Spell resolves to graveyard without effect
+- **Status**: Fixed (added reveal_and_choose pattern, effect_type flag, all 3 player types)
+
+**BUG-22: Empty mana_payment causes cast failure**
+- **Files**: `mtg_engine/engine/stack.py`
+- **Root cause**: Bot/AI sends empty `mana_payment={}` but backend requires payment dict
+- **Effect**: Cards cannot be cast, "Insufficient mana to cast" error
+- **Status**: Fixed (auto-calculate payment if not provided)
+
+**BUG-23: Landfall triggers not firing**
+- **Files**: `mtg_engine/card_data/ability_parser.py`, `mtg_engine/engine/triggers.py`, `mtg_engine/engine/stack.py`
+- **Root cause**: Landfall keyword not detected, trigger matching incomplete, counter effect not self-targeted
+- **Effect**: Landfall abilities like Sazh's Chocobo don't trigger when land enters
+- **Status**: Fixed (added landfall detection, trigger patterns, self-target counter)
+
+**BUG-24: Shockland ETB choice UnboundLocalError**
+- **Files**: `mtg_engine/api/routers/game.py`
+- **Root cause**: `get_player` not accessible in choice handler
+- **Effect**: 500 error on ETB choice resolution
+- **Status**: Fixed (added local import in etb_pay handler)
+
+**BUG-25: Stock Up / multi-card reveal effect not resolving**
+- **Files**: `mtg_engine/engine/stack.py`, `mtg_engine/api/routers/game.py`, `ai_client/...`
+- **Root cause**: Card has "look at top N, put M into hand" pattern not handled
+- **Card text**: "Look at the top five cards of your library. Put two of them into your hand and the rest on the bottom..."
+- **Effect**: Spell resolves to graveyard without effect
+- **Status**: Fixed (added reveal_and_choose_multi pattern, all player types)
+
+**BUG-26: Spree mechanic not implemented**
+- **Files**: `mtg_engine/api/routers/game.py`, `mtg_engine/engine/stack.py`
+- **Card**: Insatiable Avarice
+- **Root cause**: Spree keyword allows choosing additional costs (+ {2}, + {B}{B})
+- **Card text**: "Spree (Choose one or more additional costs.) + {2} — Search... + {B}{B} — Target player draws..."
+- **Effect**: Card resolves without mode selection, no effect applied
+- **Status**: Not yet implemented
