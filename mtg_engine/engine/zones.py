@@ -590,21 +590,35 @@ def put_permanent_onto_battlefield(
     # Check for ETB choice BEFORE setting tapped state
     etb_choice = _detect_etb_choice(oracle_text)
     etb_choice_pending = False
+    permanent_id = ""
     
     if etb_choice and not tapped:
-        # Check if player needs to make choice
-        # If AI player, use heuristic; if human, queue pending choice
-        # Note: For hybrid games, we'd check human_player_name
-        
-        # Check if this is an AI or if we should auto-resolve
-        # For now: auto-resolve for AI players using heuristic
-        # TODO: Check if player is human and queue instead
-        
-        # Apply AI heuristic for now (can be made conditional later)
-        game_state, should_tap = _resolve_etb_choice_with_ai(
-            game_state, controller, etb_choice, "", card.name
+        # Check if player is human - queue pending choice instead of AI heuristic
+        is_human_player = bool(
+            game_state.human_player_name and game_state.human_player_name == controller
         )
-        tapped = should_tap
+        
+        if is_human_player:
+            # Queue pending choice for human to decide
+            # Create permanent first (tapped), then queue choice
+            tapped = True  # Default to tapped until choice made
+            game_state.pending_etb_choice = {
+                "player": controller,
+                "permanent_id": "",  # Will be set after permanent created
+                "permanent_name": card.name,
+                "choice_type": etb_choice.choice_type,
+                "cost_amount": etb_choice.cost_amount,
+                "cost_type": etb_choice.cost_type,
+                "required_type": etb_choice.required_type,
+                "alternatives": etb_choice.alternatives,
+            }
+            etb_choice_pending = True
+        else:
+            # AI player - use heuristic
+            game_state, should_tap = _resolve_etb_choice_with_ai(
+                game_state, controller, etb_choice, "", card.name
+            )
+            tapped = should_tap
     elif not tapped and _parse_enters_tapped(oracle_text):
         # Unconditional enters tapped
         tapped = True
@@ -628,6 +642,10 @@ def put_permanent_onto_battlefield(
         perm.counters[counter_type] = count
 
     game_state.battlefield.append(perm)
+
+    # Update pending ETB choice with permanent_id now that we have it
+    if etb_choice_pending and game_state.pending_etb_choice:
+        game_state.pending_etb_choice["permanent_id"] = perm.id
 
     event: ZoneChangeEvent = {
         "card_id": perm.id,

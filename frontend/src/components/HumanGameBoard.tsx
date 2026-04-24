@@ -13,6 +13,7 @@ import { InteractiveHand } from './InteractiveHand'
 import { ActionPanel } from './ActionPanel'
 import { BlockerAssigner } from './BlockerAssigner'
 import { TargetChoiceModal, MulliganModal, DiscardModal, ScryModal } from './ChoiceModal'
+import { ETBChoiceModal } from './ETBChoiceModal'
 import { GameResultOverlay } from './GameResultOverlay'
 import type { GameState, Permanent } from '../types/game'
 import '../styles/board.css'
@@ -215,6 +216,10 @@ export function HumanGameBoard() {
   const scryActions = legalActions.filter(a => a.action_type === 'choice' && (a.card_name === 'scry_keep' || a.card_name === 'scry_bottom'))
   const isScryPhase = scryActions.length > 0 && gs?.pending_scry_choice?.player === resolvedHumanPlayerName
 
+  // ETB choice detection (034-etb-choices)
+  const etbActions = legalActions.filter(a => a.card_name === 'etb_pay' || a.card_name === 'etb_tapped')
+  const isETBPhase = etbActions.length > 0 && gs?.pending_etb_choice?.player === resolvedHumanPlayerName
+
   if (isError) {
     const isNotFound = error instanceof Error && error.message === 'GAME_NOT_FOUND'
     return (
@@ -398,6 +403,15 @@ export function HumanGameBoard() {
         <ScryModal
           topCards={(gs.pending_scry_choice.cards ?? []).map((c: any) => typeof c === 'string' ? c : c.name ?? c.id ?? '?')}
           onChoice={(keepOnTop) => submitAction('choice', { choice_id: keepOnTop ? 'scry_keep' : 'scry_bottom' })}
+        />
+      )}
+      {isMyTurn && isETBPhase && gs.pending_etb_choice && (
+        <ETBChoiceModal
+          permanentName={gs.pending_etb_choice.permanent_name}
+          choiceType={gs.pending_etb_choice.choice_type}
+          costAmount={gs.pending_etb_choice.cost_amount}
+          costType={gs.pending_etb_choice.cost_type}
+          onChoice={(pay) => submitAction('choice', { choice_id: pay ? 'etb_pay' : 'etb_tapped' })}
         />
       )}
 

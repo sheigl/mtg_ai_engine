@@ -134,6 +134,16 @@ export interface GameState {
     cards: { name: string; id?: string }[]
     n: number
   } | null
+  pending_etb_choice?: {
+    player: string
+    permanent_id: string
+    permanent_name: string
+    choice_type: string
+    cost_amount: number
+    cost_type: string
+    required_type: string
+    alternatives: string[]
+  } | null
   state_hash: string
   is_game_over: boolean
   winner: string | null
