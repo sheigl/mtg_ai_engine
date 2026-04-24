@@ -336,8 +336,7 @@ def _detect_etb_choice(oracle_text: str) -> ETBChoice | None:
 
     # Shockland: "As ~ enters, you may pay X life. If you don't, it enters tapped."
     shock_match = _re.search(
-        r"as (?:this|~) enters?,? you may pay (\d+) life\.? "
-        r"if you don'?t,? (?:it|~) enters tapped\.?",
+        r"as .*? enters.*? you may pay (\d+) life.*?enters tapped",
         text_lower
     )
     if shock_match:

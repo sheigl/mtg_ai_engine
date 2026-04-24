@@ -251,6 +251,126 @@ def copy_spell_on_stack(
     return game_state
 
 
+def _check_duress_effect(oracle_text: str) -> bool:
+    """Check if card text matches discard-from-hand effect pattern.
+    
+    Patterns:
+    - "target opponent reveals their hand...you choose...discard"
+    - "target opponent reveals their hand...discard"
+    - "each opponent discards a card"
+    - "each opponent discards..."
+    - "opponent discards a card"
+    """
+    if not oracle_text:
+        return False
+    text_lower = oracle_text.lower()
+    
+    # Patterns for discard-from-hand effects
+    discard_patterns = [
+        r"target opponent reveals their hand",
+        r"opponent reveals their hand.*?discard",
+        r"each opponent discards",
+        r"opponent discards a card",
+        r"choose.*?opponent.*?discards",
+    ]
+    import re as _re
+    for pattern in discard_patterns:
+        if _re.search(pattern, text_lower):
+            return True
+    return False
+
+
+def _resolve_duress_effect(game_state: GameState, caster_name: str, card: Card) -> GameState:
+    """Resolve discard-from-hand effect: make opponent discard.
+    
+    General handling for effects like Duress, Thought Erasure, Coercion, etc.
+    1. Find opponent
+    2. Filter opponent's hand by restriction (noncreature, nonland, etc.)
+    3. If 0-1 valid cards: auto-discard
+    4. If 2+ valid cards: queue choice for caster
+    """
+    from mtg_engine.engine.zones import get_player
+    
+    oracle = (card.oracle_text or "").lower()
+    
+    # Find opponent (player who is not the caster)
+    opponent = next((p for p in game_state.players if p.name != caster_name), None)
+    if not opponent:
+        _move_to_graveyard(game_state, caster_name, card)
+        return game_state
+    
+    # Parse restriction from card text
+    # Default: noncreature, nonland
+    restriction = _parse_discard_restriction(oracle)
+    
+    # Filter opponent's hand
+    valid_cards = [c for c in opponent.hand if restriction(c)]
+    
+    if not valid_cards:
+        logger.info("%s: opponent %s has no valid cards to discard", card.name, opponent.name)
+        _move_to_graveyard(game_state, caster_name, card)
+        return game_state
+    
+    if len(valid_cards) == 1:
+        # Auto-discard single valid card
+        logger.info("%s: %s discards %s", card.name, opponent.name, valid_cards[0].name)
+        opponent.hand.remove(valid_cards[0])
+        opponent.graveyard.append(valid_cards[0])
+        _move_to_graveyard(game_state, caster_name, card)
+        return game_state
+    
+    # Multiple valid cards - queue choice for caster
+    game_state.pending_discard_choice = {
+        "player": caster_name,
+        "opponent": opponent.name,
+        "opponent_hand": [c.model_dump() for c in valid_cards],
+        "count": 1,
+        "is_duress_effect": True,  # Flag to show it's a choice, not mandatory discard
+        "source_card": card.name,  # For logging
+    }
+    
+    _move_to_graveyard(game_state, caster_name, card)
+    
+    logger.info("%s: queued choice for %s to pick card to discard from %s's hand", 
+             card.name, caster_name, opponent.name)
+    return game_state
+
+
+def _parse_discard_restriction(oracle_text: str):
+    """Parse what card types can be chosen for discard.
+    
+    Returns a filter function.
+    """
+    text = oracle_text.lower()
+    
+    if "noncreature, nonland" in text:
+        return lambda c: not _is_creature_or_land(c)
+    elif "noncreature" in text:
+        return lambda c: "creature" not in c.type_line.lower()
+    elif "nonland" in text:
+        return lambda c: "land" not in c.type_line.lower()
+    elif "nonartifact" in text:
+        return lambda c: "artifact" not in c.type_line.lower()
+    elif "nonenchantment" in text:
+        return lambda c: "enchantment" not in c.type_line.lower()
+    else:
+        # Default: any nonland card (usually discard effects target spells or non-permanents)
+        return lambda c: "land" not in c.type_line.lower()
+
+
+def _move_to_graveyard(game_state: GameState, player_name: str, card: Card) -> None:
+    """Move card to player's graveyard."""
+    player = get_player(game_state, player_name)
+    if player and card not in player.graveyard:
+        player.graveyard.append(card)
+
+
+def _is_creature_or_land(card: Card) -> bool:
+    """Check if card is a creature or land."""
+    type_line = (card.type_line or "").lower()
+    return "creature" in type_line or "land" in type_line
+
+
 def resolve_top(game_state: GameState) -> GameState:
     """
     Resolve the top object on the stack. CR 608.
@@ -290,6 +410,14 @@ def resolve_top(game_state: GameState) -> GameState:
             return game_state
 
     logger.info("Resolving %s (controller: %s)", card.name, stack_obj.controller)
+
+    # Duress-type effects: "Target opponent reveals their hand. You choose...discard"
+    # Check for this pattern BEFORE moving to graveyard
+    if _check_duress_effect(oracle_lower):
+        game_state = _resolve_duress_effect(
+            game_state, stack_obj.controller, card
+        )
+        return game_state
 
     # US30: Mutate — merge into target creature instead of creating new permanent
     mutate_handled = False

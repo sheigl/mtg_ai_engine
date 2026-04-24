@@ -1540,20 +1540,41 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
     elif choice_id == "discard_pick":
         # T040: Player picks a card to discard
         if gs.pending_discard_choice:
-            discard_player_name = gs.pending_discard_choice.get("player", gs.priority_holder)
-            discard_player = get_player(gs, discard_player_name)
-            selected_id = req.selection if isinstance(req.selection, str) else None
-            card = next((c for c in discard_player.hand if c.id == selected_id), None) if selected_id else None
-            if card is None and discard_player.hand:
-                card = discard_player.hand[0]
-            if card:
-                discard_player.hand[:] = [c for c in discard_player.hand if c.id != card.id]
-                discard_player.graveyard.append(card)
-            remaining = gs.pending_discard_choice.get("count", 1) - 1
-            if remaining > 0:
-                gs.pending_discard_choice = {**gs.pending_discard_choice, "count": remaining}
-            else:
+            is_duress = gs.pending_discard_choice.get("is_duress_effect", False)
+            opponent_name = gs.pending_discard_choice.get("opponent")
+            
+            if is_duress and opponent_name:
+                # Duress effect: discard from opponent's hand
+                opponent = get_player(gs, opponent_name)
+                if opponent:
+                    selected_id = req.selection if isinstance(req.selection, str) else None
+                    card = next((c for c in opponent.hand if c.id == selected_id), None) if selected_id else None
+                    if card is None and opponent.hand:
+                        # Fallback: discard first valid card
+                        card = opponent.hand[0]
+                    if card:
+                        logger.info("Duress: %s discards %s", opponent_name, card.name)
+                        opponent.hand[:] = [c for c in opponent.hand if c.id != card.id]
+                        opponent.graveyard.append(card)
+                    else:
+                        logger.warning("Duress: no card found to discard")
                 gs.pending_discard_choice = None
+            else:
+                # Original behavior: discard from caster's hand
+                discard_player_name = gs.pending_discard_choice.get("player", gs.priority_holder)
+                discard_player = get_player(gs, discard_player_name)
+                selected_id = req.selection if isinstance(req.selection, str) else None
+                card = next((c for c in discard_player.hand if c.id == selected_id), None) if selected_id else None
+                if card is None and discard_player.hand:
+                    card = discard_player.hand[0]
+                if card:
+                    discard_player.hand[:] = [c for c in discard_player.hand if c.id != card.id]
+                    discard_player.graveyard.append(card)
+                remaining = gs.pending_discard_choice.get("count", 1) - 1
+                if remaining > 0:
+                    gs.pending_discard_choice = {**gs.pending_discard_choice, "count": remaining}
+                else:
+                    gs.pending_discard_choice = None
             mgr.update(game_id, gs)
 
     elif choice_id == "dredge_skip":
@@ -2083,14 +2104,32 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
         return actions
 
     if gs.pending_discard_choice and gs.pending_discard_choice.get("player") == player_name:
-        count = gs.pending_discard_choice.get("count", 1)
-        hand_ids = [c.id for c in player.hand]
-        actions.append(LegalAction(
-            action_type="choice",
-            card_name="discard_pick",
-            description=f"Discard {count} card(s)",
-            valid_targets=hand_ids,
-        ))
+        is_duress = gs.pending_discard_choice.get("is_duress_effect", False)
+        
+        if is_duress:
+            # Duress effect: show opponent's hand as choices
+            opponent_hand = gs.pending_discard_choice.get("opponent_hand", [])
+            hand_ids = [c.get("id", "") for c in opponent_hand]
+            hand_names = [c.get("name", "?") for c in opponent_hand]
+            card_desc = ", ".join(hand_names[:3])
+            if len(hand_names) > 3:
+                card_desc += f"... (+{len(hand_names)-3} more)"
+            actions.append(LegalAction(
+                action_type="choice",
+                card_name="discard_pick",
+                description=f"Pick card for opponent to discard: {card_desc}",
+                valid_targets=hand_ids,
+            ))
+        else:
+            # Normal discard: show player's own hand
+            count = gs.pending_discard_choice.get("count", 1)
+            hand_ids = [c.id for c in player.hand]
+            actions.append(LegalAction(
+                action_type="choice",
+                card_name="discard_pick",
+                description=f"Discard {count} card(s)",
+                valid_targets=hand_ids,
+            ))
         if not any(a.action_type == "pass" for a in actions):
             actions.append(LegalAction(action_type="pass", description="Pass priority"))
         return actions
