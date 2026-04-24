@@ -320,3 +320,16 @@ AI Agent (LLM / bot)
 - "You may discard a card. If you do, draw two cards."
 - "You may discard a card."
 - "Target opponent reveals their hand..."
+
+**BUG-18: Mana cost parsing issue**
+- **File**: `mtg_engine/engine/mana.py`
+- **Root cause**: `{2}{U}` being parsed incorrectly
+- **Effect**: Cards costing {2}{U} incorrectly require red mana
+- **Status**: Investigating
+
+**BUG-19: Winternight Stories effect not resolving**
+- **Files**: `mtg_engine/engine/stack.py`
+- **Root cause**: Card has complex multi-part effect not handled
+- **Card text**: "Draw three cards. Then discard two cards unless you discard a creature card."
+- **Effect**: Spell resolves to graveyard without effect
+- **Status**: Not yet fixed
