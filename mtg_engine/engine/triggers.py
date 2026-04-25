@@ -13,11 +13,15 @@ from mtg_engine.engine.zones import register_zone_change_listener, ZoneChangeEve
 
 logger = logging.getLogger(__name__)
 
+# Extended trigger patterns - now 50+
+
 # Trigger patterns for "whenever you cast" and "whenever a player casts"
 CAST_TRIGGER_PATTERNS = [
     _re.compile(r"whenever you cast (?:(?:a|an) )?(.*?)(?:,|\.|\?|$)", _re.IGNORECASE),
     _re.compile(r"whenever a (?:creature|artifact|instant|sorcery|enchantment|planeswalker|land) is cast", _re.IGNORECASE),
     _re.compile(r"whenever (?:(?:a|an) )?(.*?)(?:,|\.|\?|$) is cast", _re.IGNORECASE),
+    _re.compile(r"whenever you cast (?:a|an) (.*?), create", _re.IGNORECASE),
+    _re.compile(r"whenever you cast a (.*?) spell", _re.IGNORECASE),
 ]
 
 # Trigger patterns for "whenever [creature] attacks"
@@ -25,6 +29,8 @@ ATTACK_TRIGGER_PATTERNS = [
     _re.compile(r"whenever (?:this|~|this creature) attacks", _re.IGNORECASE),
     _re.compile(r"whenever a (?:creature|creature with) (?:(?:that|which) )?(?:attacks|is attacking)", _re.IGNORECASE),
     _re.compile(r"whenever (?:(?:a|an) )?(.*?)(?:,|\.|\?|$) attacks", _re.IGNORECASE),
+    _re.compile(r"whenever (?:a|an) (.*?) attacks a player", _re.IGNORECASE),
+    _re.compile(r"whenever (?:a|an) (.*?) attacks (?:a|an) (.*?)", _re.IGNORECASE),
 ]
 
 # Trigger patterns for "whenever [creature] blocks"
@@ -33,6 +39,125 @@ BLOCK_TRIGGER_PATTERNS = [
     _re.compile(r"whenever a (?:creature|creature with) (?:(?:that|which) )?(?:blocks|is blocking)", _re.IGNORECASE),
     _re.compile(r"whenever (?:(?:a|an) )?(.*?)(?:,|\.|\?|$) blocks", _re.IGNORECASE),
 ]
+
+# Trigger patterns for "at the beginning of your upkeep"
+UPKEEP_TRIGGER_PATTERNS = [
+    _re.compile(r"at the beginning of (?:your|each player's) upkeep", _re.IGNORECASE),
+    _re.compile(r"at the beginning of (?:your|opponent's|each opponent's) precombat main phase", _re.IGNORECASE),
+    _re.compile(r"at the beginning of (?:your|opponent's|each opponent's) postcombat main phase", _re.IGNORECASE),
+    _re.compile(r"at the beginning of (?:your|opponent's|each opponent's) turn", _re.IGNORECASE),
+]
+
+# Trigger patterns for "at the beginning of your end step"
+END_STEP_TRIGGER_PATTERNS = [
+    _re.compile(r"at the beginning of (?:your|each player's) end step", _re.IGNORECASE),
+    _re.compile(r"at the beginning of (?:your|opponent's|each opponent's) end step", _re.IGNORECASE),
+]
+
+# Trigger patterns for "whenever a creature dies" or "whenever [creature] dies"
+DEATH_TRIGGER_PATTERNS = [
+    _re.compile(r"whenever (?:a|an|your) (?:creature|permanent) (?:you control )?dies", _re.IGNORECASE),
+    _re.compile(r"whenever (?:this|~|this creature) dies", _re.IGNORECASE),
+    _re.compile(r"whenever (?:a|an) (.*?) you control dies", _re.IGNORECASE),
+    _re.compile(r"whenever (?:a|an) (.*?) dies", _re.IGNORECASE),
+    _re.compile(r"whenever (?:a|an) (.*?) is put into a graveyard from the battlefield", _re.IGNORECASE),
+]
+
+# Trigger patterns for "whenever you draw a card"
+DRAW_TRIGGER_PATTERNS = [
+    _re.compile(r"whenever you draw (?:a|an|one) card", _re.IGNORECASE),
+    _re.compile(r"whenever a player draws (?:a|an|one) card", _re.IGNORECASE),
+]
+
+# Trigger patterns for "whenever damage is dealt"
+DAMAGE_TRIGGER_PATTERNS = [
+    _re.compile(r"whenever (?:a|an|your) (?:creature|player) (?:you control )?deals damage", _re.IGNORECASE),
+    _re.compile(r"whenever (?:a|an) (.*?) would deal damage", _re.IGNORECASE),
+    _re.compile(r"whenever damage is dealt to (?:a|an)", _re.IGNORECASE),
+]
+
+# Trigger patterns for "enters the battlefield" (ETB)
+ETB_TRIGGER_PATTERNS = [
+    _re.compile(r"whenever (?:a|an) (.*?) enters the battlefield", _re.IGNORECASE),
+    _re.compile(r"when (?:a|an) (.*?) enters the battlefield", _re.IGNORECASE),
+    _re.compile(r"whenever this enters the battlefield", _re.IGNORECASE),
+]
+
+# Trigger patterns for "leaves the battlefield" (LTB)
+LTB_TRIGGER_PATTERNS = [
+    _re.compile(r"whenever (?:a|an) (.*?) leaves the battlefield", _re.IGNORECASE),
+    _re.compile(r"when (?:a|an) (.*?) leaves the battlefield", _re.IGNORECASE),
+]
+
+# Trigger patterns for "at end of turn"
+END_TURN_TRIGGER_PATTERNS = [
+    _re.compile(r"at the end of (?:your|each) turn", _re.IGNORECASE),
+]
+
+# Trigger patterns for "at the start of combat"
+COMBAT_START_TRIGGER_PATTERNS = [
+    _re.compile(r"at the beginning of (?:each|your) combat", _re.IGNORECASE),
+    _re.compile(r"at the start of (?:each|your) combat", _re.IGNORECASE),
+]
+
+# Trigger patterns for discard effects (not triggers but related)
+DISCARD_TRIGGER_PATTERNS = [
+    _re.compile(r"whenever you discard (?:a|an|one) card", _re.IGNORECASE),
+    _re.compile(r"whenever a player discards (?:a|an|one) card", _re.IGNORECASE),
+]
+
+# Trigger patterns for "whenever a token is created"
+TOKEN_TRIGGER_PATTERNS = [
+    _re.compile(r"whenever you create (?:a|an|one) token", _re.IGNORECASE),
+    _re.compile(r"whenever (?:a|an) (.*?) becomes a token", _re.IGNORECASE),
+]
+
+# Trigger patterns for "whenever a spell is countered"
+COUNTER_TRIGGER_PATTERNS = [
+    _re.compile(r"whenever (?:a|an) spell is countered", _re.IGNORECASE),
+    _re.compile(r"whenever you counter (?:a|an) spell", _re.IGNORECASE),
+]
+
+# Trigger patterns for landfall
+LANDFALL_TRIGGER_PATTERNS = [
+    _re.compile(r"whenever you play (?:a|an) land", _re.IGNORECASE),
+    _re.compile(r"whenever a land enters the battlefield under your control", _re.IGNORECASE),
+    _re.compile(r"landfall", _re.IGNORECASE),
+]
+
+# Trigger patterns for "whenever a player planeswalks"
+PLANESWALK_TRIGGER_PATTERNS = [
+    _re.compile(r"whenever you planeswalk", _re.IGNORECASE),
+    _re.compile(r"whenever a player planeswalks to (?:a|an)", _re.IGNORECASE),
+]
+
+# Trigger patterns for "whenever a creature is turned face up"
+FACE_UP_TRIGGER_PATTERNS = [
+    _re.compile(r"whenever (?:a|an) (.*?) becomes face-up", _re.IGNORECASE),
+    _re.compile(r"whenever you turn (?:a|an) (.*?) face-up", _re.IGNORECASE),
+]
+
+# Combined trigger dictionary
+TRIGGER_PATTERNS = {
+    "cast": CAST_TRIGGER_PATTERNS,
+    "attack": ATTACK_TRIGGER_PATTERNS,
+    "block": BLOCK_TRIGGER_PATTERNS,
+    "upkeep": UPKEEP_TRIGGER_PATTERNS,
+    "end_step": END_STEP_TRIGGER_PATTERNS,
+    "death": DEATH_TRIGGER_PATTERNS,
+    "draw": DRAW_TRIGGER_PATTERNS,
+    "damage": DAMAGE_TRIGGER_PATTERNS,
+    "etb": ETB_TRIGGER_PATTERNS,
+    "ltb": LTB_TRIGGER_PATTERNS,
+    "end_turn": END_TURN_TRIGGER_PATTERNS,
+    "combat_start": COMBAT_START_TRIGGER_PATTERNS,
+    "discard": DISCARD_TRIGGER_PATTERNS,
+    "token": TOKEN_TRIGGER_PATTERNS,
+    "counter": COUNTER_TRIGGER_PATTERNS,
+    "landfall": LANDFALL_TRIGGER_PATTERNS,
+    "planeswalk": PLANESWALK_TRIGGER_PATTERNS,
+    "face_up": FACE_UP_TRIGGER_PATTERNS,
+}
 
 
 def initialize_triggers(game_state: GameState) -> None:
