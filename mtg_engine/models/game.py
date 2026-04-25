@@ -298,6 +298,9 @@ class GameState(BaseModel):
     pending_cascade: Optional[dict] = None
     # Pending blocking choices (set by engine, cleared on choice submission)
     pending_scry_choice: Optional[dict] = None
+    # Spree mechanic choice (036-spree)
+    pending_spree_choice: Optional[dict] = None
+    # Format: {"player": str, "card_id": str, "card_name": str, "modes": [{"cost": str, "effect": str}]}
     # Format: {"player": str, "cards": [Card], "n": int}
     pending_surveil_choice: Optional[dict] = None
     # Format: {"player": str, "cards": [Card], "n": int}

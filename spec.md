@@ -304,9 +304,10 @@ AI Agent (LLM / bot)
 
 **BUG-16: Duress-type discard effects not working**
 - **File**: `mtg_engine/engine/stack.py`, `frontend/src/components/HumanGameBoard.tsx`
-- **Root cause**: Engine didn't detect "target opponent reveals their hand...discard" pattern, and frontend didn't render the choice.
+- **Root cause**: Fizzle check in `resolve_top()` only validated targets against battlefield/players/stack, not hands/graveyards. Duress targeting a hand card failed validation, spell fizzled to graveyard without queuing `pending_discard_choice`.
 - **Effect**: Casting Duress resolved without showing opponent's hand or letting player choose.
-- **Fix**: Added pattern detection, pending choice queue, and UI rendering for discard choice.
+- **Fix**: Updated fizzle check to include hand cards and graveyard cards in target validation (lines 516-517). Fizzle now correctly identifies hand-targeting spell targets.
+- **Tests**: Added `tests/rules/test_duress_fizzle.py` with 4 tests (all passing). Full test suite: 605 passed, 1 pre-existing failure unrelated.
 
 **BUG-17: Optional discard from own hand (e.g., Abandon Attachments)**
 - **Files**: `mtg_engine/engine/stack.py`, `mtg_engine/api/routers/game.py`, `frontend/src/components/ChoiceModal.tsx`
@@ -373,9 +374,9 @@ AI Agent (LLM / bot)
 - **Status**: Fixed (added reveal_and_choose_multi pattern, all player types)
 
 **BUG-26: Spree mechanic not implemented**
-- **Files**: `mtg_engine/api/routers/game.py`, `mtg_engine/engine/stack.py`
+- **Files**: `mtg_engine/api/routers/game.py`, `mtg_engine/engine/stack.py`, `mtg_engine/models/game.py`, `ai_client/...`
 - **Card**: Insatiable Avarice
 - **Root cause**: Spree keyword allows choosing additional costs (+ {2}, + {B}{B})
 - **Card text**: "Spree (Choose one or more additional costs.) + {2} — Search... + {B}{B} — Target player draws..."
 - **Effect**: Card resolves without mode selection, no effect applied
-- **Status**: Not yet implemented
+- **Status**: Partial (Spree detection, choice queued, mode selection works, effect resolution incomplete)

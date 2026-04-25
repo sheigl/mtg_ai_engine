@@ -158,6 +158,26 @@ def cast_spell(
     # Pay cost — deducts mana from player's pool
     player.mana_pool = pay_cost(player.mana_pool, cost, mana_payment)
 
+    # Handle Spree mechanic - detect and queue choice for additional costs
+    oracle_lower = (card.oracle_text or "").lower()
+    if "spree" in oracle_lower:
+        import re as _spree_re
+        spree_modes = []
+        mode_pattern = _spree_re.compile(r'\+ (\{[^}]+\}|{[^}]+}{[^}]+})\s*[–—:-]\s*(.+(?:\n\+.+)*)', _spree_re.DOTALL)
+        for match in mode_pattern.finditer(oracle_lower):
+            mode_cost = match.group(1)
+            mode_effect = match.group(2).strip()
+            spree_modes.append({"cost": mode_cost, "effect": mode_effect})
+
+        if spree_modes:
+            game_state.pending_spree_choice = {
+                "player": player_name,
+                "card_id": card_id,
+                "card_name": card.name,
+                "modes": spree_modes,
+            }
+            logger.info("%s: queued Spree choice with %d modes", card.name, len(spree_modes))
+
     # Move card from hand (or graveyard/adventure exile) to stack
     if from_adventure_exile:
         player.adventure_cards[:] = [c for c in player.adventure_cards if c.id != card_id]
@@ -420,42 +440,6 @@ def _resolve_duress_effect(game_state: GameState, caster_name: str, card: Card) 
     }
     _move_to_graveyard(game_state, caster_name, card)
     return game_state
-    
-    # Parse restriction from card text
-    # Default: noncreature, nonland
-    restriction = _parse_discard_restriction(oracle)
-    
-    # Filter opponent's hand
-    valid_cards = [c for c in opponent.hand if restriction(c)]
-    
-    if not valid_cards:
-        logger.info("%s: opponent %s has no valid cards to discard", card.name, opponent.name)
-        _move_to_graveyard(game_state, caster_name, card)
-        return game_state
-    
-    if len(valid_cards) == 1:
-        # Auto-discard single valid card
-        logger.info("%s: %s discards %s", card.name, opponent.name, valid_cards[0].name)
-        opponent.hand.remove(valid_cards[0])
-        opponent.graveyard.append(valid_cards[0])
-        _move_to_graveyard(game_state, caster_name, card)
-        return game_state
-    
-    # Multiple valid cards - queue choice for caster
-    game_state.pending_discard_choice = {
-        "player": caster_name,
-        "opponent": opponent.name,
-        "opponent_hand": [c.model_dump() for c in valid_cards],
-        "count": 1,
-        "is_duress_effect": True,  # Flag to show it's a choice, not mandatory discard
-        "source_card": card.name,  # For logging
-    }
-    
-    _move_to_graveyard(game_state, caster_name, card)
-    
-    logger.info("%s: queued choice for %s to pick card to discard from %s's hand", 
-             card.name, caster_name, opponent.name)
-    return game_state
 
 
 def _parse_discard_restriction(oracle_text: str, for_self: bool = False):
@@ -528,7 +512,9 @@ def resolve_top(game_state: GameState) -> GameState:
             t for t in stack_obj.targets
             if (any(p.id == t for p in game_state.battlefield)
                 or any(pl.name == t for pl in game_state.players)
-                or any(s.id == t for s in game_state.stack))
+                or any(s.id == t for s in game_state.stack)
+                or any(c.id == t for p in game_state.players for c in p.hand)
+                or any(c.id == t for p in game_state.players for c in p.graveyard))
         ]
         if not valid_targets:
             logger.info("Fizzle: all targets illegal for %s", card.name)

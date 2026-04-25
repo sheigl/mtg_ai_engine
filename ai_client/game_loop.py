@@ -197,6 +197,14 @@ def _map_action_to_request(action: dict, mana_pool: dict | None = None, player_n
                 "choice_id": card_name,
                 "selection": selection,
             }
+        if card_name == "spree_select":
+            # Spree mode selection - pick first mode for now
+            valid_targets = action.get("valid_targets", [])
+            selection = valid_targets[0] if valid_targets else "0"
+            return "choice", {
+                "choice_id": card_name,
+                "selection": selection,
+            }
         return "choice", {
             "choice_id": action.get("choice_id", ""),
             "selection": action.get("selection", "top"),

@@ -502,6 +502,9 @@ class HeuristicPlayer:
             elif card_name == "reveal_put_hand_multi":
                 # Multi-select (e.g., Stock Up)
                 return self._score_reveal_put_hand(action, game_state)
+            elif card_name == "spree_select":
+                # Spree mode selection - prefer first mode for now
+                return 5.0
             # Generic choice — prefer first option
             return 5.0
 

@@ -1514,6 +1514,53 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
             mgr.update(game_id, gs)
             return _ok(gs)
     
+    # Handle Spree mode selection
+    elif choice_id == "spree_select":
+        if gs.pending_spree_choice:
+            selected_mode = req.selection
+            if isinstance(selected_mode, int) or (isinstance(selected_mode, str) and selected_mode.isdigit()):
+                mode_idx = int(selected_mode) if isinstance(selected_mode, str) else selected_mode
+                modes = gs.pending_spree_choice.get("modes", [])
+                if 0 <= mode_idx < len(modes):
+                    selected = modes[mode_idx]
+                    logger.info("Spree: selected mode %d: cost=%s, effect=%s", mode_idx, selected.get("cost"), selected.get("effect"))
+                    
+                    player_name = gs.pending_spree_choice.get("player")
+                    # Additional mana payment for Spree mode
+                    from mtg_engine.engine.mana import parse_mana_cost as _pmc_spree, pay_cost as _pc_spree
+                    from mtg_engine.engine.zones import get_player as _gp_spree
+                    
+                    spree_cost = selected.get("cost", "")
+                    player = _gp_spree(gs, player_name)
+                    if player and spree_cost:
+                        cost_dict = _pmc_spree(spree_cost)
+                        payment = {}
+                        pool = {"W": player.mana_pool.W, "U": player.mana_pool.U, "B": player.mana_pool.B, "R": player.mana_pool.R, "G": player.mana_pool.G, "C": player.mana_pool.C}
+                        for color in ("W", "U", "B", "R", "G"):
+                            needed = cost_dict.get(color, 0)
+                            if needed and pool.get(color, 0) >= needed:
+                                payment[color] = needed
+                                pool[color] -= needed
+                        generic_needed = cost_dict.get("generic", 0)
+                        if generic_needed:
+                            pool_avail = sum(v for v in pool.values() if v > 0)
+                            if pool_avail >= generic_needed:
+                                payment["C"] = min(generic_needed, pool_avail)
+                        
+                        if payment:
+                            player.mana_pool = _pc_spree(player.mana_pool, spree_cost, payment)
+                            logger.info("Spree: paid additional %s for mode", spree_cost)
+                    
+                    # Store selected mode for effect resolution
+                    gs.pending_spree_choice["selected_mode"] = selected
+                    gs.pending_spree_choice = None
+                    mgr.update(game_id, gs)
+                    return _ok(gs)
+        
+        gs.pending_spree_choice = None
+        mgr.update(game_id, gs)
+        return _ok(gs)
+    
     elif choice_id == "surveil_keep":
         # Keep surveiled cards on top of library
         gs.pending_surveil_choice = None
@@ -2216,6 +2263,22 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
         # For other choice types, add similar logic
         # For now, default to enter tapped for checklands/fetchlands without pending
         # TODO: implement checkland/fetchland handling
+
+    # Spree mode selection
+    if gs.pending_spree_choice and gs.pending_spree_choice.get("player") == player_name:
+        modes = gs.pending_spree_choice.get("modes", [])
+        for i, mode in enumerate(modes):
+            cost = mode.get("cost", "")
+            effect = mode.get("effect", "")[:50]  # truncate for display
+            actions.append(LegalAction(
+                action_type="choice",
+                description=f"+ {cost} — {effect}...",
+                valid_targets=[str(i)],
+                card_name="spree_select",
+            ))
+        if not any(a.action_type == "pass" for a in actions):
+            actions.append(LegalAction(action_type="pass", description="Pass priority"))
+        return actions
 
     # Early-exit: pending blocking choices — these block all other actions until resolved
     if gs.pending_scry_choice and gs.pending_scry_choice.get("player") == player_name:
