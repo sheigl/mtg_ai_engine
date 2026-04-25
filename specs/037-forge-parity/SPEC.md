@@ -43,6 +43,15 @@ This spec documents EVERY gap between our engine and Forge.
 
 ## GAP BY CATEGORY
 
+### Additional: FORGE-AI MODULE (+187 files)
+- AiController, AiAttackController, AiBlockController
+- AiCostDecision, AiPlayDecision, AiCardMemory
+- ComputerUtilAbility, ComputerUtilCard
+- ComputerUtilCombat, ComputerUtilCost
+- SpellAbilityAi, CopySpellAbilityAi
+- ActivateAbilityAi, SpellAbilityPicker
+- And 175+ more AI files
+
 ### 1. ABILITY DIRECTORY (214 files vs 0)
 
 - [ ] 214 ability effect classes need implementation

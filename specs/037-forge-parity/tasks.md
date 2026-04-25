@@ -785,3 +785,26 @@ Additional keyword gaps beyond 200+ already listed:
 - [ ] GF-08: Tiny Leaders format
 - [ ] GF-09: Vanguard format
 - [ ] GF-10: All variant formats
+
+### PHASE 25XX: FORGE AI MODULE PARITY (Deferred - NEW!)
+
+Additional 187 AI files in forge-ai/ not previously counted:
+
+- [ ] AI-20: AiController
+- [ ] AI-21: AiAttackController
+- [ ] AI-22: AiBlockController  
+- [ ] AI-23: AiCostDecision
+- [ ] AI-24: AiPlayDecision
+- [ ] AI-25: AiCardMemory
+- [ ] AI-26: AiCache
+- [ ] AI-27: ComputerUtilAbility
+- [ ] AI-28: ComputerUtilCard
+- [ ] AI-29: ComputerUtilCombat
+- [ ] AI-30: ComputerUtilCost
+- [ ] AI-31: ComputerUtilMana
+- [ ] AI-32: AiAbilityDecision
+- [ ] AI-33: SpellAbilityAi
+- [ ] AI-34: CopySpellAbilityAi
+- [ ] AI-35: ActivateAbilityAi
+- [ ] AI-36: SpellAbilityPicker
+- [ ] AI-37: All 187 AI system files
