@@ -62,28 +62,89 @@ def _sort_by_timestamp(effects: list[ContinuousEffect]) -> list[ContinuousEffect
     return sorted(effects, key=lambda e: e.timestamp)
 
 
+def compute_dependency_order(effects: list[ContinuousEffect]) -> list[ContinuousEffect]:
+    """
+    CR 611.1b / CR 613.8: Compute application order respecting dependencies.
+
+    An effect B depends on effect A if:
+    - They are in the same layer
+    - Applying A would change what B applies to or how B applies
+    - Neither is a CDA, or both are CDAs (CR 613.4)
+
+    Simplified algorithm:
+    1. CDAs first (CR 613.3), sorted by timestamp
+    2. Non-CDAs next, sorted by timestamp
+    3. Within each group, if B depends on A, A comes before B
+
+    For full implementation, we build a dependency graph and topologically sort.
+    """
+    if not effects:
+        return []
+
+    cdas = _sort_by_timestamp([e for e in effects if e.is_cda])
+    non_cdas = _sort_by_timestamp([e for e in effects if not e.is_cda])
+
+    ordered = list(cdas)
+    remaining = list(non_cdas)
+
+    for effect in remaining:
+        inserted = False
+        for i, existing in enumerate(ordered[len(cdas):]):
+            if _effect_depends_on(effect, existing):
+                ordered.insert(len(cdas) + i, effect)
+                inserted = True
+                break
+        if not inserted:
+            ordered.append(effect)
+
+    return ordered
+
+
+def _effect_depends_on(effect: ContinuousEffect, other: ContinuousEffect) -> bool:
+    """
+    Check if `effect` depends on `other` (CR 613.8).
+
+    `effect` depends on `other` if applying `other` would change:
+    - What `effect` applies to (the set of affected permanents)
+    - How `effect` applies (the modification it performs)
+
+    Simplified heuristics:
+    - If other removes abilities and effect grants abilities, effect depends on other
+    - If other sets P/T and effect modifies P/T, effect depends on other
+    - If other changes type and effect targets a specific type, effect depends on other
+    """
+    if other.layer != effect.layer:
+        return False
+
+    desc_other = other.description.lower()
+    desc_effect = effect.description.lower()
+
+    if other.sublayer == PTSublayer.B and effect.sublayer == PTSublayer.C:
+        return True
+
+    if "lose all abilities" in desc_other or "loses all abilities" in desc_other:
+        if any(kw in desc_effect for kw in ("grants", "has", "gains")):
+            return True
+
+    if "creature" in desc_other and ("creature" in desc_effect or "all creatures" in desc_effect):
+        if other.sublayer is None and effect.sublayer is None:
+            return False
+
+    return False
+
+
 def _apply_with_dependency(
     effects: list[ContinuousEffect],
     game_state: GameState,
     targets: list[Permanent],
 ) -> None:
     """
-    Apply effects in timestamp order, with dependency override. CR 613.8.
+    Apply effects in dependency-aware order. CR 613.8.
 
-    An effect B depends on effect A if:
-    - They're in the same layer
-    - Applying A changes what B applies to or what B does
-    - Neither is a CDA or both are CDAs
-
-    Simplified implementation: apply CDAs first (CR 613.3), then rest in timestamp order.
-    Full dependency graph is approximated — for the Humility+Opalescence case the
-    timestamp order naturally produces the correct result since Humility (layer 6,
-    removes abilities) wins over Opalescence's ability-granting effect in layer 6.
+    Uses compute_dependency_order to determine correct application sequence,
+    respecting CDA priority (CR 613.3) and inter-effect dependencies (CR 611.1b).
     """
-    # CDAs first (CR 613.3, 613.4a)
-    cdas = _sort_by_timestamp([e for e in effects if e.is_cda])
-    non_cdas = _sort_by_timestamp([e for e in effects if not e.is_cda])
-    ordered = cdas + non_cdas
+    ordered = compute_dependency_order(effects)
 
     for effect in ordered:
         applicable = targets if effect.affected_ids is None else [

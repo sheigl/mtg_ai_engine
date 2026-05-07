@@ -137,6 +137,14 @@ FACE_UP_TRIGGER_PATTERNS = [
     _re.compile(r"whenever you turn (?:a|an) (.*?) face-up", _re.IGNORECASE),
 ]
 
+# MANA-03: Trigger patterns for "whenever you tap lands for mana" / mana production
+MANA_PRODUCTION_TRIGGER_PATTERNS = [
+    _re.compile(r"whenever you tap (?:a|an) land for mana", _re.IGNORECASE),
+    _re.compile(r"whenever a land produces mana", _re.IGNORECASE),
+    _re.compile(r"whenever you add mana", _re.IGNORECASE),
+    _re.compile(r"whenever a source you control adds mana", _re.IGNORECASE),
+]
+
 # Combined trigger dictionary
 TRIGGER_PATTERNS = {
     "cast": CAST_TRIGGER_PATTERNS,
@@ -157,6 +165,7 @@ TRIGGER_PATTERNS = {
     "landfall": LANDFALL_TRIGGER_PATTERNS,
     "planeswalk": PLANESWALK_TRIGGER_PATTERNS,
     "face_up": FACE_UP_TRIGGER_PATTERNS,
+    "mana_production": MANA_PRODUCTION_TRIGGER_PATTERNS,
 }
 
 
@@ -392,6 +401,62 @@ def check_damage_triggers(
 
     if not damaging_perm_ids:
         return game_state
+
+
+# ─── MANA-03: Mana Production Triggers ────────────────────────────────────────
+
+def check_mana_production_triggers(
+    game_state: GameState,
+    source_permanent_id: str,
+    controller: str,
+    mana_symbols: list[str],
+) -> GameState:
+    """
+    Check for "whenever you tap a land for mana" / mana production triggers.
+    Called after a land produces mana.
+
+    CR 603.2: triggered abilities fire when mana is produced.
+
+    Args:
+        game_state: Current game state.
+        source_permanent_id: ID of the permanent that produced mana.
+        controller: Controller of the source permanent.
+        mana_symbols: List of mana symbols produced (e.g., ["W", "U"]).
+
+    Returns:
+        Updated game state with triggers queued.
+    """
+    from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    for perm in game_state.battlefield:
+        card = perm.card
+        abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+        for ab in abilities:
+            if not isinstance(ab, TriggeredAbility):
+                continue
+            cond = ab.trigger_condition.lower()
+
+            # Check for mana production triggers
+            for pattern in MANA_PRODUCTION_TRIGGER_PATTERNS:
+                if pattern.search(cond):
+                    is_optional = ab.effect.lower().startswith("you may")
+                    trigger = PendingTrigger(
+                        id=str(uuid.uuid4()),
+                        source_permanent_id=perm.id,
+                        controller=perm.controller,
+                        trigger_type="mana_production",
+                        effect_description=ab.effect,
+                        source_card_name=card.name,
+                        is_optional=is_optional,
+                    )
+                    game_state.pending_triggers.append(trigger)
+                    logger.debug(
+                        "Mana production trigger queued: %r from %s (controller: %s)",
+                        ab.trigger_condition, card.name, perm.controller,
+                    )
+                    break
+
+    return game_state
 
     _COMBAT_DAMAGE_TRIGGER_RE = _re.compile(
         r"whenever (?:this|~|this creature) deals? (?:combat )?damage(?: to a player)?",

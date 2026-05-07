@@ -159,6 +159,21 @@ class StackObject(BaseModel):
     mutate_on_top: bool = True
 
 
+class ExileStack(BaseModel):
+    """A group of cards exiled together by the same effect. CR 402.1"""
+    stack_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    cards: list[Card] = Field(default_factory=list)
+    reason: str = ""  # "suspend", "foretell", "adventure", "unearth", "spell_resolution", etc.
+    controller: str = ""  # Player who controls this exile stack
+    face_down: bool = False  # For foretell and other face-down exile effects
+
+
+class GraveyardEntry(BaseModel):
+    """Tracks a card in the graveyard with ordering and provenance. CR 402.2"""
+    card: Card
+    entry_order: int = 0  # Monotonically increasing; higher = more recent
+
+
 class Emblem(BaseModel):
     """
     A planeswalker emblem. CR 113.
@@ -174,7 +189,7 @@ class PlayerState(BaseModel):
     life: int = 20
     hand: list[Card] = Field(default_factory=list)
     library: list[Card] = Field(default_factory=list)  # index 0 = top
-    graveyard: list[Card] = Field(default_factory=list)
+    graveyard: list[Card] = Field(default_factory=list)  # index 0 = top (most recent)
     exile: list[Card] = Field(default_factory=list)
     poison_counters: int = 0
     mana_pool: ManaPool = Field(default_factory=ManaPool)
@@ -198,6 +213,8 @@ class PlayerState(BaseModel):
     foretold_turns: dict[str, int] = Field(default_factory=dict)  # card_id -> turn when foretold
     # US18: Adventure — exiled adventure spell cards whose creature half can be cast
     adventure_cards: list[Card] = Field(default_factory=list)
+    # ZN-04: Sideboard zone
+    sideboard: list[Card] = Field(default_factory=list)
 
 
 class PendingTrigger(BaseModel):
@@ -343,6 +360,10 @@ class GameState(BaseModel):
     pending_etb_choice: Optional[dict] = None
     # Transcript for persistence (034-game-persistence)
     transcript_entries: list[dict] = Field(default_factory=list)
+    # ZN-01: Exile stacks for grouped exile tracking (CR 402.1)
+    exile_stacks: list[ExileStack] = Field(default_factory=list)
+    # ZN-02: Graveyard entry counter for ordering
+    graveyard_entry_counter: int = 0
 
     def compute_hash(self) -> str:
         """Compute deterministic hash of state, excluding state_hash itself. REQ-API05"""
