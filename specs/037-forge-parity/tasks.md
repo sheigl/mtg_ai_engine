@@ -345,12 +345,12 @@ From SPEC.md (Card Types - various):
 - **Acceptance**: CoreType, Supertype enums; parse_type_line() function; CardType model with helper methods
 - **Dependency**: None
 
-#### CT-02: Enchantment Type
-- **Description**: Enchantment sub-types (Aura, Cartouche, etc)
-- **Files**: `mtg_engine/models/enchantment.py`
-- **Tests**: `tests/models/test_enchantment.py`
-- **Acceptance**: Auras work
-- **Dependency**: KW-01
+#### CT-02: Enchantment Type ✅
+- **Description**: Enchantment sub-types (Aura, Cartouche, Saga, Shrine, etc) with Aura targeting logic
+- **Files**: `mtg_engine/models/enchantment.py`, `mtg_engine/models/card_type.py` (updated)
+- **Tests**: `tests/models/test_enchantment.py` (47 tests, all passing)
+- **Acceptance**: EnchantmentSubtype enum with 12 subtypes; AuraTarget parsing from oracle text; can_enchant_permanent() validation; is_attachment() helper
+- **Dependency**: CT-01
 
 #### CT-03: Artifact Type
 - **Description**: Artifact sub-types (Equipment, Vehicle)

@@ -37,7 +37,17 @@ class Supertype(str, Enum):
 
 class EnchantmentSubtype(str, Enum):
     AURA = "Aura"
+    BACKGROUND = "Background"
     CARTOCHE = "Cartouche"
+    CASE = "Case"
+    CLASS = "Class"
+    CURSE = "Curse"
+    ESTATE = "Estate"
+    ROLE = "Role"
+    RUNE = "Rune"
+    SAGA = "Saga"
+    SHRINE = "Shrine"
+    SHIRE = "Shire"
 
 
 class ArtifactSubtype(str, Enum):
@@ -110,13 +120,16 @@ class CardType(BaseModel):
         return ArtifactSubtype.FORTIFICATION.value in self.subtypes
 
     def is_saga(self) -> bool:
-        return "Saga" in self.subtypes
+        return EnchantmentSubtype.SAGA.value in self.subtypes
 
     def is_battle(self) -> bool:
         return CoreType.BATTLE in self.core_types
 
     def is_cartouche(self) -> bool:
         return EnchantmentSubtype.CARTOCHE.value in self.subtypes
+
+    def is_attachment(self) -> bool:
+        return self.is_aura() or self.is_equipment() or self.is_fortification()
 
 
 def parse_type_line(type_line: str) -> CardType:
