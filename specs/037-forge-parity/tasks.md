@@ -352,12 +352,12 @@ From SPEC.md (Card Types - various):
 - **Acceptance**: EnchantmentSubtype enum with 12 subtypes; AuraTarget parsing from oracle text; can_enchant_permanent() validation; is_attachment() helper
 - **Dependency**: CT-01
 
-#### CT-03: Artifact Type
-- **Description**: Artifact sub-types (Equipment, Vehicle)
-- **Files**: `mtg_engine/models/artifact.py`
-- **Tests**: `tests/models/test_artifact.py`
-- **Acceptance**: Equipment works
-- **Dependency**: KW-01
+#### CT-03: Artifact Type ✅
+- **Description**: Artifact sub-types (Equipment, Vehicle) with equip cost parsing and crew logic
+- **Files**: `mtg_engine/models/artifact.py`, `mtg_engine/models/card_type.py` (updated)
+- **Tests**: `tests/models/test_artifact.py` (48 tests, all passing)
+- **Acceptance**: ArtifactSubtype enum (Equipment, Fortification, Vehicle); parse_equip_cost(); parse_crew_cost(); can_equip() validation; EquipmentModel and VehicleModel with crew()/uncrew()
+- **Dependency**: CT-01
 
 #### CT-04: Battle Type (NEW 2024)
 - **Description**: Battle card type support
