@@ -302,35 +302,35 @@ From SPEC.md line 152 (Replacement Directory - 46 files vs ~1):
 - **Acceptance**: Duration tracking works
 - **Dependency**: None
 
-### PHASE 900: COST PAYMENT
+### PHASE 900: COST PAYMENT - DONE ✅
 
 From SPEC.md line 90 (Cost Directory - 51 files vs ~1):
 
-#### CST-01: Sacrfice Cost
+#### CST-01: Sacrfice Cost ✅
 - **Description**: Handle sacrifice costs
 - **Files**: `mtg_engine/ability/cost.py`
-- **Tests**: `tests/ability/test_cost_sacrifice.py`
+- **Tests**: `tests/ability/test_cost.py`
 - **Acceptance**: Sacrifice costs work
 - **Dependency**: None
 
-#### CST-02: Exile Cost
+#### CST-02: Exile Cost ✅
 - **Description**: Handle exile from deck/grave costs
 - **Files**: `mtg_engine/ability/cost.py`
-- **Tests**: `tests/ability/test_cost_exile.py`
+- **Tests**: `tests/ability/test_cost.py`
 - **Acceptance**: Exile costs work
 - **Dependency**: None
 
-#### CST-03: Discard Cost
+#### CST-03: Discard Cost ✅
 - **Description**: Handle discard costs
 - **Files**: `mtg_engine/ability/cost.py`
-- **Tests**: `tests/ability/test_cost_discard.py`
+- **Tests**: `tests/ability/test_cost.py`
 - **Acceptance**: Discard costs work
 - **Dependency**: None
 
-#### CST-04: Life Cost
+#### CST-04: Life Cost ✅
 - **Description**: Handle life payment costs
 - **Files**: `mtg_engine/ability/cost.py`
-- **Tests**: `tests/ability/test_cost_life.py`
+- **Tests**: `tests/ability/test_cost.py`
 - **Acceptance**: Life costs work
 - **Dependency**: None
 
@@ -338,12 +338,12 @@ From SPEC.md line 90 (Cost Directory - 51 files vs ~1):
 
 From SPEC.md (Card Types - various):
 
-#### CT-01: Planeswalker Type
-- **Description**: Full planeswalker support (loyalty, static abilities)
-- **Files**: `mtg_engine/models/planeswalker.py`
-- **Tests**: `tests/models/test_planeswalker.py`
-- **Acceptance**: Planeswalkers work
-- **Dependency**: ACT-03, KW-01
+#### CT-01: CardType Model ✅
+- **Description**: Structured card type model with CoreType, Supertype enums and type line parsing
+- **Files**: `mtg_engine/models/card_type.py`
+- **Tests**: `tests/models/test_card_type.py` (23 tests, all passing)
+- **Acceptance**: CoreType, Supertype enums; parse_type_line() function; CardType model with helper methods
+- **Dependency**: None
 
 #### CT-02: Enchantment Type
 - **Description**: Enchantment sub-types (Aura, Cartouche, etc)
