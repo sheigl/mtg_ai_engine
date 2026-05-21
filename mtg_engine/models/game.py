@@ -235,6 +235,18 @@ class DamagePreventionEffect(BaseModel):
     remaining: Optional[int] = None   # None = unlimited (until end of turn)
     combat_only: bool = False
     color_restriction: Optional[str] = None  # prevents damage only from this color source
+    extra: dict = Field(default_factory=dict)  # expires, description, etc. (REP-01)
+
+
+class DurationEffect(BaseModel):
+    """Tracks an effect with a duration scope. CR 611.3 (REP-03)."""
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    controller: str
+    description: str = ""
+    expires: str = "end_of_turn"  # "end_of_turn" or "player:<name>"
+    target_id: Optional[str] = None
+    source_permanent_id: Optional[str] = None
+    extra: dict = Field(default_factory=dict)
 
 
 class AttackConstraint(BaseModel):
@@ -364,6 +376,10 @@ class GameState(BaseModel):
     exile_stacks: list[ExileStack] = Field(default_factory=list)
     # ZN-02: Graveyard entry counter for ordering
     graveyard_entry_counter: int = 0
+    # REP-02: Draw replacement effects
+    draw_replacements: list = Field(default_factory=list)
+    # REP-03: Duration-tracked effects
+    duration_effects: list[DurationEffect] = Field(default_factory=list)
 
     def compute_hash(self) -> str:
         """Compute deterministic hash of state, excluding state_hash itself. REQ-API05"""

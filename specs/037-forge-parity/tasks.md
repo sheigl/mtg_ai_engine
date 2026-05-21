@@ -277,28 +277,28 @@ From SPEC.md line 188 (Zone Directory - 8 files vs 1):
 - **Acceptance**: Sideboard zone, swap cards, search
 - **Dependency**: None
 
-### PHASE 800: REPLACEMENT EFFECTS
+### PHASE 800: REPLACEMENT EFFECTS - DONE ✅
 
 From SPEC.md line 152 (Replacement Directory - 46 files vs ~1):
 
-#### REP-01: Prevention Effects
+#### REP-01: Prevention Effects ✅
 - **Description**: Damage prevention system
 - **Files**: `mtg_engine/engine/replacement.py`
-- **Tests**: `tests/engine/test_prevention.py`
+- **Tests**: `tests/engine/test_replacement_phase800.py`
 - **Acceptance**: "Prevent damage" works
 - **Dependency**: None
 
-#### REP-02: Replacement Draw
+#### REP-02: Replacement Draw ✅
 - **Description**: Card draw replacement
 - **Files**: `mtg_engine/engine/replacement.py`
-- **Tests**: `tests/engine/test_replace_draw.py`
+- **Tests**: `tests/engine/test_replacement_phase800.py`
 - **Acceptance**: "If you would draw" works
 - **Dependency**: None
 
-#### REP-03: Effect Duration
+#### REP-03: Effect Duration ✅
 - **Description**: "Until end of turn" effects
 - **Files**: `mtg_engine/engine/duration.py`
-- **Tests**: `tests/engine/test_duration.py`
+- **Tests**: `tests/engine/test_replacement_phase800.py`
 - **Acceptance**: Duration tracking works
 - **Dependency**: None
 
