@@ -453,6 +453,89 @@ Additional high-value keywords missing (from SPEC.md):
 
 ---
 
+### PHASE 1300: EVENT SYSTEM - DEFERRED
+
+From forge `event/` directory (63 files):
+
+#### EVT-01: Event Bus Infrastructure
+- **Description**: Create typed event notification bus (AttackEvent, BlockEvent, DamageEvent, ZoneChangeEvent, PhaseChangeEvent, etc.)
+- **Files**: `mtg_engine/engine/events.py`
+- **Tests**: `tests/engine/test_events.py`
+- **Acceptance**: Events fire and triggers subscribe correctly
+- **Dependency**: None
+
+#### EVT-02: Event-to-Trigger Bridge
+- **Description**: Connect event bus to trigger system so triggers react to typed events
+- **Files**: `mtg_engine/engine/events.py`, `mtg_engine/engine/triggers.py`
+- **Tests**: `tests/engine/test_event_triggers.py`
+- **Acceptance**: All existing trigger patterns work via event bus
+- **Dependency**: EVT-01, TRG-01
+
+### PHASE 1400: CARD MODEL ENHANCEMENT - DEFERRED
+
+From forge `card/` directory (38 files):
+
+#### CRD-01: Card Type System
+- **Description**: Implement full card type hierarchy with all subtypes (Artifact, Creature, Enchantment, Instant, Sorcery, Planeswalker, Battle, etc.)
+- **Files**: `mtg_engine/models/card_types.py`
+- **Tests**: `tests/models/test_card_types.py`
+- **Acceptance**: All card types/subtypes recognized
+- **Dependency**: CT-01..05
+
+#### CRD-02: Card Factory
+- **Description**: Card creation factory matching Forge's CardFactory
+- **Files**: `mtg_engine/card_data/card_factory.py`
+- **Tests**: `tests/card_data/test_card_factory.py`
+- **Acceptance**: Cards can be created from oracle text
+- **Dependency**: CRD-01, PAR-01
+
+### PHASE 1500: MULLIGAN SYSTEM - DEFERRED
+
+From forge `mulligan/` directory (7 files):
+
+#### MLG-01: Mulligan Types
+- **Description**: Implement London mulligan, Vancouver mulligan, etc.
+- **Files**: `mtg_engine/engine/mulligan.py`
+- **Tests**: `tests/engine/test_mulligan.py`
+- **Acceptance**: Mulligan rules work per variant
+- **Dependency**: None
+
+### PHASE 1600: PLAYER ACTIONS - DEFERRED
+
+From forge `player/actions/` directory (28 files):
+
+#### PLA-01: Player Action Models
+- **Description**: Model player decision types (play land, cast spell, activate ability, declare attackers, etc.)
+- **Files**: `mtg_engine/models/player_actions.py`
+- **Tests**: `tests/models/test_player_actions.py`
+- **Acceptance**: All player action types modeled with validation
+- **Dependency**: None
+
+### PHASE 1700: AI SYSTEM - DEFERRED
+
+From forge `forge-ai/` module (187 files):
+
+#### AI-01: AI Decision Framework
+- **Description**: Create AI decision-making framework (evaluation, scoring, selection)
+- **Files**: `mtg_engine/ai/`
+- **Tests**: `tests/ai/test_ai_framework.py`
+- **Acceptance**: AI can evaluate game state and select actions
+- **Dependency**: PAR-01, ACT-01
+
+#### AI-02: AI Combat
+- **Description**: AI attack/block decisions (AiAttackController, AiBlockController parity)
+- **Files**: `mtg_engine/ai/combat.py`
+- **Tests**: `tests/ai/test_ai_combat.py`
+- **Acceptance**: AI makes reasonable combat decisions
+- **Dependency**: AI-01, CMB-01..05
+
+#### AI-03: AI Card Evaluation
+- **Description**: AI card evaluation (ComputerUtilCard, ComputerUtilAbility parity)
+- **Files**: `mtg_engine/ai/card_eval.py`
+- **Tests**: `tests/ai/test_card_eval.py`
+- **Acceptance**: AI can evaluate card quality
+- **Dependency**: AI-01
+
 ## QUICK START
 
 ### Priority Order

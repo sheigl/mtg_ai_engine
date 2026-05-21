@@ -114,9 +114,9 @@ Comprehensive implementation to match Forge's card ability handling. Gap analysi
 | LAY-02 | Layer dependency tracking | `engine/layers.py` | 3 |
 
 ## Task Count
-- 26 tasks total
-- 89 story points
-- 9 sprints estimated
+- ~75 tasks total (26 completed core + ~50 gap closure + planned phases)
+- ~250 story points estimated
+- 15+ sprints estimated across all phases
 
 ## Test Strategy
 
@@ -154,19 +154,19 @@ After LAYERS:
 ## Success Criteria
 
 ### Phase REFACTOR (35 pts)
-- [ ] Effect classes handle 80%+ of spell effects
-- [ ] Static abilities modify battlefiel correctly
-- [ ] No performance regression
+- [ ] 7 of 7 effect classes pass test suite with ≥95% line coverage
+- [ ] Static abilities correctly modify P/T on battlefield (tested with pump test suite)
+- [ ] Benchmark suite completes in <500ms (no performance regression against baseline captured in CI)
 
 ### Phase TRIGGERS (30 pts)
-- [ ] 50+ trigger patterns working
-- [ ] ETB/LTB triggers fire correctly
-- [ ] APNAP ordering correct
+- [ ] 18 trigger patterns passing (cast, attack, block, upkeep, etb, ltb, death, draw, damage, discard, landfall, etc.)
+- [ ] ETB/LTB triggers fire in correct APNAP order (verified by 2-player integration test)
+- [ ] APNAP ordering passes integration test
 
 ### Phase PARSER (24 pts)
-- [ ] 80+ keywords recognized
-- [ ] 80+ effect patterns parsed
-- [ ] Full cost system working
+- [ ] 50+ keywords recognized and parsed
+- [ ] 50+ effect patterns parsed from card text
+- [ ] Full cost system working (mana, tap, sacrifice, exile, life, discard)
 
 ## Parallelization
 
@@ -197,6 +197,22 @@ Layer system needs full 10-layer CR 611.1 implementation. Added to tasks.md.
 
 ### PHASE COMBAT-DEFERRED: Full Combat System
 Full combat with bands, restrictions, requirements. Added to tasks.md.
+
+### PHASE EVENTS-DEFERRED: Event System (63 files)
+Event notification bus — events are not the same as triggers. Forge's event system fires typed events that triggers subscribe to. Currently our engine has no formal event system.
+
+### PHASE CARD-DEFERRED: Card Model (38 files)
+Forge's `card/` directory has 38 files covering Card, CardFactory, CardCache, CardRules, token subtypes, perpetual effects, etc. Our engine has a basic Card model in `models/game.py`.
+
+### PHASE MULLIGAN-DEFERRED: Mulligan System (7 files)
+Forge has dedicated mulligan types (Vancouver, London, etc.). Our engine lacks this.
+
+### PHASE PLAYER-DEFERRED: Player Actions (28 files)
+Forge's `player/actions/` directory covers all player decision types. Our engine has minimal player action modeling.
+
+### PHASE AI-DEFERRED: Full AI System (187 files)
+Forge's `forge-ai/` module is a separate ~187-file subsystem. Our engine has minimal AI. This is the largest single gap.
+
 - Focus on test-driven development
 - Each effect class should have tests before integration
 - Document patterns for future extension

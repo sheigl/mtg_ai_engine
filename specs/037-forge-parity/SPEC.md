@@ -8,6 +8,35 @@ Comprehensive gap analysis comparing our engine to Forge's MTG implementation.
 
 This spec documents EVERY gap between our engine and Forge.
 
+## Functional Requirements
+
+| ID | Description | Priority | Acceptance | CR Ref |
+|----|-------------|----------|------------|--------|
+| FR-01 | Engine shall handle all Forge trigger types | P1 | Each trigger type has a passing test | CR 603 |
+| FR-02 | Engine shall implement all Forge keywords | P1 | Each keyword has a passing test | CR 702 |
+| FR-03 | Engine shall implement all Forge API effect types | P1 | Each effect has a passing test | CR 608-609 |
+| FR-04 | Engine shall implement all Forge replacement effect types | P1 | Each replacement has a passing test | CR 614-616 |
+| FR-05 | Engine shall implement full 10-layer system | P1 | Layer tests pass for all 10 layers | CR 611 |
+| FR-06 | Engine shall implement full combat system | P2 | Combat tests pass for attack/block/bands | CR 506-509 |
+| FR-07 | Engine shall implement all cost payment types | P1 | Each cost type has a passing test | CR 601-602 |
+| FR-08 | Engine shall implement full zone management (10+ zones) | P1 | All zone operations have tests | CR 400 |
+| FR-09 | Engine shall implement event system as notification bus | P1 | Events fire triggers correctly | CR 603 |
+| FR-10 | Engine shall implement card model with all subtypes | P2 | Card type/subtype tests pass | CR 205-212 |
+| FR-11 | Engine shall implement AI system (187 Forge files parity) | P2 | AI passes decision-making tests | — |
+| FR-12 | Engine shall implement player system (actions, mulligan, sideboard) | P2 | Player action tests pass | CR 103 |
+
+## Success Criteria
+
+| ID | Criterion | Measurement | Buildable? |
+|----|-----------|-------------|------------|
+| SC-01 | 90%+ trigger coverage (144 of 159 trigger types) | Test count per type | Yes |
+| SC-02 | 90%+ keyword coverage (~180 of 200) | Test count per keyword | Yes |
+| SC-03 | 90%+ effect coverage (~198 of 220) | Test count per effect | Yes |
+| SC-04 | 90%+ replacement coverage (~37 of 41) | Test count per replacement | Yes |
+| SC-05 | Full layer system verified | Layer interaction tests | Yes |
+| SC-06 | AI can play a complete game vs itself | Integration test | Yes |
+| SC-07 | No regressions on existing 518 passing tests | CI pipeline | Yes |
+
 ---
 
 ## DIRECTORY STRUCTURE COMPARISON
