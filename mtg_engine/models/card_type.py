@@ -56,6 +56,10 @@ class ArtifactSubtype(str, Enum):
     VEHICLE = "Vehicle"
 
 
+class BattleSubtype(str, Enum):
+    SIEGE = "Siege"
+
+
 class CardType(BaseModel):
     """Structured card type representation (CR 205)."""
     core_types: list[CoreType] = Field(default_factory=list)
@@ -124,6 +128,9 @@ class CardType(BaseModel):
 
     def is_battle(self) -> bool:
         return CoreType.BATTLE in self.core_types
+
+    def is_siege(self) -> bool:
+        return BattleSubtype.SIEGE.value in self.subtypes
 
     def is_cartouche(self) -> bool:
         return EnchantmentSubtype.CARTOCHE.value in self.subtypes

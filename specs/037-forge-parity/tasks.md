@@ -359,11 +359,11 @@ From SPEC.md (Card Types - various):
 - **Acceptance**: ArtifactSubtype enum (Equipment, Fortification, Vehicle); parse_equip_cost(); parse_crew_cost(); can_equip() validation; EquipmentModel and VehicleModel with crew()/uncrew()
 - **Dependency**: CT-01
 
-#### CT-04: Battle Type (NEW 2024)
-- **Description**: Battle card type support
-- **Files**: `mtg_engine/models/battle.py`
-- **Tests**: `tests/models/test_battle.py`
-- **Acceptance**: Battles work
+#### CT-04: Battle Type (NEW 2024) ✅
+- **Description**: Battle card type support with Siege subtype, defense counters, and protector tracking
+- **Files**: `mtg_engine/models/battle.py`, `mtg_engine/models/card_type.py` (updated)
+- **Tests**: `tests/models/test_battle.py` (17 tests, all passing)
+- **Acceptance**: BattleSubtype enum (Siege); is_siege() helper; BattleModel with defense_counters, protector, deal_damage(), is_defeated; get_siege_abilities() oracle text parser
 - **Dependency**: CT-01
 
 #### CT-05: Saga Type
