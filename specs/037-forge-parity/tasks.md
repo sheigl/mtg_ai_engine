@@ -366,12 +366,12 @@ From SPEC.md (Card Types - various):
 - **Acceptance**: BattleSubtype enum (Siege); is_siege() helper; BattleModel with defense_counters, protector, deal_damage(), is_defeated; get_siege_abilities() oracle text parser
 - **Dependency**: CT-01
 
-#### CT-05: Saga Type
-- **Description**: Saga card support with chapter counters
-- **Files**: `mtg_engine/models/saga.py`
-- **Tests**: `tests/models/test_saga.py`
-- **Acceptance**: Saga chapters work
-- **Dependency**: KW-04
+#### CT-05: Saga Type ✅
+- **Description**: Saga card support with chapter counters, chapter parsing, and state tracking
+- **Files**: `mtg_engine/models/saga.py`, `mtg_engine/models/card_type.py` (updated)
+- **Tests**: `tests/models/test_saga.py` (30 tests, all passing)
+- **Acceptance**: EnchantmentSubtype.SAGA; is_saga() helper; parse_chapters_from_oracle(); get_final_chapter(); get_chapter_text(); SagaModel with advance(), lore_counter management, should_sacrifice(), chapter ability tracking
+- **Dependency**: CT-01
 
 ### PHASE 1100: SPELLABILITY ENHANCEMENT
 
