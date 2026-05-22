@@ -157,6 +157,8 @@ class StackObject(BaseModel):
     is_foretold: bool = False
     mutate_target_id: Optional[str] = None
     mutate_on_top: bool = True
+    # SPL-02: Overload (CR 702.76)
+    overload_paid: bool = False
 
 
 class ExileStack(BaseModel):

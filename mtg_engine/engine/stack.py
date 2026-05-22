@@ -70,6 +70,7 @@ def cast_spell(
     mutate_on_top: bool = True,
     from_graveyard: bool = False,
     from_adventure_exile: bool = False,
+    overload_paid: bool = False,
 ) -> GameState:
     """
     Cast a spell from a player's hand (or graveyard/adventure exile).
@@ -218,6 +219,9 @@ def cast_spell(
     is_flashback = alternative_cost == "flashback"
     is_escape = alternative_cost == "escape"
 
+    # SPL-02: Detect overload (CR 702.76)
+    has_overload = "overload" in oracle_lower
+
     # US30: Validate mutate target
     if mutate_target_id:
         target_perm = next((p for p in game_state.battlefield if p.id == mutate_target_id), None)
@@ -254,6 +258,7 @@ def cast_spell(
         is_foretold=alternative_cost in ("foretell", "cast_foretold"),
         mutate_target_id=mutate_target_id,
         mutate_on_top=mutate_on_top,
+        overload_paid=overload_paid,  # SPL-02: Overload (CR 702.76)
     )
     game_state.stack.append(stack_obj)
 
@@ -607,6 +612,15 @@ def resolve_top(game_state: GameState) -> GameState:
                             update={"keywords": list(target_perm.card.keywords) + [kw]}
                         )
     elif "instant" in type_lower or "sorcery" in type_lower:
+        # SPL-02: Overload (CR 702.76) — if overload was paid, get all valid targets
+        if stack_obj.overload_paid and "overload" in oracle_lower:
+            from mtg_engine.ability.keywords.overload import get_overload_targets
+            all_targets = get_overload_targets(card.oracle_text or "", game_state)
+            if all_targets:
+                logger.info("Overload: %s affecting %d targets", card.name, len(all_targets))
+                # Update targets to include all valid targets for overload
+                stack_obj.targets = all_targets
+        
         # US7: Handle replicate before resolving (CR 702.87)
         if stack_obj.replicate_count > 0 and not stack_obj.is_copy:
             for _ in range(stack_obj.replicate_count):

@@ -377,26 +377,26 @@ From SPEC.md (Card Types - various):
 
 From SPEC.md (SpellAbility - 23 files vs ~1):
 
-#### SPL-01: Spell Target Validation
-- **Description**: Validate spell targets
-- **Files**: `mtg_engine/engine/stack.py`
-- **Tests**: `tests/engine/test_stack_targets.py`
-- **Acceptance**: Target validation works
+#### SPL-01: Spell Target Validation ✅
+- **Description**: Enhanced spell target validation with type/count/color/subtype checking
+- **Files**: `mtg_engine/ability/targeting.py`
+- **Tests**: `tests/ability/test_targeting.py` (19 tests, all passing)
+- **Acceptance**: parse_target_spec() extracts target types/counts/colors/subtypes; validate_target_type() checks permanent/player/stack targets; validate_target_count() enforces min/max; get_valid_targets() returns all valid targets
 - **Dependency**: PAR-03
 
-#### SPL-02: Overload Ability
-- **Description**: Implement overload keyword
-- **Files**: `mtg_engine/ability/keywords/overload.py`
-- **Tests**: `tests/ability/keywords/test_overload.py`
-- **Acceptance**: Overload works
+#### SPL-02: Overload Ability ✅
+- **Description**: Implement overload keyword (CR 702.76)
+- **Files**: `mtg_engine/ability/keywords/overload.py`, `mtg_engine/models/game.py`, `mtg_engine/engine/stack.py`
+- **Tests**: `tests/ability/keywords/test_overload.py` (14 tests, all passing)
+- **Acceptance**: parse_overload_cost(); has_overload(); OverloadModel with overload_paid flag; get_overload_targets() for all-target resolution; integrated into cast_spell() and resolve_top()
 - **Dependency**: KW-01
 
-#### SPL-03: Split Second
-- **Description**: Implement split second
-- **Files**: `mtg_engine/ability/keywords/split_second.py`
-- **Tests**: `tests/ability/keywords/test_split_second.py`
-- **Acceptance**: Split second works
-- **Dependency**: KW-01
+#### SPL-03: Split Second ✅
+- **Description**: Implement split second (CR 702.61)
+- **Files**: `mtg_engine/engine/stack.py` (_has_split_second())
+- **Tests**: `tests/test_020/test_020_split_second_abilities.py` (7 tests, all passing)
+- **Acceptance**: Already implemented - blocks casting spells and activating non-mana abilities while split second spell is on stack; mana abilities still work; triggers still trigger
+- **Dependency**: None (already implemented)
 
 ### PHASE 1200: ADDITIONAL KEYWORDS
 
