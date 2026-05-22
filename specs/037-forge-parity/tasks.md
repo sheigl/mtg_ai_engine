@@ -402,11 +402,11 @@ From SPEC.md (SpellAbility - 23 files vs ~1):
 
 Additional high-value keywords missing (from SPEC.md):
 
-#### KW-09: Infect/ Poison
-- **Description**: Implement infect (damage as poison)
+#### KW-09: Infect/Poison ✅
+- **Description**: Implement infect, wither, and poisonous keywords
 - **Files**: `mtg_engine/ability/keywords/infect.py`
-- **Tests**: `tests/ability/keywords/test_infect.py`
-- **Acceptance**: Infect works
+- **Tests**: `tests/ability/keywords/test_infect.py` (16 tests, all passing)
+- **Acceptance**: InfectKeyword with has_infect() and from_oracle_text(); WitherKeyword with similar methods; PoisonousKeyword with parse and apply; infect damage to creatures as -1/-1 counters already implemented in combat/core.py and replacement.py; poison counters and SBA already implemented
 - **Dependency**: KW-06
 
 #### KW-10: Lifelink Enhancement
