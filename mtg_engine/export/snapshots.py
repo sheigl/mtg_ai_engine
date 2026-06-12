@@ -4,7 +4,7 @@ A snapshot is recorded at every priority grant. The chosen action
 is attached via finalize_snapshot() after the action is taken.
 """
 import uuid
-from typing import Any, Callable
+from typing import Callable
 from pydantic import BaseModel, Field
 from mtg_engine.models.game import GameState
 
@@ -99,6 +99,5 @@ class SnapshotRecorder:
 
     def to_jsonl(self) -> str:
         """Export all snapshots as newline-delimited JSON. REQ-D03."""
-        import json
         lines = [snap.model_dump_json() for snap in self.get_all()]
         return "\n".join(lines)

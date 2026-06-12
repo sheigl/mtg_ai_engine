@@ -7,11 +7,11 @@ Covers every action type the function can produce:
 Each section tests both inclusion (action IS offered when it should be) and
 exclusion (action is NOT offered when rules forbid it).
 """
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 import uuid
-import pytest
 
 from mtg_engine.models.game import (
     GameState, PlayerState, Card, Permanent, Phase, Step, ManaPool, PendingTrigger,

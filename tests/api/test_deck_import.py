@@ -5,12 +5,13 @@ Tests REQ-T01 (invalid formats), REQ-T02 (large files), REQ-T03 (concurrent),
 REQ-T04 (malformed JSON), REQ-S01 (security), REQ-S02 (content-type), REQ-S03 (rate limit).
 """
 
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 import concurrent.futures
 
 from mtg_engine.api.main import app

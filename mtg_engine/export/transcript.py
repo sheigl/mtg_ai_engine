@@ -2,9 +2,8 @@
 Play-by-play transcript recorder. REQ-D04, REQ-D05, REQ-D06.
 Records every engine event in sequence with natural-language descriptions.
 """
-import uuid
 from typing import Any, Callable
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class TranscriptEntry(BaseModel):

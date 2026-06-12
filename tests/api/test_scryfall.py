@@ -1,8 +1,8 @@
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 import pytest
-from pathlib import Path
 from mtg_engine.card_data.scryfall import ScryfallClient
 
 

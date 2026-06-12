@@ -1,6 +1,5 @@
-import pytest
 from mtg_engine.models.card_type import (
-    CoreType, CardType, parse_type_line,
+    CoreType, parse_type_line,
 )
 from mtg_engine.models.battle import (
     BattleSubtype, BattleModel, get_siege_abilities,

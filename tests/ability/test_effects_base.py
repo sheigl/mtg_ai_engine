@@ -7,8 +7,8 @@ sys.path.insert(0, project_root)
 
 from mtg_engine.models.game import GameState, Phase, Step, PlayerState, Card, ManaPool
 from mtg_engine.ability.effects.base import (
-    Effect, DamageEffect, DestroyEffect, DrawEffect,
-    SearchEffect, ExileEffect, CreateTokenEffect, GainLifeEffect,
+    DamageEffect, DestroyEffect, DrawEffect,
+    ExileEffect, GainLifeEffect,
 )
 
 

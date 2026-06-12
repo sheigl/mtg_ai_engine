@@ -1,5 +1,6 @@
 """Tests for Phase 6 export functionality."""
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 import pytest
@@ -36,7 +37,7 @@ def _create_game(seed: int = 1) -> str:
 
 def test_snapshot_recorder_basic():
     from mtg_engine.export.snapshots import SnapshotRecorder
-    from mtg_engine.models.game import GameState, PlayerState, Phase, Step
+    from mtg_engine.models.game import GameState, PlayerState
     p1 = PlayerState(name="p1")
     p2 = PlayerState(name="p2")
     gs = GameState(game_id="g1", seed=1, active_player="p1", priority_holder="p1", players=[p1, p2])

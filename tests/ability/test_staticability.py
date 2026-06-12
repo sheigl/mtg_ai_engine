@@ -4,9 +4,9 @@ import os
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, project_root)
 
-from mtg_engine.models.game import GameState, Phase, Step, PlayerState, Card, Permanent
+from mtg_engine.models.game import GameState, Phase, Step, PlayerState, Card
 from mtg_engine.ability.staticability import (
-    StaticAbility, ContinuousPump, CantAttackBlock, HexproofGrant,
+    ContinuousPump, CantAttackBlock, HexproofGrant,
     IndestructibleGrant, create_static_ability,
 )
 from mtg_engine.engine.zones import put_permanent_onto_battlefield

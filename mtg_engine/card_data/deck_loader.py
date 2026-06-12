@@ -1,4 +1,3 @@
-import time
 import uuid
 from mtg_engine.card_data.scryfall import ScryfallClient
 from mtg_engine.models.game import Card

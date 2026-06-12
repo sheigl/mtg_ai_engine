@@ -9,7 +9,7 @@ import uuid
 
 from mtg_engine.models.game import Card, GameState, StackObject
 from mtg_engine.engine.mana import can_pay_cost, pay_cost
-from mtg_engine.engine.zones import get_player, move_permanent_to_zone, put_permanent_onto_battlefield
+from mtg_engine.engine.zones import get_player, put_permanent_onto_battlefield
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +146,6 @@ def cast_spell(
         # Pay generic with whatever's left
         generic_needed = cost_dict.get("generic", 0)
         if generic_needed:
-            from collections import Counter
             pool_available = sum(v for v in pool_dict.values() if v > 0)
             if pool_available >= generic_needed:
                 mana_payment["C"] = min(generic_needed, pool_available)
@@ -816,6 +815,24 @@ def _apply_spell_effect(game_state: GameState, stack_obj: StackObject) -> GameSt
     card = stack_obj.source_card
     oracle = (card.oracle_text or "").lower()
 
+    # Spree mechanic (036-spree): apply selected mode effects
+    # Spree cards have mode lines in their oracle text; the modes ARE the effect,
+    # so after applying them we skip the main pattern matching to avoid duplicates.
+    applied_spree = False
+    if game_state.pending_spree_effects:
+        remaining = []
+        for spree_effect in game_state.pending_spree_effects:
+            if spree_effect.get("card_id") == card.id:
+                game_state = _apply_single_effect_text(game_state, stack_obj, spree_effect["effect"])
+                logger.info("Spree: applied mode effect for %s", card.name)
+                applied_spree = True
+            else:
+                remaining.append(spree_effect)
+        game_state.pending_spree_effects = remaining
+
+    if applied_spree:
+        return game_state
+
     # Modal spells (US4): apply only chosen modes
     if stack_obj.modes_chosen:
         # Split oracle text by bullet (•) or "Mode N:" markers
@@ -1113,7 +1130,9 @@ def _create_tokens(game_state: GameState, controller: str, count_str: str, power
 def _gain_life(game_state: GameState, player_name: str, n: int) -> GameState:
     """Gain life."""
     player = get_player(game_state, player_name)
+    old = player.life
     player.life += n
+    _emit_life_changed(game_state, player_name, old, player.life, n, "spell")
     logger.info("%s gains %d life", player_name, n)
     return game_state
 
@@ -1330,30 +1349,27 @@ def _deal_damage(game_state: GameState, target_id: str, damage: int, source: Car
     Marks damage on permanents; reduces life for players.
     Deathtouch flag is set for SBA processing (REQ-R10).
     """
+    # Emit damage event
+    _emit_damage_dealt(game_state, source.id, game_state.active_player,
+                       target_id, damage, is_combat=False)
+
     # Check if target is a permanent on the battlefield
     for perm in game_state.battlefield:
         if perm.id == target_id:
             perm.damage_marked += damage
-            # Mark deathtouch damage for SBA processing (CR 704.5h, REQ-R10)
             if "deathtouch" in source.keywords:
                 perm.counters["__deathtouch_damage__"] = (
                     perm.counters.get("__deathtouch_damage__", 0) + damage
                 )
-            # Lifelink: controller gains life (REQ-R11)
-            # Note: lifelink life gain is handled here as a side effect of damage
-            if "lifelink" in source.keywords:
-                # The source card's controller gains life equal to damage dealt
-                # We look up the controller via the active player heuristic
-                # (In future tasks this will be tracked on source properly)
-                for player in game_state.players:
-                    # Attempt to find the controlling player from battlefield context
-                    pass  # placeholder — lifelink controller lookup requires source perm context
             return game_state
 
     # Check if target is a player (player name used as target ID)
     for player in game_state.players:
         if player.name == target_id:
+            old_life = player.life
             player.life -= damage
+            _emit_life_changed(game_state, player.name, old_life, player.life,
+                               -damage, reason="spell_damage")
             return game_state
 
     logger.warning("_deal_damage: target %r not found on battlefield or as a player", target_id)
@@ -1712,3 +1728,66 @@ def _fuse_split_card(card: Card) -> Card:
     new_card.cmc = sum(parsed.values())
     
     return new_card
+
+
+# ─── EventBus emission helpers ────────────────────────────────────────────────
+
+def _emit_life_changed(
+    gs: GameState, player_name: str, old_life: int, new_life: int,
+    change: int, reason: str = "",
+) -> None:
+    """Emit a LifeChangedEvent to the EventBus if available."""
+    try:
+        from mtg_engine.engine.events import get_default_bus, LifeChangedEvent, EventType
+        bus = get_default_bus()
+        if bus.get_listeners(EventType.LIFE_CHANGED):
+            bus.emit(LifeChangedEvent(
+                player=player_name,
+                old_life=old_life,
+                new_life=new_life,
+                change_amount=change,
+                reason=reason,
+                game_id=gs.game_id,
+            ))
+    except Exception:
+        pass
+
+
+def _emit_damage_dealt(
+    gs: GameState, source_id: str, source_controller: str,
+    target_id: str, amount: int, is_combat: bool = False,
+) -> None:
+    """Emit a DamageDealtEvent to the EventBus if available."""
+    try:
+        from mtg_engine.engine.events import get_default_bus, DamageDealtEvent, EventType
+        bus = get_default_bus()
+        if bus.get_listeners(EventType.DAMAGE_DEALT):
+            bus.emit(DamageDealtEvent(
+                source_id=source_id,
+                source_controller=source_controller,
+                target_id=target_id,
+                damage_amount=amount,
+                is_combat=is_combat,
+                game_id=gs.game_id,
+            ))
+    except Exception:
+        pass
+
+
+def _emit_counter_placed(
+    gs: GameState, permanent_id: str, counter_type: str, count: int, action: str = "add",
+) -> None:
+    """Emit a CounterPlacedEvent to the EventBus if available."""
+    try:
+        from mtg_engine.engine.events import get_default_bus, CounterPlacedEvent, EventType
+        bus = get_default_bus()
+        if bus.get_listeners(EventType.COUNTER_PLACED):
+            bus.emit(CounterPlacedEvent(
+                permanent_id=permanent_id,
+                counter_type=counter_type,
+                count=count,
+                action=action,
+                game_id=gs.game_id,
+            ))
+    except Exception:
+        pass

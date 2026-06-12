@@ -10,7 +10,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Callable
 
-from mtg_engine.models.game import Card, GameState, Permanent, PlayerState, StackObject, ExileStack
+from mtg_engine.models.game import Card, GameState, Permanent, PlayerState, ExileStack
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,46 @@ def _emit_zone_change(event: ZoneChangeEvent, game_state: GameState) -> None:
     """Emit a zone-change event to all registered listeners."""
     for fn in _zone_change_listeners:
         fn(event, game_state)
+    _emit_eventbus_zone(event, game_state)
+
+
+def _emit_eventbus_zone(event: ZoneChangeEvent, game_state: GameState) -> None:
+    """Emit a typed ZoneChangeEvent to the EventBus if available."""
+    try:
+        from mtg_engine.engine.events import (
+            get_default_bus, ZoneChangeEvent as TypedZCE,
+            PermanentEntersEvent, PermanentLeavesEvent, EventType,
+        )
+        bus = get_default_bus()
+        game_id = game_state.game_id
+        if bus.get_listeners(EventType.ZONE_CHANGE):
+            bus.emit(TypedZCE(
+                card_id=event.get("card_id", ""),
+                card_name=event.get("card_name"),
+                from_zone=event.get("from_zone", ""),
+                to_zone=event.get("to_zone", ""),
+                player=event.get("player", ""),
+                is_token=event.get("is_token", False),
+                game_id=game_id,
+            ))
+        if event.get("to_zone") == "battlefield" and bus.get_listeners(EventType.PERMANENT_ENTERS):
+            bus.emit(PermanentEntersEvent(
+                permanent_id=event.get("card_id", ""),
+                controller=event.get("player", ""),
+                card_name=event.get("card_name") or "",
+                game_id=game_id,
+            ))
+        if event.get("from_zone") == "battlefield" and bus.get_listeners(EventType.PERMANENT_LEAVES):
+            bus.emit(PermanentLeavesEvent(
+                permanent_id=event.get("card_id", ""),
+                controller=event.get("player", ""),
+                card_name=event.get("card_name") or "",
+                from_zone=event.get("from_zone", ""),
+                to_zone=event.get("to_zone", ""),
+                game_id=game_id,
+            ))
+    except Exception:
+        logger.debug("EventBus not available for zone event", exc_info=True)
 
 
 def get_player(game_state: GameState, player_name: str) -> PlayerState:
@@ -487,7 +527,6 @@ def _resolve_etb_choice_with_ai(
     Returns (game_state, should_be_tapped).
     AI makes decision based on board state and game conditions.
     """
-    import random
     
     player = next((p for p in game_state.players if p.name == player_name), None)
     if not player:

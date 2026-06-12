@@ -1,8 +1,7 @@
-import pytest
 from mtg_engine.models.game import Card, GameState, PlayerState, Permanent
 from mtg_engine.ability.targeting import (
     parse_target_spec, validate_target_type, validate_target_count,
-    get_valid_targets, TargetSpec,
+    get_valid_targets,
 )
 
 

@@ -14,8 +14,7 @@ CR References:
 import pytest
 from mtg_engine.models.game import GameState, PlayerState, Phase, Step, Card, Permanent, ManaPool
 from mtg_engine.engine.mana import (
-    parse_mana_cost, can_pay_cost, _can_pay_simple, _validate_payment,
-    pay_cost, add_mana
+    parse_mana_cost, can_pay_cost, pay_cost, add_mana
 )
 
 

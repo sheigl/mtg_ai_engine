@@ -5,12 +5,10 @@ EVT-02: Event-to-Trigger Bridge — connect bus to triggers
 
 CR 603: Triggered abilities fire when game events occur.
 """
-import pytest
-from unittest.mock import Mock, call
+from unittest.mock import Mock
 
 from mtg_engine.engine.events import (
     EventBus,
-    GameEvent,
     ZoneChangeEvent,
     PhaseChangeEvent,
     AttackEvent,
@@ -670,3 +668,126 @@ class TestEventBusSingleton:
         ))
 
         assert len(received) == 1
+
+
+# ─── EVT-02: Bridge Life/Counter Trigger Queueing ────────────────────────────
+
+class TestBridgeLifeTriggers:
+    """Bridge queues PendingTrigger entries for life-gain/loss events."""
+
+    def _make_gs_with_perm(self, oracle_text: str) -> tuple:
+        from mtg_engine.models.game import GameState, PlayerState, Permanent, Card
+        from mtg_engine.engine.events import EventBus, EventTriggerBridge
+
+        bus = EventBus()
+        gs = GameState(
+            game_id="test-life",
+            seed=42,
+            active_player="Alice",
+            priority_holder="Alice",
+            players=[PlayerState(name="Alice"), PlayerState(name="Bob")],
+        )
+        card = Card(
+            name="TestCreature",
+            type_line="Creature",
+            oracle_text=oracle_text,
+        )
+        perm = Permanent(
+            id="perm-1",
+            card=card,
+            controller="Alice",
+        )
+        gs.battlefield.append(perm)
+        bridge = EventTriggerBridge(bus, game_id=gs.game_id)
+        bridge.register(gs)
+        return bus, gs
+
+    def test_life_gain_queues_trigger(self):
+        """Life gain event should queue a PendingTrigger for permanents with gain-life trigger."""
+        bus, gs = self._make_gs_with_perm(
+            "Whenever you gain life, put a +1/+1 counter on this creature."
+        )
+        assert len(gs.pending_triggers) == 0
+
+        bus.emit(LifeChangedEvent(
+            player="Alice", old_life=20, new_life=23,
+            change_amount=3, reason="spell", game_id="test-life",
+        ))
+
+        assert len(gs.pending_triggers) == 1
+        assert gs.pending_triggers[0].trigger_type == "life_change"
+        assert gs.pending_triggers[0].source_permanent_id == "perm-1"
+
+    def test_life_gain_no_trigger_if_no_match(self):
+        """Life gain event should NOT queue trigger if no permanents match."""
+        bus, gs = self._make_gs_with_perm(
+            "When this creature enters the battlefield, draw a card."
+        )
+        bus.emit(LifeChangedEvent(
+            player="Alice", old_life=20, new_life=23,
+            change_amount=3, reason="spell", game_id="test-life",
+        ))
+        assert len(gs.pending_triggers) == 0
+
+    def test_life_loss_queues_trigger(self):
+        """Life loss event should queue a PendingTrigger for permanents with loss-life trigger."""
+        bus, gs = self._make_gs_with_perm(
+            "Whenever you lose life, you may draw a card."
+        )
+        bus.emit(LifeChangedEvent(
+            player="Alice", old_life=20, new_life=17,
+            change_amount=-3, reason="damage", game_id="test-life",
+        ))
+        assert len(gs.pending_triggers) == 1
+        assert "you may" in gs.pending_triggers[0].effect_description.lower()
+        assert gs.pending_triggers[0].is_optional is True
+
+    def test_life_gain_game_id_filter(self):
+        """Events from different game_id should be filtered out."""
+        bus, gs = self._make_gs_with_perm(
+            "Whenever you gain life, put a +1/+1 counter on this creature."
+        )
+        # Emit with wrong game_id
+        bus.emit(LifeChangedEvent(
+            player="Alice", old_life=20, new_life=23,
+            change_amount=3, reason="spell", game_id="other-game",
+        ))
+        assert len(gs.pending_triggers) == 0
+
+        # Emit with correct game_id
+        bus.emit(LifeChangedEvent(
+            player="Alice", old_life=20, new_life=23,
+            change_amount=3, reason="spell", game_id="test-life",
+        ))
+        assert len(gs.pending_triggers) == 1
+
+    def test_counter_queues_trigger(self):
+        """Counter placed event should queue a PendingTrigger for permanents with counter trigger."""
+        bus, gs = self._make_gs_with_perm(
+            "Whenever you put a counter on a creature, draw a card."
+        )
+        bus.emit(CounterPlacedEvent(
+            permanent_id="perm-2", counter_type="+1/+1",
+            count=1, action="add", game_id="test-life",
+        ))
+        assert len(gs.pending_triggers) == 1
+        assert gs.pending_triggers[0].trigger_type == "counter"
+
+    def test_bridge_handles_multiple_triggers(self):
+        """Multiple matching permanents should each get a PendingTrigger."""
+        from mtg_engine.models.game import Permanent, Card
+
+        bus, gs = self._make_gs_with_perm(
+            "Whenever you gain life, scry 1."
+        )
+        # Add second permanent with matching trigger
+        card2 = Card(name="AnotherCreature", type_line="Creature",
+                      oracle_text="Whenever you gain life, put a +1/+1 counter on this creature.")
+        perm2 = Permanent(id="perm-2", card=card2, controller="Alice")
+        gs.battlefield.append(perm2)
+
+        bus.emit(LifeChangedEvent(
+            player="Alice", old_life=20, new_life=23,
+            change_amount=3, reason="spell", game_id="test-life",
+        ))
+        assert len(gs.pending_triggers) == 2

@@ -3,7 +3,8 @@ API integration tests: scripted bots play games via HTTP.
 TASK-25: verify no illegal states reachable, no 500 errors.
 REQ-P02: no state bleed between concurrent games.
 """
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 import threading

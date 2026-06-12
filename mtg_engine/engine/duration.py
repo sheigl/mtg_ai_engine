@@ -4,8 +4,6 @@ CR 611.3: Duration of continuous effects.
 Tracks "until end of turn" and "until your next turn" effects.
 """
 import logging
-import uuid
-from pydantic import BaseModel, Field
 
 from mtg_engine.models.game import GameState, DurationEffect
 

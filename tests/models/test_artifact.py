@@ -1,6 +1,5 @@
-import pytest
 from mtg_engine.models.card_type import (
-    CoreType, ArtifactSubtype, CardType, parse_type_line,
+    ArtifactSubtype, parse_type_line,
 )
 from mtg_engine.models.artifact import (
     parse_equip_cost, parse_crew_cost, can_equip,

@@ -130,7 +130,7 @@ class ScryfallClient:
                     return self._build_card(raw)
             except Exception as exc:
                 logger.warning("MongoDB lookup failed for %r: %s", name, exc)
-        raw = self._api_get(f"/cards/named", params={"exact": name})
+        raw = self._api_get("/cards/named", params={"exact": name})
         self._cache_put(raw)
         return self._build_card(raw)
 

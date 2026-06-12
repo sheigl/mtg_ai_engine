@@ -376,6 +376,11 @@ def begin_step(game_state: GameState) -> GameState:
                 still_pending.append(dt)
         game_state.delayed_triggers = still_pending
 
+    # MON-01: The Monarch — draw at end step
+    if step == Step.END:
+        from mtg_engine.engine.monarch import handle_end_step_draw
+        game_state = handle_end_step_draw(game_state)
+
     # Clear mana pools at end of each step (mana floating rule)
     # Untap and Cleanup already handled above
     if step not in (Step.UNTAP, Step.CLEANUP):
@@ -429,6 +434,8 @@ def advance_step(game_state: GameState, skip_depth: int = 0) -> GameState:
                     game_state.priority_holder = game_state.active_player
                 return game_state
             logger.info("Phase %s skipped via phase_skip_flags", next_phase.value)
+            # Mark that an explicit phase skip just occurred to prevent auto-skip from cascading
+            game_state._explicit_phase_skip_done = True
         game_state.phase = next_phase
         game_state.step = next_step
         # Reset per-step flags when advancing steps
@@ -443,35 +450,39 @@ def advance_step(game_state: GameState, skip_depth: int = 0) -> GameState:
 
     # ── Feature 029: Skip empty phases ───────────────────────────────────────
     if skip_depth < 10 and game_state.step != Step.UNTAP:
-        try:
-            if can_skip_phase(game_state):
-                logger.info(
-                    "Turn %d %s — %s skipped (no actions available)",
+        # Don't auto-skip right after an explicit phase skip (prevents cascading)
+        if game_state._explicit_phase_skip_done:
+            game_state._explicit_phase_skip_done = False
+        else:
+            try:
+                if can_skip_phase(game_state):
+                    logger.info(
+                        "Turn %d %s — %s skipped (no actions available)",
+                        game_state.turn,
+                        game_state.phase.value,
+                        game_state.step.value,
+                    )
+                    # Record skipped phase in transcript (US2)
+                    from mtg_engine.export.store import get_export_store
+                    store = get_export_store(game_state.game_id)
+                    store.transcript.record_phase_skipped(
+                        turn=game_state.turn,
+                        phase=game_state.phase.value,
+                        step=game_state.step.value,
+                        active_player=game_state.active_player,
+                        reason="no_actions_available",
+                    )
+                    return advance_step(game_state, skip_depth=skip_depth + 1)
+            except Exception:
+                # Fail-safe: if skip evaluation crashes, do not skip — log and continue
+                logger.warning(
+                    "Skip evaluation failed for %s at turn %d %s/%s",
+                    game_state.game_id,
                     game_state.turn,
                     game_state.phase.value,
                     game_state.step.value,
+                    exc_info=True,
                 )
-                # Record skipped phase in transcript (US2)
-                from mtg_engine.export.store import get_export_store
-                store = get_export_store(game_state.game_id)
-                store.transcript.record_phase_skipped(
-                    turn=game_state.turn,
-                    phase=game_state.phase.value,
-                    step=game_state.step.value,
-                    active_player=game_state.active_player,
-                    reason="no_actions_available",
-                )
-                return advance_step(game_state, skip_depth=skip_depth + 1)
-        except Exception:
-            # Fail-safe: if skip evaluation crashes, do not skip — log and continue
-            logger.warning(
-                "Skip evaluation failed for %s at turn %d %s/%s",
-                game_state.game_id,
-                game_state.turn,
-                game_state.phase.value,
-                game_state.step.value,
-                exc_info=True,
-            )
 
     # Grant priority to active player (except untap step — no priority there). REQ-S01
     if game_state.step != Step.UNTAP:
@@ -520,8 +531,6 @@ def process_cleanup_step(game_state: GameState) -> GameState:
     
     # 1. Discard to hand size
     if len(active.hand) > active.max_hand_size:
-        from mtg_engine.models.game import PendingTrigger
-        import uuid as _uuid
         
         excess_cards = active.hand[active.max_hand_size:]
         game_state.pending_discard_choice = {

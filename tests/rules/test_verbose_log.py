@@ -3,7 +3,6 @@ Tests for VerboseLogger and play-by-play log integration.
 Feature: 007-play-by-play-log
 """
 import logging
-import pytest
 
 from mtg_engine.export.transcript import TranscriptEntry, TranscriptRecorder
 from mtg_engine.engine.verbose_log import VerboseLogger

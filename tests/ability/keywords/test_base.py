@@ -5,11 +5,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 sys.path.insert(0, project_root)
 
 from mtg_engine.ability.keywords.base import (
-    KeywordAbility,
     PassiveKeyword,
-    TriggeredKeyword,
-    CostKeyword,
-    KEYWORD_REGISTRY,
     register_keyword,
     get_keyword,
     create_keyword,

@@ -1,16 +1,12 @@
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-import pytest
 from mtg_engine.models.game import (
     GameState, PlayerState, Card, Permanent,
-    DamagePreventionEffect,
 )
 from mtg_engine.engine.replacement import (
-    GameEvent, ReplacementEffect,
-    process_event,
-    get_applicable_replacements,
-    apply_replacement,
+    GameEvent, process_event,
     create_prevention_effect,
     remove_expired_prevention_effects,
     create_draw_replacement,

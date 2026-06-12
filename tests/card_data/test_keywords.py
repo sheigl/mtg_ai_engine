@@ -1,12 +1,11 @@
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from mtg_engine.card_data.ability_parser import (
     KEYWORDS,
     parse_effect_patterns,
     parse_targets,
-    EffectPattern,
-    TargetInfo,
 )
 
 

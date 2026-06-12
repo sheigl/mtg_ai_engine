@@ -14,7 +14,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from mtg_engine.models.game import GameState, Permanent, Card
+    from mtg_engine.models.game import GameState, Permanent
 
 logger = logging.getLogger(__name__)
 

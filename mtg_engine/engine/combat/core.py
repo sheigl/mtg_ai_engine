@@ -6,13 +6,14 @@ CR 702.19: trample. CR 702.2: deathtouch. REQ-R09–REQ-R12.
 import logging
 from typing import Any
 from mtg_engine.models.game import (
-    GameState, Permanent, AttackerInfo, CombatState, Step, Phase
+    GameState, Permanent, AttackerInfo, CombatState, Step
 )
 from mtg_engine.models.actions import (
     AttackDeclaration, BlockDeclaration, DamageAssignment
 )
 from mtg_engine.engine.zones import get_player
 from mtg_engine.engine.turn_manager import begin_step
+from mtg_engine.engine.stack import _emit_life_changed, _emit_damage_dealt, _emit_counter_placed
 
 logger = logging.getLogger(__name__)
 
@@ -616,46 +617,60 @@ def assign_combat_damage(
         has_lifelink   = _has_keyword(source, "lifelink")
         has_infect     = _has_keyword(source, "infect")
 
+        # Emit damage event
+        _emit_damage_dealt(game_state, source.id, source.controller,
+                           assign.target_id, assign.damage, is_combat=True)
+
         # Deal damage to target
         target_perm = next((p for p in game_state.battlefield if p.id == assign.target_id), None)
         if target_perm:
             is_planeswalker_target = "planeswalker" in target_perm.card.type_line.lower()
             if is_planeswalker_target:
-                # CR 306.6: combat damage to planeswalker reduces loyalty (not damage_marked)
+                old_loyalty = target_perm.loyalty
                 target_perm.loyalty = max(0, target_perm.loyalty - assign.damage)
             elif has_infect:
-                # REQ-R12: infect damage to creatures as -1/-1 counters
                 target_perm.counters["-1/-1"] = target_perm.counters.get("-1/-1", 0) + assign.damage
+                _emit_counter_placed(game_state, target_perm.id, "-1/-1", assign.damage)
             else:
                 target_perm.damage_marked += assign.damage
             if has_deathtouch and assign.damage > 0 and not is_planeswalker_target:
-                # REQ-R10: mark for deathtouch SBA (CR 702.2b)
                 target_perm.counters["__deathtouch_damage__"] = (
                     target_perm.counters.get("__deathtouch_damage__", 0) + assign.damage
                 )
         else:
             # Target is a player
-            for player in game_state.players:
-                if player.name == assign.target_id:
-                    if has_infect:
-                        # REQ-R12: infect damage to players as poison counters
-                        player.poison_counters += assign.damage
-                    else:
-                        player.life -= assign.damage
-                        # Commander damage tracking: record if attacker is a commander
-                        if game_state.format == "commander" and assign.damage > 0:
-                            controller = get_player(game_state, source.controller)
-                            if controller.commander_name and source.card.name == controller.commander_name:
-                                if source.id not in game_state.commander_damage:
-                                    game_state.commander_damage[source.id] = {}
-                                prev = game_state.commander_damage[source.id].get(player.name, 0)
-                                game_state.commander_damage[source.id][player.name] = prev + assign.damage
-                    break
+                for player in game_state.players:
+                    if player.name == assign.target_id:
+                        if has_infect:
+                            player.poison_counters += assign.damage
+                            _emit_counter_placed(game_state, player.name, "poison", assign.damage)
+                        else:
+                            old_life = player.life
+                            player.life -= assign.damage
+                            _emit_life_changed(game_state, player.name, old_life, player.life,
+                                               -assign.damage, reason="combat_damage")
+                            # Commander damage tracking
+                            if game_state.format == "commander" and assign.damage > 0:
+                                controller = get_player(game_state, source.controller)
+                                if controller.commander_name and source.card.name == controller.commander_name:
+                                    if source.id not in game_state.commander_damage:
+                                        game_state.commander_damage[source.id] = {}
+                                    prev = game_state.commander_damage[source.id].get(player.name, 0)
+                                    game_state.commander_damage[source.id][player.name] = prev + assign.damage
+                            # MON-01: Combat damage to monarch transfers the monarchy
+                            from mtg_engine.engine.monarch import check_combat_damage_monarch
+                            game_state = check_combat_damage_monarch(
+                                game_state, player.name, source.controller
+                            )
+                        break
 
         # Lifelink: source controller gains life (REQ-R11)
         if has_lifelink and assign.damage > 0:
             controller = get_player(game_state, source.controller)
+            old_life = controller.life
             controller.life += assign.damage
+            _emit_life_changed(game_state, controller.name, old_life, controller.life,
+                               assign.damage, reason="lifelink")
 
     return game_state
 

@@ -1,6 +1,5 @@
-import pytest
 from mtg_engine.models.card_type import (
-    CoreType, Supertype, EnchantmentSubtype, CardType, parse_type_line,
+    EnchantmentSubtype, parse_type_line,
 )
 from mtg_engine.models.enchantment import (
     AuraTargetType, AuraTarget, parse_aura_target, is_aura_type_line,

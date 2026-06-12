@@ -390,7 +390,6 @@ def check_damage_triggers(
     Scans permanents for combat-damage trigger patterns and queues PendingTriggers.
     """
     import re as _re
-    from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
 
     # Build set of permanent IDs that dealt damage to a player this assignment
     player_names = {p.name for p in game_state.players}
@@ -401,6 +400,33 @@ def check_damage_triggers(
 
     if not damaging_perm_ids:
         return game_state
+
+    # Scan permanents that dealt damage for combat-damage triggers
+    _COMBAT_DAMAGE_TRIGGER_RE = _re.compile(
+        r"whenever (?:this|~|this creature) deals? (?:combat )?damage(?: to a player)?",
+        _re.IGNORECASE,
+    )
+
+    for perm in game_state.battlefield:
+        if perm.id not in damaging_perm_ids:
+            continue
+        oracle = perm.card.oracle_text or ""
+        if _COMBAT_DAMAGE_TRIGGER_RE.search(oracle):
+            trigger = PendingTrigger(
+                id=str(uuid.uuid4()),
+                source_permanent_id=perm.id,
+                controller=perm.controller,
+                trigger_type="combat_damage",
+                effect_description=oracle,
+                source_card_name=perm.card.name,
+            )
+            game_state.pending_triggers.append(trigger)
+            logger.debug(
+                "Combat damage trigger queued from %s (controller: %s)",
+                perm.card.name, perm.controller,
+            )
+
+    return game_state
 
 
 # ─── MANA-03: Mana Production Triggers ────────────────────────────────────────
@@ -455,32 +481,6 @@ def check_mana_production_triggers(
                         ab.trigger_condition, card.name, perm.controller,
                     )
                     break
-
-    return game_state
-
-    _COMBAT_DAMAGE_TRIGGER_RE = _re.compile(
-        r"whenever (?:this|~|this creature) deals? (?:combat )?damage(?: to a player)?",
-        _re.IGNORECASE,
-    )
-
-    for perm in game_state.battlefield:
-        if perm.id not in damaging_perm_ids:
-            continue
-        oracle = perm.card.oracle_text or ""
-        if _COMBAT_DAMAGE_TRIGGER_RE.search(oracle):
-            trigger = PendingTrigger(
-                id=str(uuid.uuid4()),
-                source_permanent_id=perm.id,
-                controller=perm.controller,
-                trigger_type="combat_damage",
-                effect_description=oracle,
-                source_card_name=perm.card.name,
-            )
-            game_state.pending_triggers.append(trigger)
-            logger.debug(
-                "Combat damage trigger queued from %s (controller: %s)",
-                perm.card.name, perm.controller,
-            )
 
     return game_state
 

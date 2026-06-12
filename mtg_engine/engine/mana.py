@@ -8,7 +8,6 @@ MANA-03: Mana production events.
 """
 import logging
 import re
-from dataclasses import dataclass, field
 from typing import Any
 
 from mtg_engine.models.game import GameState, ManaPool
@@ -544,7 +543,6 @@ def apply_keyword_cost_reductions(
         Effective cost dict {symbol: count} after applying reductions
     """
     import re
-    from mtg_engine.engine.zones import get_player
     
     # Start with base cost
     cost = parse_mana_cost(base_cost)
@@ -564,7 +562,6 @@ def apply_keyword_cost_reductions(
     
     # CR 702.142: Affinity — reduce cost by {1} for each permanent on battlefield of the type
     # (Check oracle_text for affinity pattern "affinity for [type]")
-    from mtg_engine.models.game import Card  # Import here to avoid circular imports
     
     card = next((c for p in game_state.players for c in p.hand if c.id == cast_request.card_id), None)
     if card:

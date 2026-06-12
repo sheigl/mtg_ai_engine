@@ -1,4 +1,5 @@
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from mtg_engine.ability.cost import (
@@ -12,7 +13,6 @@ from mtg_engine.ability.cost import (
     LoyaltyCost,
     CompositeCost,
     parse_cost_string,
-    can_pay_cost,
     pay_cost,
 )
 from mtg_engine.models.game import (

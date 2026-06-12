@@ -1,5 +1,4 @@
 import re
-from typing import Optional
 from pydantic import BaseModel, Field
 
 # Color name to single-letter code mapping
@@ -181,7 +180,6 @@ def _validate_permanent_target(perm, target_spec: TargetSpec) -> bool:
 
     # Check controller restrictions
     if "you_control" in target_spec.controller_restrictions:
-        from mtg_engine.engine.stack import _has_split_second
         # In context, we'd need to know who the controller of the spell is
         # For now, assume the spell's controller is checking
         # This would be passed in as a parameter in real usage

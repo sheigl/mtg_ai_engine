@@ -2,11 +2,9 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-from mtg_engine.models.game import GameState, Phase, Step, PlayerState, Card, ExileStack
+from mtg_engine.models.game import GameState, PlayerState, Card, ExileStack
 from mtg_engine.engine.zones import (
     move_card_to_zone,
-    move_permanent_to_zone,
-    put_permanent_onto_battlefield,
     draw_card,
     get_player,
     # ZN-01: Exile zone functions

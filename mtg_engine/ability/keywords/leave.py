@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from mtg_engine.ability.keywords.base import TriggeredKeyword
 
 if TYPE_CHECKING:
-    from mtg_engine.models.game import GameState, Card, Permanent, PendingTrigger
+    from mtg_engine.models.game import GameState, Permanent, PendingTrigger
 
 logger = logging.getLogger(__name__)
 

@@ -12,10 +12,9 @@ import re
 from typing import TYPE_CHECKING
 
 from mtg_engine.ability.keywords.base import TriggeredKeyword
-from mtg_engine.ability.keywords.counter import CounterKeyword
 
 if TYPE_CHECKING:
-    from mtg_engine.models.game import GameState, Card, Permanent
+    from mtg_engine.models.game import GameState, Permanent
 
 logger = logging.getLogger(__name__)
 

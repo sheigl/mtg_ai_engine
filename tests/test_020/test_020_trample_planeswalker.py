@@ -4,15 +4,15 @@ When a creature with trample attacks a planeswalker and is blocked,
 excess damage (beyond lethal to all blockers) goes to the planeswalker,
 not the defending player.
 """
-import pytest
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from mtg_engine.models.game import (
     GameState, PlayerState, Card, Phase, Step,
 )
 from mtg_engine.models.actions import (
-    AttackDeclaration, BlockDeclaration, DamageAssignment,
+    AttackDeclaration, BlockDeclaration,
 )
 from mtg_engine.engine.zones import put_permanent_onto_battlefield
 from mtg_engine.engine.combat import (

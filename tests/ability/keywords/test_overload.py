@@ -1,6 +1,4 @@
-import pytest
 from mtg_engine.models.game import Card, GameState, PlayerState
-from mtg_engine.engine.mana import ManaPool
 from mtg_engine.ability.keywords.overload import (
     parse_overload_cost, has_overload, OverloadModel, get_overload_targets,
 )
@@ -86,7 +84,7 @@ class TestGetOverloadTargets:
             priority_holder="Player1",
         )
         # Add some permanents
-        from mtg_engine.models.game import Permanent, Card
+        from mtg_engine.models.game import Permanent
         creature1 = Permanent(
             card=Card(name="Goblin", type_line="Creature — Goblin"),
             controller="Player1",

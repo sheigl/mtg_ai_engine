@@ -1,6 +1,5 @@
 """Tests for Cleanup Step (US1)."""
-import pytest
-from mtg_engine.models.game import Phase, Step, Permanent, Card
+from mtg_engine.models.game import Permanent, Card
 
 
 class TestCleanupStepDiscard:
@@ -196,7 +195,6 @@ class TestCleanupStepSBADuringCleanup:
         
         # Process cleanup step - this should make toughness 0 and trigger SBA
         from mtg_engine.engine.turn_manager import process_cleanup_step
-        from mtg_engine.engine.sba import _check_once
         
         gs = process_cleanup_step(gs)
         

@@ -1,6 +1,5 @@
-import pytest
 from mtg_engine.models.card_type import (
-    CoreType, Supertype, EnchantmentSubtype, ArtifactSubtype,
+    CoreType, Supertype, ArtifactSubtype,
     CardType, parse_type_line
 )
 

@@ -9,8 +9,6 @@ from mtg_engine.engine.mana import (
     get_mana_colors,
     pool_can_produce_color,
     add_split_mana,
-    add_mana,
-    pool_total,
 )
 
 

@@ -241,9 +241,9 @@ def build_game_state_prompt(state: dict, legal_actions: list[dict]) -> str:
 
     lines = [
         f"=== MTG Game — Turn {turn} | {phase} / {step} ===",
-        f"",
+        "",
         f"SITUATION: {context}",
-        f"",
+        "",
         f"You are: {priority_player}  |  Life: {my_info.get('life', '?')}",
         f"Opponent: {opp_info.get('name', '?')}  |  Life: {opp_info.get('life', '?')}",
         f"Mana pool: {total_mana} available {mana_pool}",

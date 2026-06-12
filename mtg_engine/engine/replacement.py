@@ -9,7 +9,7 @@ import logging
 import uuid
 from typing import Any
 from pydantic import BaseModel, Field
-from mtg_engine.models.game import GameState, Permanent, DamagePreventionEffect
+from mtg_engine.models.game import GameState, DamagePreventionEffect
 
 logger = logging.getLogger(__name__)
 
@@ -270,7 +270,6 @@ def apply_damage_event(
     has_lifelink   = "lifelink" in source_keywords
     has_infect     = "infect" in source_keywords
 
-    from mtg_engine.engine.zones import get_player
 
     # Apply damage to target
     target_perm = next((p for p in game_state.battlefield if p.id == redirect), None)

@@ -1,12 +1,11 @@
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-import time
-from mtg_engine.models.game import GameState, PlayerState, Card, Permanent
+from mtg_engine.models.game import GameState, PlayerState, Card
 from mtg_engine.engine.zones import put_permanent_onto_battlefield
 from mtg_engine.engine.layers import (
     apply_continuous_effects,
-    get_effective_power_toughness,
     ContinuousEffect,
     EffectLayer,
     PTSublayer,

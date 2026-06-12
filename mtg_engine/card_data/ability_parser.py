@@ -1,7 +1,7 @@
 import logging
 import re
 from typing import Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 

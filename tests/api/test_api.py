@@ -2,7 +2,8 @@
 API integration tests using httpx + FastAPI test client.
 Tests TASK-16 through TASK-19.
 """
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 import pytest

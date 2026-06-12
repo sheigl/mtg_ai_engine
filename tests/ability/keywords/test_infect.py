@@ -1,5 +1,4 @@
-import pytest
-from mtg_engine.models.game import Card, GameState, PlayerState, Permanent
+from mtg_engine.models.game import GameState, PlayerState
 from mtg_engine.ability.keywords.infect import (
     InfectKeyword, WitherKeyword, PoisonousKeyword,
 )

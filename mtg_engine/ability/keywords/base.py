@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from mtg_engine.models.game import GameState, Card, Permanent
+    from mtg_engine.models.game import GameState, Permanent
 
 logger = logging.getLogger(__name__)
 

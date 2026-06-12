@@ -1,20 +1,21 @@
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 import time
 import pytest
 from mtg_engine.models.game import (
-    GameState, PlayerState, Card, Permanent, Phase, Step, ManaPool,
-    StackObject, CombatState, AttackerInfo
+    GameState, PlayerState, Card, Phase, Step, ManaPool,
+    StackObject
 )
-from mtg_engine.engine.zones import put_permanent_onto_battlefield, move_permanent_to_zone, draw_card, get_player
+from mtg_engine.engine.zones import put_permanent_onto_battlefield, move_permanent_to_zone, get_player
 from mtg_engine.engine.sba import check_and_apply_sbas
 from mtg_engine.engine.combat import declare_attackers, declare_blockers, assign_combat_damage
 from mtg_engine.engine.stack import cast_spell, resolve_top
 from mtg_engine.engine.layers import apply_continuous_effects, get_effective_power_toughness
 from mtg_engine.engine.replacement import GameEvent, process_event
-from mtg_engine.engine.mana import can_pay_cost, pay_cost, add_mana, ManaPool as _ManaPool
-from mtg_engine.models.actions import AttackDeclaration, BlockDeclaration, DamageAssignment
+from mtg_engine.engine.mana import can_pay_cost, pay_cost
+from mtg_engine.models.actions import AttackDeclaration, BlockDeclaration
 
 
 def _gs(p1_name="p1", p2_name="p2", phase=Phase.PRECOMBAT_MAIN, step=Step.MAIN) -> GameState:
@@ -561,7 +562,7 @@ def test_no_replacement_no_shield():
 # ─── Trigger Tests (46–48) ────────────────────────────────────────────────────
 
 def test_zone_change_listener_fires():
-    from mtg_engine.engine.zones import register_zone_change_listener, move_permanent_to_zone
+    from mtg_engine.engine.zones import register_zone_change_listener
     fired = []
     # Use a unique closure to avoid shared state between test runs
     def make_listener():

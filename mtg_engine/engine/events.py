@@ -8,11 +8,14 @@ Events provide a typed, structured way to communicate game state changes
 to subscribers (trigger detection, logging, AI evaluation, etc.).
 """
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
+
+from mtg_engine.models.game import PendingTrigger
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +48,7 @@ class GameEvent:
     type: EventType = field(init=False)  # Set by __post_init__ in subclasses
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     timestamp: float = field(default_factory=time.time)
+    game_id: str = ""
 
 
 # ─── Zone Change Events ──────────────────────────────────────────────────────
@@ -313,58 +317,130 @@ class EventTriggerBridge:
     When events fire (zone changes, phase changes, damage, etc.),
     this bridge converts them to PendingTrigger entries in GameState
     so that triggered abilities can be queued and resolved normally.
+
+    Each bridge instance is bound to a single game_id. Handlers filter
+    incoming events by game_id to avoid cross-game interference.
     """
 
-    def __init__(self, bus: EventBus | None = None) -> None:
+    def __init__(self, bus: EventBus | None = None, game_id: str = "") -> None:
         self.bus = bus or get_default_bus()
         self._handlers_registered = False
+        self._game_id = game_id
+
+    # ── Life/loss trigger patterns ────────────────────────────────────────
+    _LIFE_GAIN_TRIGGER_RE = re.compile(
+        r"whenever (?:you|a player) gain(?:s)? life", re.IGNORECASE
+    )
+    _LIFE_LOSS_TRIGGER_RE = re.compile(
+        r"whenever (?:you|a player) lose(?:s)? life", re.IGNORECASE
+    )
+    _COUNTER_TRIGGER_RE = re.compile(
+        r"whenever (?:you|a player|a) (?:put|place) (?:a|one|an?) counter",
+        re.IGNORECASE,
+    )
+
+    def _queue_life_triggers(self, gs: Any, player_name: str, delta: int) -> None:
+        """Scan permanents for life-gain/loss triggers and queue PendingTriggers."""
+        from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+        is_gain = delta > 0
+        pattern = self._LIFE_GAIN_TRIGGER_RE if is_gain else self._LIFE_LOSS_TRIGGER_RE
+        for perm in list(gs.battlefield):
+            card = perm.card
+            abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+            for ab in abilities:
+                if not isinstance(ab, TriggeredAbility):
+                    continue
+                if pattern.search(ab.trigger_condition):
+                    is_optional = ab.effect.lower().startswith("you may")
+                    gs.pending_triggers.append(PendingTrigger(
+                        id=str(uuid.uuid4()),
+                        source_permanent_id=perm.id,
+                        controller=perm.controller,
+                        trigger_type="life_change",
+                        effect_description=ab.effect,
+                        source_card_name=card.name,
+                        is_optional=is_optional,
+                    ))
+                    logger.debug("Bridge: life trigger queued from %s", card.name)
+
+    def _queue_counter_triggers(self, gs: Any, counter_type: str, action: str) -> None:
+        """Scan permanents for counter-placed triggers and queue PendingTriggers."""
+        from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+        for perm in list(gs.battlefield):
+            card = perm.card
+            abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+            for ab in abilities:
+                if not isinstance(ab, TriggeredAbility):
+                    continue
+                if self._COUNTER_TRIGGER_RE.search(ab.trigger_condition):
+                    is_optional = ab.effect.lower().startswith("you may")
+                    gs.pending_triggers.append(PendingTrigger(
+                        id=str(uuid.uuid4()),
+                        source_permanent_id=perm.id,
+                        controller=perm.controller,
+                        trigger_type="counter",
+                        effect_description=ab.effect,
+                        source_card_name=card.name,
+                        is_optional=is_optional,
+                    ))
+                    logger.debug("Bridge: counter trigger queued from %s", card.name)
 
     def register(self, game_state: Any) -> None:
         """Register event handlers on the bus that feed into game_state."""
         if self._handlers_registered:
             return
 
-        # Zone change handler - detects ETB, GTC, etc.
-        def _on_zone_change(event: GameEvent) -> None:
-            if not isinstance(event, ZoneChangeEvent):
-                return
-            logger.debug("Bridge: zone change %s -> %s (%s)",
-                         event.from_zone, event.to_zone, event.card_name)
-
-        # Phase change handler - detects step-based triggers
-        def _on_phase_change(event: GameEvent) -> None:
-            if not isinstance(event, PhaseChangeEvent):
-                return
-            logger.debug("Bridge: phase change %s/%s (%s)",
-                         event.phase, event.step, event.player)
-
-        # Damage handler - detects damage-based triggers
-        def _on_damage(event: GameEvent) -> None:
-            if not isinstance(event, DamageDealtEvent):
-                return
-            logger.debug("Bridge: damage dealt %d to %s",
-                         event.damage_amount, event.target_id)
-
-        # Life change handler - detects life-based triggers
+        # Life change handler - queue life-gain/loss triggers
         def _on_life_change(event: GameEvent) -> None:
             if not isinstance(event, LifeChangedEvent):
                 return
-            logger.debug("Bridge: life changed %d -> %d (%s)",
-                         event.old_life, event.new_life, event.player)
+            if self._game_id and event.game_id != self._game_id:
+                return
+            self._queue_life_triggers(
+                game_state, event.player, event.change_amount
+            )
 
-        # Counter handler - detects counter-based triggers
+        # Counter handler - queue counter-placed triggers
         def _on_counter(event: GameEvent) -> None:
             if not isinstance(event, CounterPlacedEvent):
                 return
-            logger.debug("Bridge: counter %s x%d on %s (%s)",
-                         event.counter_type, event.count,
-                         event.permanent_id, event.action)
+            if self._game_id and event.game_id != self._game_id:
+                return
+            self._queue_counter_triggers(
+                game_state, event.counter_type, event.action
+            )
 
-        self.bus.subscribe(EventType.ZONE_CHANGE, _on_zone_change)
-        self.bus.subscribe(EventType.PHASE_CHANGE, _on_phase_change)
-        self.bus.subscribe(EventType.DAMAGE_DEALT, _on_damage)
+        # Damage handler - forward to existing damage trigger check
+        def _on_damage(event: GameEvent) -> None:
+            if not isinstance(event, DamageDealtEvent):
+                return
+            if self._game_id and event.game_id != self._game_id:
+                return
+            _run_damage_triggers(game_state, event)
+
+        # Zone change handler - forward to existing zone-change trigger detection
+        def _on_zone_change(event: GameEvent) -> None:
+            if not isinstance(event, ZoneChangeEvent):
+                return
+            if self._game_id and event.game_id != self._game_id:
+                return
+            _run_zone_change_triggers(game_state, event)
+
+        # Phase change handler - forward to existing phase trigger detection
+        def _on_phase_change(event: GameEvent) -> None:
+            if not isinstance(event, PhaseChangeEvent):
+                return
+            if self._game_id and event.game_id != self._game_id:
+                return
+            _run_phase_triggers(game_state, event)
+
         self.bus.subscribe(EventType.LIFE_CHANGED, _on_life_change)
         self.bus.subscribe(EventType.COUNTER_PLACED, _on_counter)
+        self.bus.subscribe(EventType.DAMAGE_DEALT, _on_damage)
+        self.bus.subscribe(EventType.ZONE_CHANGE, _on_zone_change)
+        self.bus.subscribe(EventType.PHASE_CHANGE, _on_phase_change)
 
         self._handlers_registered = True
 
@@ -372,10 +448,56 @@ class EventTriggerBridge:
         """Remove all registered handlers from the bus."""
         if not self._handlers_registered:
             return
-        # Collect handlers to avoid modifying dict during iteration
         handlers_to_remove = set()
         for et in EventType:
             handlers_to_remove.update(self.bus.get_listeners(et))
         for handler in handlers_to_remove:
             self.bus.unsubscribe_all(handler)
         self._handlers_registered = False
+
+
+# ─── Bridge helper functions (call existing trigger detection) ─────────────
+
+def _run_zone_change_triggers(gs: Any, event: ZoneChangeEvent) -> None:
+    """
+    Convert a typed ZoneChangeEvent into the legacy dict-based event
+    and delegate to the existing trigger detection in triggers.py.
+    """
+    from mtg_engine.engine.triggers import _on_zone_change as legacy_zone_change
+    legacy_event = {
+        "card_id": event.card_id,
+        "card_name": event.card_name,
+        "from_zone": event.from_zone,
+        "to_zone": event.to_zone,
+        "player": event.player,
+        "is_token": event.is_token,
+    }
+    legacy_zone_change(legacy_event, gs)
+
+
+def _run_phase_triggers(gs: Any, event: PhaseChangeEvent) -> None:
+    """
+    Delegate phase-change events to the existing check_phase_triggers.
+    """
+    from mtg_engine.engine.triggers import check_phase_triggers
+    check_phase_triggers(gs)
+
+
+def _run_damage_triggers(gs: Any, event: DamageDealtEvent) -> None:
+    """
+    Delegate damage events to the existing check_damage_triggers.
+    Builds a minimal assignment list from the event.
+    """
+    from mtg_engine.engine.triggers import check_damage_triggers
+    from mtg_engine.models.actions import DamageAssignment
+
+    if not event.damage_amount:
+        return
+    assignments = [
+        DamageAssignment(
+            source_id=event.source_id,
+            target_id=event.target_id,
+            damage=event.damage_amount,
+        )
+    ]
+    check_damage_triggers(gs, assignments)

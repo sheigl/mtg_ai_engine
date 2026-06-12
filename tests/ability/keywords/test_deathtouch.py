@@ -1,5 +1,4 @@
-import pytest
-from mtg_engine.models.game import Card, GameState, PlayerState, Permanent
+from mtg_engine.models.game import Card, Permanent
 from mtg_engine.ability.keywords.deathtouch import Deathtouch
 
 

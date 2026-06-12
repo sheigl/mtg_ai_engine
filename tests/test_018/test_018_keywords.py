@@ -7,7 +7,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from mtg_engine.models.game import GameState, Phase, Step, PlayerState, Card, ManaPool
-from mtg_engine.engine.stack import cast_spell, resolve_top
+from mtg_engine.engine.stack import cast_spell
 from mtg_engine.engine.zones import put_permanent_onto_battlefield
 
 
@@ -119,7 +119,6 @@ def test_suspend_moves_to_suspended_cards():
     )
     gs.players[0].hand.append(suspend_card)
     # Use the suspend action via the router endpoint logic
-    from mtg_engine.api.routers.game import _compute_legal_actions
     actions = _legal_actions(gs)
     # Verify suspend card logic exists in engine
     assert suspend_card in gs.players[0].hand
@@ -194,7 +193,6 @@ def test_unearthed_permanent_has_flag():
     gs.players[0].mana_pool = ManaPool(B=1)
     # Use special_action for unearth (it comes from graveyard, not hand)
     # Simulate the unearth by putting the card on the battlefield via zones
-    from mtg_engine.engine.zones import put_permanent_onto_battlefield
     gs, unearthed_perm = put_permanent_onto_battlefield(gs, unearth_card, "p1")
     unearthed_perm.unearthed = True
     # Verify the unearthed flag is set

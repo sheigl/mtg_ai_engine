@@ -3,7 +3,6 @@
 Mutate allows casting a creature for its mutate cost targeting a non-Human creature.
 The mutating creature merges with the target.
 """
-import pytest
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))

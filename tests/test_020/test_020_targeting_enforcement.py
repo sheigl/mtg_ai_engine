@@ -15,7 +15,7 @@ CR References:
 - CR 702.16: Protection
 """
 import pytest
-from mtg_engine.models.game import GameState, PlayerState, Permanent, Card
+from mtg_engine.models.game import Permanent, Card
 # set_priority not needed for these tests
 
 

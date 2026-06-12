@@ -5,8 +5,8 @@ CR 613: applied in layer order 1–7, timestamp within layer, dependency overrid
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable
-from mtg_engine.models.game import Card, GameState, Permanent
+from typing import Callable
+from mtg_engine.models.game import GameState, Permanent
 
 logger = logging.getLogger(__name__)
 

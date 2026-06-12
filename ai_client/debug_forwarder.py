@@ -3,7 +3,6 @@ HTTP helper that forwards AI prompt/response debug entries to the engine.
 Feature 011-observer-ai-commentary.
 """
 import logging
-import time
 import uuid
 
 import httpx

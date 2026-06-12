@@ -1,8 +1,9 @@
 import hashlib
 import uuid
 from enum import Enum
-from typing import Optional, Any
+from typing import Optional
 from pydantic import BaseModel, Field
+from mtg_engine.models.dungeon import DungeonProgress
 
 
 class DamageModifier(BaseModel):
@@ -320,9 +321,11 @@ class GameState(BaseModel):
     block_constraints: list[BlockConstraint] = Field(default_factory=list)
     prevent_all_combat_damage: bool = False
     phase_skip_flags: dict[str, bool] = Field(default_factory=dict)
+    _explicit_phase_skip_done: bool = False
     debug_enabled: bool = False
     # Mulligan phase (017-forge-ai-parity)
     mulligan_phase_active: bool = False
+    mulligan_variant: str = "london"  # london, vancouver, paris, original
     hands_mulliganed: dict[str, int] = Field(default_factory=dict)
     players_kept: list[str] = Field(default_factory=list)
     # Cascade pending choice (017-forge-ai-parity)
@@ -332,6 +335,8 @@ class GameState(BaseModel):
     # Spree mechanic choice (036-spree)
     pending_spree_choice: Optional[dict] = None
     # Format: {"player": str, "card_id": str, "card_name": str, "modes": [{"cost": str, "effect": str}]}
+    pending_spree_effects: list[dict] = Field(default_factory=list)
+    # Format: [{"effect": str, "card_id": str}] — stores selected spree mode effects for resolution
     # Format: {"player": str, "cards": [Card], "n": int}
     pending_surveil_choice: Optional[dict] = None
     # Format: {"player": str, "cards": [Card], "n": int}
@@ -367,6 +372,11 @@ class GameState(BaseModel):
     pending_morph_payment: Optional[dict] = None
     # US27: Echo payment
     pending_echo_payment: Optional[dict] = None
+    # MON-01: The Monarch
+    monarch: Optional[str] = None
+    # VEN-01: Venture into the Dungeon tracking
+    player_dungeons: dict[str, DungeonProgress] = Field(default_factory=dict)
+    player_completed_dungeons: dict[str, int] = Field(default_factory=dict)
     # ETB choice (034-etb-choices): shockland, checkland, fetchland, snow dual
     # Format: {"player": str, "permanent_id": str, "permanent_name": str, 
     #         "choice_type": str, "cost_amount": int, "cost_type": str,

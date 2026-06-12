@@ -1,6 +1,6 @@
 import re
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 def parse_overload_cost(oracle_text: str) -> Optional[str]:

@@ -15,8 +15,8 @@ CR References:
 - CR 704.5n: Equipment unattached → stays on battlefield
 """
 import pytest
-from mtg_engine.models.game import GameState, PlayerState, Permanent, Card
-from mtg_engine.engine.sba import check_and_apply_sbas, SBAEvent
+from mtg_engine.models.game import Permanent, Card
+from mtg_engine.engine.sba import check_and_apply_sbas
 # set_priority not needed for these tests
 
 

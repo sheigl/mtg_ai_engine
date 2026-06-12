@@ -1,5 +1,4 @@
 """Game action endpoints. REQ-API01–REQ-API05."""
-import copy
 import logging
 from typing import Any
 from fastapi import APIRouter, HTTPException
@@ -13,16 +12,14 @@ from mtg_engine.models.actions import (
     DeclareAttackersRequest, DeclareBlockersRequest, OrderBlockersRequest,
     AssignCombatDamageRequest, ChoiceRequest, PassRequest,
     PutTriggerRequest, SpecialActionRequest,
-    MulliganRequest, ActivateLoyaltyRequest, CascadeChoiceRequest,
-    LegalAction, LegalActionsResponse, ErrorResponse,
-    ForetellRequest,
+    LegalAction, ForetellRequest,
 )
 from mtg_engine.engine.sba import check_and_apply_sbas
 from mtg_engine.engine.turn_manager import pass_priority
-from mtg_engine.engine.stack import cast_spell, resolve_top
-from mtg_engine.engine.zones import get_player, move_card_to_zone, put_permanent_onto_battlefield
+from mtg_engine.engine.stack import cast_spell
+from mtg_engine.engine.zones import get_player, put_permanent_onto_battlefield
 from mtg_engine.engine.combat import (
-    declare_attackers, declare_blockers, order_blockers, assign_combat_damage, end_combat
+    declare_attackers, declare_blockers, order_blockers, assign_combat_damage
 )
 from mtg_engine.engine.triggers import put_trigger_on_stack
 from mtg_engine.card_data.deck_loader import load_deck, load_commander_deck
@@ -942,7 +939,7 @@ def cycle(game_id: str, req: CastRequest) -> dict:
         raise _err(f"{card.name} doesn't have cycling", "INVALID_ACTION")
 
     cycling_cost = cycling_match.group(1)
-    from mtg_engine.engine.mana import can_pay_cost, is_mana_ability
+    from mtg_engine.engine.mana import can_pay_cost
     if not can_pay_cost(player.mana_pool, cycling_cost):
         raise _err(f"Cannot pay cycling cost {cycling_cost}", "INVALID_ACTION")
 
@@ -1451,8 +1448,6 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
                 for c in scry_cards:
                     if c.get("id") == selected_id:
                         # Create a Card object for it
-                        from mtg_engine.models.game import Card
-                        from mtg_engine.models.game import Card as _Card
                         
                         # Try to find in library by name (simplified)
                         lib_top = player.library[:n]
@@ -1551,8 +1546,11 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
                             player.mana_pool = _pc_spree(player.mana_pool, spree_cost, payment)
                             logger.info("Spree: paid additional %s for mode", spree_cost)
                     
-                    # Store selected mode for effect resolution
-                    gs.pending_spree_choice["selected_mode"] = selected
+                    # Store selected mode effect for resolution on the stack
+                    gs.pending_spree_effects.append({
+                        "effect": selected.get("effect", ""),
+                        "card_id": gs.pending_spree_choice.get("card_id", ""),
+                    })
                     gs.pending_spree_choice = None
                     mgr.update(game_id, gs)
                     return _ok(gs)
@@ -1710,7 +1708,7 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
                 is_winternight = gs.pending_discard_choice.get("is_winternight_stories", False)
                 
                 if selected_id:
-                    from mtg_engine.engine.zones import get_player as _get_player_draw, draw_card as _draw_card
+                    from mtg_engine.engine.zones import get_player as _get_player_draw
                     player_name = gs.pending_discard_choice.get("player", gs.priority_holder)
                     player = _get_player_draw(gs, player_name)
                     if player:
@@ -2051,7 +2049,6 @@ def resume_game(game_id: str) -> dict:
 @router.post("/{game_id}/copy-spell")
 def copy_spell(game_id: str, req) -> dict:
     """POST /game/{game_id}/copy-spell — Copy a spell on the stack. US7 (014)."""
-    from mtg_engine.models.actions import CopySpellRequest
     from mtg_engine.engine.stack import copy_spell_on_stack
     if not isinstance(req, dict):
         req = req.model_dump() if hasattr(req, "model_dump") else {}
@@ -2080,7 +2077,9 @@ def copy_spell(game_id: str, req) -> dict:
 
 @router.post("/{game_id}/mulligan")
 def mulligan(game_id: str, req: dict) -> dict:
-    """POST /game/{game_id}/mulligan — London mulligan decision."""
+    """POST /game/{game_id}/mulligan — Mulligan decision (any variant)."""
+    from mtg_engine.engine.mulligan import apply_mulligan, get_mulligan_type
+
     gs = _get_gs(game_id)
 
     player_name = req.get("player_name", "")
@@ -2097,28 +2096,20 @@ def mulligan(game_id: str, req: dict) -> dict:
         raise _err(f"{player_name} has already committed to their hand", "ALREADY_KEPT")
 
     hand_size = len(player.hand)
+    if not keep and hand_size <= 1:
+        raise _err("Hand already at minimum size", "HAND_TOO_SMALL")
 
-    if keep or hand_size <= 5:
-        if player_name not in gs.players_kept:
-            gs.players_kept.append(player_name)
-    else:
-        if hand_size <= 1:
-            raise _err("Hand already at minimum size", "HAND_TOO_SMALL")
-        import random as _rand
-        player.library = list(player.hand) + list(player.library)
-        _rand.shuffle(player.library)
-        new_size = hand_size - 1
-        player.hand = player.library[:new_size]
-        player.library = player.library[new_size:]
-        gs.hands_mulliganed[player_name] = gs.hands_mulliganed.get(player_name, 0) + 1
+    mull_type = get_mulligan_type(gs)
 
-    if all(p.name in gs.players_kept for p in gs.players):
-        gs.mulligan_phase_active = False
+    try:
+        gs = apply_mulligan(gs, player_name, keep, mull_type)
+    except ValueError as exc:
+        raise _err(str(exc), "MULLIGAN_ERROR")
 
     mgr = get_manager()
     mgr.update(game_id, gs)
     return {
-        "kept": keep or hand_size <= 5,
+        "kept": keep or hand_size <= 1,
         "new_hand_size": len(player.hand),
         "hand": [c.model_dump() for c in player.hand],
     }
@@ -2292,7 +2283,7 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
             # Player chooses one card to put into hand, rest go to bottom
             actions.append(LegalAction(
                 action_type="choice",
-                description=f"Choose a card to put in your hand",
+                description="Choose a card to put in your hand",
                 valid_targets=card_ids,
                 card_name="reveal_put_hand",
             ))

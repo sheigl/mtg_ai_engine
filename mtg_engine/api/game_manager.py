@@ -139,6 +139,18 @@ class GameManager:
         gs.refresh_hash()
         self._games[game_id] = gs
 
+        # Wire legacy zone-change triggers for death/ETB detection
+        from mtg_engine.engine.triggers import initialize_triggers
+        initialize_triggers(gs)
+
+        # Wire EventBus bridge for life-change, counter, damage events
+        try:
+            from mtg_engine.engine.events import EventTriggerBridge, get_default_bus
+            bridge = EventTriggerBridge(get_default_bus(), game_id=game_id)
+            bridge.register(gs)
+        except Exception:
+            logger.debug("EventBus bridge not available", exc_info=True)
+
         # Use the export store's transcript so GET /export/{id}/transcript sees all events
         store = get_export_store(game_id)
         recorder = store.transcript

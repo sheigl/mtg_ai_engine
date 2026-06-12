@@ -12,7 +12,6 @@ REQ-R01: 500 on internal rules engine error
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -201,7 +200,7 @@ def delete_imported_deck(deck_id: str) -> dict:
 @router.get("/metagame")
 def list_metagame_decks(format: str = "standard") -> dict:
     """GET /deck/metagame?format=standard — list cached MTGGoldfish decks."""
-    from mtg_engine.card_data.mtggoldfish import get_decks_for_format, MetagameDeck
+    from mtg_engine.card_data.mtggoldfish import get_decks_for_format
     decks = get_decks_for_format(format.lower())
     return {
         "data": [

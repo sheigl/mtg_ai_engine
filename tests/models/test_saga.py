@@ -1,10 +1,9 @@
-import pytest
 from mtg_engine.models.saga import (
     parse_chapters_from_oracle, get_final_chapter, get_chapter_text,
     SagaModel,
 )
 from mtg_engine.models.card_type import (
-    EnchantmentSubtype, CardType, parse_type_line,
+    EnchantmentSubtype, parse_type_line,
 )
 
 

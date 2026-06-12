@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from mtg_engine.models.game import GameState, Permanent, Card
-    from mtg_engine.card_data.ability_parser import LoyaltyAbility
 
 logger = logging.getLogger(__name__)
 

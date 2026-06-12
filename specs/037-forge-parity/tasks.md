@@ -409,46 +409,46 @@ Additional high-value keywords missing (from SPEC.md):
 - **Acceptance**: InfectKeyword with has_infect() and from_oracle_text(); WitherKeyword with similar methods; PoisonousKeyword with parse and apply; infect damage to creatures as -1/-1 counters already implemented in combat/core.py and replacement.py; poison counters and SBA already implemented
 - **Dependency**: KW-06
 
-#### KW-10: Lifelink Enhancement
-- **Description**: Ensure lifelink works properly
+#### KW-10: Lifelink Enhancement ✅
+- **Description**: Ensure lifelink works properly (CR 702.15)
 - **Files**: `mtg_engine/ability/keywords/lifelink.py`
-- **Tests**: `tests/ability/keywords/test_lifelink.py`
-- **Acceptance**: Lifelink works
+- **Tests**: `tests/ability/keywords/test_lifelink.py` (10 tests, all passing)
+- **Acceptance**: Lifelink keyword class with has_lifelink(), from_oracle_text(), apply_lifelink_gain(); combat integration verified
 - **Dependency**: KW-01
 
-#### KW-11: Deathtouch Enhancement
-- **Description**: Ensure deathtouch works properly
+#### KW-11: Deathtouch Enhancement ✅
+- **Description**: Ensure deathtouch works properly (CR 702.2)
 - **Files**: `mtg_engine/ability/keywords/deathtouch.py`
-- **Tests**: `tests/ability/keywords/test_deathtouch.py`
-- **Acceptance**: Deathtouch works
+- **Tests**: `tests/ability/keywords/test_deathtouch.py` (12 tests, all passing)
+- **Acceptance**: Deathtouch keyword class with has_deathtouch(), from_oracle_text(), is_lethal(), min_lethal_damage(); SBA tracking integration verified
 - **Dependency**: KW-01
 
-#### KW-12: Reach Enhancement
-- **Description**: Ensure reach works (flying vs reach)
+#### KW-12: Reach Enhancement ✅
+- **Description**: Ensure reach works (flying vs reach, CR 702.160)
 - **Files**: `mtg_engine/ability/keywords/reach.py`
-- **Tests**: `tests/ability/keywords/test_reach.py`
-- **Acceptance**: Reach works
+- **Tests**: `tests/ability/keywords/test_reach.py` (12 tests, all passing)
+- **Acceptance**: Reach keyword class with has_reach(), from_oracle_text(), can_block_flying(); blocking rules integration verified
 - **Dependency**: KW-01
 
-#### KW-13: Menace Enhancement
-- **Description**: Ensure menace works
+#### KW-13: Menace Enhancement ✅
+- **Description**: Ensure menace works (CR 702.45)
 - **Files**: `mtg_engine/ability/keywords/menace.py`
-- **Tests**: `tests/ability/keywords/test_menace.py`
-- **Acceptance**: Menace works
+- **Tests**: `tests/ability/keywords/test_menace.py` (14 tests, all passing)
+- **Acceptance**: Menace keyword class with has_menace(), from_oracle_text(), min_blockers(), is_block_legal(); blocking rules integration verified
 - **Dependency**: KW-01, CMB-02
 
-#### KW-14: Hexproof Enhancement
-- **Description**: Ensure hexproof works
+#### KW-14: Hexproof Enhancement ✅
+- **Description**: Ensure hexproof works (CR 702.15)
 - **Files**: `mtg_engine/ability/keywords/hexproof.py`
-- **Tests**: `tests/ability/keywords/test_hexproof.py`
-- **Acceptance**: Hexproof works
+- **Tests**: `tests/ability/keywords/test_hexproof.py` (13 tests, all passing)
+- **Acceptance**: Hexproof keyword class with has_hexproof(), from_oracle_text(), can_be_targeted(); targeting rules integration verified
 - **Dependency**: KW-01
 
-#### KW-15: Shroud Enhancement
-- **Description**: Ensure shroud works
+#### KW-15: Shroud Enhancement ✅
+- **Description**: Ensure shroud works (CR 702.36)
 - **Files**: `mtg_engine/ability/keywords/shroud.py`
-- **Tests**: `tests/ability/keywords/test_shroud.py`
-- **Acceptance**: Shroud works  
+- **Tests**: `tests/ability/keywords/test_shroud.py` (13 tests, all passing)
+- **Acceptance**: Shroud keyword class with has_shroud(), from_oracle_text(), can_be_targeted(); targeting rules integration verified; hexproof vs shroud distinction tested
 - **Dependency**: KW-01
 
 ---

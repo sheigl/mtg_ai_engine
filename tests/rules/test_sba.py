@@ -3,7 +3,7 @@ import os
 import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-from mtg_engine.models.game import GameState, Phase, Step, PlayerState, Card, Permanent
+from mtg_engine.models.game import GameState, PlayerState, Card
 from mtg_engine.engine.sba import check_and_apply_sbas
 from mtg_engine.engine.zones import put_permanent_onto_battlefield, draw_card
 
