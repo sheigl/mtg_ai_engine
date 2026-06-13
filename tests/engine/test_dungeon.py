@@ -36,13 +36,14 @@ class TestDungeonModels:
         assert room.ability == "Scry 1"
 
     def test_dungeon_total_rooms(self):
-        assert len(ALL_DUNGEONS) == 3
+        assert len(ALL_DUNGEONS) == 4
 
     def test_dungeon_names(self):
         names = {d.name for d in ALL_DUNGEONS}
         assert names == {"Dungeon of the Mad Mage",
                          "Lost Mine of Phandelver",
-                         "Tomb of Annihilation"}
+                         "Tomb of Annihilation",
+                         "Undercity"}
 
     def test_dungeon_by_name(self):
         dungeon = DUNGEON_MAP["Lost Mine of Phandelver"]
@@ -127,4 +128,4 @@ class TestVenture:
         names = get_available_dungeons()
         assert "Lost Mine of Phandelver" in names
         assert "Tomb of Annihilation" in names
-        assert len(names) == 3
+        assert len(names) == 4

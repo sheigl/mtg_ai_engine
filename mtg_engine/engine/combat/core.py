@@ -662,6 +662,11 @@ def assign_combat_damage(
                             game_state = check_combat_damage_monarch(
                                 game_state, player.name, source.controller
                             )
+                            # INT-01: Combat damage to initiative holder transfers initiative
+                            from mtg_engine.engine.initiative import check_combat_damage_initiative
+                            game_state = check_combat_damage_initiative(
+                                game_state, player.name, source.controller
+                            )
                         break
 
         # Lifelink: source controller gains life (REQ-R11)

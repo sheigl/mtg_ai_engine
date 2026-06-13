@@ -145,6 +145,76 @@ MANA_PRODUCTION_TRIGGER_PATTERNS = [
     _re.compile(r"whenever a source you control adds mana", _re.IGNORECASE),
 ]
 
+# ─── B1: Missing Trigger Categories (Sprint 3) ──────────────────────────────
+
+# Sacrifice triggers — e.g. [[Zulaport Cutthroat]]
+SACRIFICE_TRIGGER_PATTERNS = [
+    _re.compile(r"whenever (?:a|an) (.*?) you control is sacrificed", _re.IGNORECASE),
+    _re.compile(r"whenever you sacrifice (?:a|an) (.*?)(?:,|\.|\?|$)", _re.IGNORECASE),
+    _re.compile(r"whenever a player sacrifices (?:a|an) (.*?)(?:,|\.|\?|$)", _re.IGNORECASE),
+]
+
+# Life gain/loss triggers — e.g. [[Karametra's Blessing]], [[Geth's Grimoire]]
+LIFE_GAIN_LOST_TRIGGER_PATTERNS = [
+    _re.compile(r"whenever you (?:gain|lose) life", _re.IGNORECASE),
+    _re.compile(r"whenever a player (?:gains|loses) life", _re.IGNORECASE),
+    _re.compile(r"whenever (?:(?:a|an) )?(.*?)(?:,|\.|\?|$) gains life", _re.IGNORECASE),
+]
+
+# Fight triggers — e.g. [[Ulvenwald Tracker]]
+FIGHT_TRIGGER_PATTERNS = [
+    _re.compile(r"whenever (?:this|~|this creature) fights", _re.IGNORECASE),
+    _re.compile(r"whenever a creature you control fights", _re.IGNORECASE),
+]
+
+# Proliferated triggers — e.g. [[Flux Channeler]]
+PROLIFERATED_TRIGGER_PATTERNS = [
+    _re.compile(r"whenever you proliferate", _re.IGNORECASE),
+    _re.compile(r"whenever a player proliferates", _re.IGNORECASE),
+]
+
+# Transformed triggers — e.g. [[Jace, Vryn's Prodigy]], [[Tovolar's Huntmaster]]
+TRANSFORMED_TRIGGER_PATTERNS = [
+    _re.compile(r"whenever (?:this|~) transforms", _re.IGNORECASE),
+    _re.compile(r"whenever a double-faced card you control transforms", _re.IGNORECASE),
+]
+
+# Library search/tutor triggers — e.g. [[Psychogenic Probe]]
+TUTOR_TRIGGER_PATTERNS = [
+    _re.compile(r"whenever you search (?:your|a player's) library", _re.IGNORECASE),
+    _re.compile(r"whenever a player searches (?:their|his|her) library", _re.IGNORECASE),
+]
+
+# Becomes target triggers — e.g. [[Shiny Impetus]]
+BECOMES_TARGET_TRIGGER_PATTERNS = [
+    _re.compile(r"whenever (?:this|~|this creature) becomes the target of a spell or ability", _re.IGNORECASE),
+    _re.compile(r"whenever (?:a|an) (.*?) you control becomes the target of a spell", _re.IGNORECASE),
+]
+
+# Attached/unattach triggers — e.g. [[Sun Titan]] returning auras
+ATTACH_TRIGGER_PATTERNS = [
+    _re.compile(r"whenever this becomes attached to another permanent", _re.IGNORECASE),
+    _re.compile(r"whenever an aura you control becomes unattached", _re.IGNORECASE),
+]
+
+# Day/night change triggers — e.g. [[Tovolar's Huntmaster]]
+DAY_NIGHT_CHANGE_TRIGGER_PATTERNS = [
+    _re.compile(r"whenever day becomes night", _re.IGNORECASE),
+    _re.compile(r"whenever night becomes day", _re.IGNORECASE),
+]
+
+# Completed dungeon triggers — e.g. [[Hama Pashar]]
+COMPLETED_DUNGEON_TRIGGER_PATTERNS = [
+    _re.compile(r"whenever you complete (?:a|an) (.*?)(?:,|\.|\?|$)", _re.IGNORECASE),
+    _re.compile(r"whenever a player completes (?:a|an) dungeon", _re.IGNORECASE),
+]
+
+# Mana spent triggers — e.g. [[Karametra's Blessing]] for mana value paid
+MANA_SPENT_TRIGGER_PATTERNS = [
+    _re.compile(r"whenever you spend mana", _re.IGNORECASE),
+    _re.compile(r"whenever a player spends mana", _re.IGNORECASE),
+]
+
 # Combined trigger dictionary
 TRIGGER_PATTERNS = {
     "cast": CAST_TRIGGER_PATTERNS,
@@ -166,6 +236,18 @@ TRIGGER_PATTERNS = {
     "planeswalk": PLANESWALK_TRIGGER_PATTERNS,
     "face_up": FACE_UP_TRIGGER_PATTERNS,
     "mana_production": MANA_PRODUCTION_TRIGGER_PATTERNS,
+    # B1: Missing trigger categories (Sprint 3)
+    "sacrifice": SACRIFICE_TRIGGER_PATTERNS,
+    "life_gain_lost": LIFE_GAIN_LOST_TRIGGER_PATTERNS,
+    "fight": FIGHT_TRIGGER_PATTERNS,
+    "proliferated": PROLIFERATED_TRIGGER_PATTERNS,
+    "transformed": TRANSFORMED_TRIGGER_PATTERNS,
+    "tutor": TUTOR_TRIGGER_PATTERNS,
+    "becomes_target": BECOMES_TARGET_TRIGGER_PATTERNS,
+    "attach": ATTACH_TRIGGER_PATTERNS,
+    "day_night_change": DAY_NIGHT_CHANGE_TRIGGER_PATTERNS,
+    "completed_dungeon": COMPLETED_DUNGEON_TRIGGER_PATTERNS,
+    "mana_spent": MANA_SPENT_TRIGGER_PATTERNS,
 }
 
 
@@ -400,6 +482,418 @@ def check_damage_triggers(
 
     if not damaging_perm_ids:
         return game_state
+
+    # Check monarch combat damage transfer
+    from mtg_engine.engine.monarch import check_combat_damage_monarch
+    game_state = check_combat_damage_monarch(game_state, damaging_perm_ids)
+
+    # Check initiative combat damage transfer
+    from mtg_engine.engine.initiative import check_combat_damage_initiative
+    game_state = check_combat_damage_initiative(game_state, damaging_perm_ids)
+
+    for perm in game_state.battlefield:
+        if perm.id not in damaging_perm_ids:
+            continue
+        card = perm.card
+        abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+        for ab in abilities:
+            if not isinstance(ab, TriggeredAbility):
+                continue
+            cond = ab.trigger_condition.lower()
+            for pattern in DAMAGE_TRIGGER_PATTERNS:
+                if pattern.search(cond):
+                    is_optional = ab.effect.lower().startswith("you may")
+                    trigger = PendingTrigger(
+                        id=str(uuid.uuid4()),
+                        source_permanent_id=perm.id,
+                        controller=perm.controller,
+                        trigger_type="damage_dealt",
+                        effect_description=ab.effect,
+                        source_card_name=card.name,
+                        is_optional=is_optional,
+                    )
+                    game_state.pending_triggers.append(trigger)
+                    logger.debug(
+                        "Damage dealt trigger queued: %r from %s (controller: %s)",
+                        ab.trigger_condition, card.name, perm.controller,
+                    )
+                    break
+
+    return game_state
+
+
+# ─── B1: Check Functions for Missing Trigger Categories (Sprint 3) ──────────────
+
+def check_sacrifice_triggers(
+    game_state: GameState,
+    sacrificed_perm_ids: list[str],
+    controller: str,
+) -> GameState:
+    """Check for "whenever a creature you control is sacrificed" triggers."""
+    from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    for perm in game_state.battlefield:
+        card = perm.card
+        abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+        for ab in abilities:
+            if not isinstance(ab, TriggeredAbility):
+                continue
+            cond = ab.trigger_condition.lower()
+            for pattern in SACRIFICE_TRIGGER_PATTERNS:
+                if pattern.search(cond):
+                    is_optional = ab.effect.lower().startswith("you may")
+                    trigger = PendingTrigger(
+                        id=str(uuid.uuid4()),
+                        source_permanent_id=perm.id,
+                        controller=perm.controller,
+                        trigger_type="sacrifice",
+                        effect_description=ab.effect,
+                        source_card_name=card.name,
+                        is_optional=is_optional,
+                    )
+                    game_state.pending_triggers.append(trigger)
+                    logger.debug("Sacrifice trigger queued: %r from %s", ab.trigger_condition, card.name)
+                    break
+
+    return game_state
+
+
+def check_life_gain_lost_triggers(
+    game_state: GameState,
+    player_name: str,
+    amount: int,
+) -> GameState:
+    """Check for "whenever you gain/lose life" triggers."""
+    from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    for perm in game_state.battlefield:
+        card = perm.card
+        abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+        for ab in abilities:
+            if not isinstance(ab, TriggeredAbility):
+                continue
+            cond = ab.trigger_condition.lower()
+            for pattern in LIFE_GAIN_LOST_TRIGGER_PATTERNS:
+                if pattern.search(cond):
+                    is_optional = ab.effect.lower().startswith("you may")
+                    trigger = PendingTrigger(
+                        id=str(uuid.uuid4()),
+                        source_permanent_id=perm.id,
+                        controller=perm.controller,
+                        trigger_type="life_gain_lost",
+                        effect_description=ab.effect,
+                        source_card_name=card.name,
+                        is_optional=is_optional,
+                    )
+                    game_state.pending_triggers.append(trigger)
+                    logger.debug("Life gain/lost trigger queued: %r from %s", ab.trigger_condition, card.name)
+                    break
+
+    return game_state
+
+
+def check_fight_triggers(
+    game_state: GameState,
+    fighter_ids: list[str],
+) -> GameState:
+    """Check for "whenever this creature fights" triggers."""
+    from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    for perm in game_state.battlefield:
+        card = perm.card
+        abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+        for ab in abilities:
+            if not isinstance(ab, TriggeredAbility):
+                continue
+            cond = ab.trigger_condition.lower()
+            # "this creature fights" only fires if this perm is a fighter
+            is_this_trigger = bool(_re.compile(r"whenever (?:this(?:\s+creature)?|~) fights", _re.IGNORECASE).search(cond))
+            if is_this_trigger and perm.id not in fighter_ids:
+                continue
+            for pattern in FIGHT_TRIGGER_PATTERNS:
+                if pattern.search(cond):
+                    is_optional = ab.effect.lower().startswith("you may")
+                    trigger = PendingTrigger(
+                        id=str(uuid.uuid4()),
+                        source_permanent_id=perm.id,
+                        controller=perm.controller,
+                        trigger_type="fight",
+                        effect_description=ab.effect,
+                        source_card_name=card.name,
+                        is_optional=is_optional,
+                    )
+                    game_state.pending_triggers.append(trigger)
+                    logger.debug("Fight trigger queued: %r from %s", ab.trigger_condition, card.name)
+                    break
+
+    return game_state
+
+
+def check_proliferated_triggers(
+    game_state: GameState,
+    player_name: str,
+) -> GameState:
+    """Check for "whenever you proliferate" triggers."""
+    from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    for perm in game_state.battlefield:
+        card = perm.card
+        abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+        for ab in abilities:
+            if not isinstance(ab, TriggeredAbility):
+                continue
+            cond = ab.trigger_condition.lower()
+            for pattern in PROLIFERATED_TRIGGER_PATTERNS:
+                if pattern.search(cond):
+                    is_optional = ab.effect.lower().startswith("you may")
+                    trigger = PendingTrigger(
+                        id=str(uuid.uuid4()),
+                        source_permanent_id=perm.id,
+                        controller=perm.controller,
+                        trigger_type="proliferated",
+                        effect_description=ab.effect,
+                        source_card_name=card.name,
+                        is_optional=is_optional,
+                    )
+                    game_state.pending_triggers.append(trigger)
+                    logger.debug("Proliferated trigger queued: %r from %s", ab.trigger_condition, card.name)
+                    break
+
+    return game_state
+
+
+def check_transformed_triggers(
+    game_state: GameState,
+    transformed_perm_ids: list[str],
+) -> GameState:
+    """Check for "whenever this transforms" triggers."""
+    from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    for perm in game_state.battlefield:
+        card = perm.card
+        abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+        for ab in abilities:
+            if not isinstance(ab, TriggeredAbility):
+                continue
+            cond = ab.trigger_condition.lower()
+            # "this transforms" only fires if this perm is the one that transformed
+            is_this_trigger = bool(_re.compile(r"whenever (?:this(?:\s+creature)?|~) transforms", _re.IGNORECASE).search(cond))
+            if is_this_trigger and perm.id not in transformed_perm_ids:
+                continue
+            for pattern in TRANSFORMED_TRIGGER_PATTERNS:
+                if pattern.search(cond):
+                    is_optional = ab.effect.lower().startswith("you may")
+                    trigger = PendingTrigger(
+                        id=str(uuid.uuid4()),
+                        source_permanent_id=perm.id,
+                        controller=perm.controller,
+                        trigger_type="transformed",
+                        effect_description=ab.effect,
+                        source_card_name=card.name,
+                        is_optional=is_optional,
+                    )
+                    game_state.pending_triggers.append(trigger)
+                    logger.debug("Transformed trigger queued: %r from %s", ab.trigger_condition, card.name)
+                    break
+
+    return game_state
+
+
+def check_tutor_triggers(
+    game_state: GameState,
+    player_name: str,
+) -> GameState:
+    """Check for "whenever you search your library" triggers."""
+    from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    for perm in game_state.battlefield:
+        card = perm.card
+        abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+        for ab in abilities:
+            if not isinstance(ab, TriggeredAbility):
+                continue
+            cond = ab.trigger_condition.lower()
+            for pattern in TUTOR_TRIGGER_PATTERNS:
+                if pattern.search(cond):
+                    is_optional = ab.effect.lower().startswith("you may")
+                    trigger = PendingTrigger(
+                        id=str(uuid.uuid4()),
+                        source_permanent_id=perm.id,
+                        controller=perm.controller,
+                        trigger_type="tutor",
+                        effect_description=ab.effect,
+                        source_card_name=card.name,
+                        is_optional=is_optional,
+                    )
+                    game_state.pending_triggers.append(trigger)
+                    logger.debug("Tutor trigger queued: %r from %s", ab.trigger_condition, card.name)
+                    break
+
+    return game_state
+
+
+def check_becomes_target_triggers(
+    game_state: GameState,
+    target_perm_id: str,
+) -> GameState:
+    """Check for "whenever this becomes the target of a spell or ability" triggers."""
+    from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    for perm in game_state.battlefield:
+        card = perm.card
+        abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+        for ab in abilities:
+            if not isinstance(ab, TriggeredAbility):
+                continue
+            cond = ab.trigger_condition.lower()
+            for pattern in BECOMES_TARGET_TRIGGER_PATTERNS:
+                if pattern.search(cond):
+                    is_optional = ab.effect.lower().startswith("you may")
+                    trigger = PendingTrigger(
+                        id=str(uuid.uuid4()),
+                        source_permanent_id=perm.id,
+                        controller=perm.controller,
+                        trigger_type="becomes_target",
+                        effect_description=ab.effect,
+                        source_card_name=card.name,
+                        is_optional=is_optional,
+                    )
+                    game_state.pending_triggers.append(trigger)
+                    logger.debug("Becomes target trigger queued: %r from %s", ab.trigger_condition, card.name)
+                    break
+
+    return game_state
+
+
+def check_attach_triggers(
+    game_state: GameState,
+    aura_perm_id: str,
+) -> GameState:
+    """Check for "whenever this becomes attached to another permanent" triggers."""
+    from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    for perm in game_state.battlefield:
+        card = perm.card
+        abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+        for ab in abilities:
+            if not isinstance(ab, TriggeredAbility):
+                continue
+            cond = ab.trigger_condition.lower()
+            for pattern in ATTACH_TRIGGER_PATTERNS:
+                if pattern.search(cond):
+                    is_optional = ab.effect.lower().startswith("you may")
+                    trigger = PendingTrigger(
+                        id=str(uuid.uuid4()),
+                        source_permanent_id=perm.id,
+                        controller=perm.controller,
+                        trigger_type="attach",
+                        effect_description=ab.effect,
+                        source_card_name=card.name,
+                        is_optional=is_optional,
+                    )
+                    game_state.pending_triggers.append(trigger)
+                    logger.debug("Attach trigger queued: %r from %s", ab.trigger_condition, card.name)
+                    break
+
+    return game_state
+
+
+def check_day_night_change_triggers(
+    game_state: GameState,
+) -> GameState:
+    """Check for "whenever day becomes night" / "whenever night becomes day" triggers."""
+    from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    for perm in game_state.battlefield:
+        card = perm.card
+        abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+        for ab in abilities:
+            if not isinstance(ab, TriggeredAbility):
+                continue
+            cond = ab.trigger_condition.lower()
+            for pattern in DAY_NIGHT_CHANGE_TRIGGER_PATTERNS:
+                if pattern.search(cond):
+                    is_optional = ab.effect.lower().startswith("you may")
+                    trigger = PendingTrigger(
+                        id=str(uuid.uuid4()),
+                        source_permanent_id=perm.id,
+                        controller=perm.controller,
+                        trigger_type="day_night_change",
+                        effect_description=ab.effect,
+                        source_card_name=card.name,
+                        is_optional=is_optional,
+                    )
+                    game_state.pending_triggers.append(trigger)
+                    logger.debug("Day/night change trigger queued: %r from %s", ab.trigger_condition, card.name)
+                    break
+
+    return game_state
+
+
+def check_completed_dungeon_triggers(
+    game_state: GameState,
+    player_name: str,
+) -> GameState:
+    """Check for "whenever you complete a dungeon" triggers."""
+    from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    for perm in game_state.battlefield:
+        card = perm.card
+        abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+        for ab in abilities:
+            if not isinstance(ab, TriggeredAbility):
+                continue
+            cond = ab.trigger_condition.lower()
+            for pattern in COMPLETED_DUNGEON_TRIGGER_PATTERNS:
+                if pattern.search(cond):
+                    is_optional = ab.effect.lower().startswith("you may")
+                    trigger = PendingTrigger(
+                        id=str(uuid.uuid4()),
+                        source_permanent_id=perm.id,
+                        controller=perm.controller,
+                        trigger_type="completed_dungeon",
+                        effect_description=ab.effect,
+                        source_card_name=card.name,
+                        is_optional=is_optional,
+                    )
+                    game_state.pending_triggers.append(trigger)
+                    logger.debug("Completed dungeon trigger queued: %r from %s", ab.trigger_condition, card.name)
+                    break
+
+    return game_state
+
+
+def check_mana_spent_triggers(
+    game_state: GameState,
+    player_name: str,
+) -> GameState:
+    """Check for "whenever you spend mana" triggers."""
+    from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    for perm in game_state.battlefield:
+        card = perm.card
+        abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+        for ab in abilities:
+            if not isinstance(ab, TriggeredAbility):
+                continue
+            cond = ab.trigger_condition.lower()
+            for pattern in MANA_SPENT_TRIGGER_PATTERNS:
+                if pattern.search(cond):
+                    is_optional = ab.effect.lower().startswith("you may")
+                    trigger = PendingTrigger(
+                        id=str(uuid.uuid4()),
+                        source_permanent_id=perm.id,
+                        controller=perm.controller,
+                        trigger_type="mana_spent",
+                        effect_description=ab.effect,
+                        source_card_name=card.name,
+                        is_optional=is_optional,
+                    )
+                    game_state.pending_triggers.append(trigger)
+                    logger.debug("Mana spent trigger queued: %r from %s", ab.trigger_condition, card.name)
+                    break
+
+    return game_state
 
     # Scan permanents that dealt damage for combat-damage triggers
     _COMBAT_DAMAGE_TRIGGER_RE = _re.compile(

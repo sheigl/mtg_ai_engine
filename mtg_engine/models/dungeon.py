@@ -70,10 +70,27 @@ TOMB_OF_ANNIHILATION = Dungeon(
     ],
 )
 
+UNDERCITY = Dungeon(
+    name="Undercity",
+    rooms=[
+        Room(index=0, name="Secret Entrance",
+             ability="Venture into the dungeon."),
+        Room(index=1, name="Forgotten Temple",
+             ability="Draw a card, then venture into the dungeon."),
+        Room(index=2, name="Sandfall Cell",
+             ability="Creatures you control get +1/+0 and gain haste until end of turn."),
+        Room(index=3, name="Arena of Dread",
+             ability="Each opponent loses 2 life. You gain 2 life and venture into the dungeon."),
+        Room(index=4, name="Throne of the Dead Three",
+             ability="You may cast a creature spell from your graveyard this turn."),
+    ],
+)
+
 ALL_DUNGEONS: list[Dungeon] = [
     DUNGEON_OF_THE_MAD_MAGE,
     LOST_MINE_OF_PHANDELEVER,
     TOMB_OF_ANNIHILATION,
+    UNDERCITY,
 ]
 
 DUNGEON_MAP: dict[str, Dungeon] = {

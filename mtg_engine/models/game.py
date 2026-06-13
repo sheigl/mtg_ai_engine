@@ -98,6 +98,7 @@ class Permanent(BaseModel):
     turn_entered_battlefield: int = 0
     summoning_sick: bool = True
     is_face_down: bool = False
+    face_index: int = 0  # DNG-01: which face is showing for DFC/transform cards
     timestamp: float = 0.0  # for layer system ordering (CR 613.7)
     copy_of_permanent_id: Optional[str] = None  # layer 1 copy effects (014)
     # Temporary P/T bonuses from "until end of turn" effects (layer 7c)
@@ -351,8 +352,11 @@ class GameState(BaseModel):
     pending_proliferate_choice: Optional[dict] = None
     # Format: {"player": str, "eligible": [{"id": str, "name": str, "counters": dict}]}
     # Transform tracking
-    spells_cast_this_turn: int = 0    # Reset each turn; checked for werewolf conditions
-    spells_cast_last_turn: int = 0    # Snapshot of previous turn's count
+    spells_cast_this_turn: int = 0    # Reset each turn (Storm: total this turn by all players)
+    spells_cast_this_turn_by_player: dict[str, int] = Field(default_factory=dict)  # per-player, for day/night
+    spells_cast_last_turn: int = 0    # Snapshot of previous active player's spell count
+    # DNG-01: Day/Night cycle (CR 730)
+    is_day: Optional[bool] = None  # None=neither, True=day, False=night
     # Extra turns queue (CR 500.7): LIFO — pop() gives next extra turn recipient
     extra_turns: list[str] = Field(default_factory=list)
     # Delayed triggered abilities (CR 603.7): fire at a future phase/step
@@ -374,6 +378,10 @@ class GameState(BaseModel):
     pending_echo_payment: Optional[dict] = None
     # MON-01: The Monarch
     monarch: Optional[str] = None
+    # COM-01: Companion — tracks which players have used their companion activation this game
+    companion_used: dict[str, bool] = Field(default_factory=dict)
+    # INT-01: The Initiative
+    initiative: Optional[str] = None
     # VEN-01: Venture into the Dungeon tracking
     player_dungeons: dict[str, DungeonProgress] = Field(default_factory=dict)
     player_completed_dungeons: dict[str, int] = Field(default_factory=dict)

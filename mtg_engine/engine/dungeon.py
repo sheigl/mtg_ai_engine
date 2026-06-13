@@ -60,11 +60,11 @@ def start_dungeon(
     return game_state, room_text
 
 
-def venture(game_state: GameState, player_name: str) -> GameState:
+def venture(game_state: GameState, player_name: str, dungeon_name: Optional[str] = None) -> GameState:
     """
     The player ventures into the dungeon.
 
-    - If no dungeon in progress, they choose one (default: Lost Mine of Phandelver).
+    - If no dungeon in progress, they choose one (default: first available).
     - Advance to the next room.
     - If the dungeon is now complete, increment completed count.
     - The room ability fires.
@@ -74,10 +74,10 @@ def venture(game_state: GameState, player_name: str) -> GameState:
     progress = get_dungeon_progress(game_state, player_name)
 
     if progress is None or progress.is_complete:
-        # Choose first dungeon by default; in the game UI, the player would choose
-        dungeon_name = ALL_DUNGEONS[0].name
-        progress = DungeonProgress(dungeon_name=dungeon_name)
-        logger.info("Venture: %s starts new dungeon: %s", player_name, dungeon_name)
+        # Use provided dungeon name, or default to first available
+        chosen = dungeon_name or ALL_DUNGEONS[0].name
+        progress = DungeonProgress(dungeon_name=chosen)
+        logger.info("Venture: %s starts new dungeon: %s", player_name, chosen)
 
     # Advance room
     progress = progress.advance()

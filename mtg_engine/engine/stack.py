@@ -266,6 +266,11 @@ def cast_spell(
     # Priority returns to active player after spell is placed on stack (REQ-S01)
     game_state.priority_holder = game_state.active_player
 
+    # DNG-01: Track spell cast for Storm, day/night, etc.
+    game_state.spells_cast_this_turn += 1
+    game_state.spells_cast_this_turn_by_player[player_name] = \
+        game_state.spells_cast_this_turn_by_player.get(player_name, 0) + 1
+
     return game_state
 
 

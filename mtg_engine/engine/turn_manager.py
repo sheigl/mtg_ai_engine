@@ -135,6 +135,10 @@ def begin_step(game_state: GameState) -> GameState:
         # Reset lands played this turn
         active = get_player(game_state, game_state.active_player)
         active.lands_played_this_turn = 0
+        # DNG-01: Day/Night transition check (CR 730.2 — second part of untap step)
+        if game_state.is_day is not None:
+            from mtg_engine.engine.daynight import check_daynight_transition
+            game_state = check_daynight_transition(game_state)
         # No priority in untap step; mana pools don't need clearing
         return game_state
 
@@ -288,6 +292,11 @@ def begin_step(game_state: GameState) -> GameState:
             logger.info("Echo: %s triggers — pending echo payment of %s for %s",
                        perm.card.name, echo_cost, game_state.active_player)
             break  # Only one pending_echo_payment at a time
+
+        # INT-01: Initiative upkeep — venture into Undercity
+        if game_state.initiative is not None and game_state.active_player == game_state.initiative:
+            from mtg_engine.engine.initiative import handle_upkeep_venture
+            game_state = handle_upkeep_venture(game_state)
 
         return game_state
 
@@ -500,6 +509,14 @@ def _advance_turn(game_state: GameState) -> GameState:
                     next_player, len(game_state.extra_turns))
     else:
         next_player = _other_player(game_state)
+
+    # DNG-01: Snapshot previous active player's spell count for day/night (CR 730.2)
+    prev_active = game_state.active_player
+    game_state.spells_cast_last_turn = \
+        game_state.spells_cast_this_turn_by_player.get(prev_active, 0)
+    game_state.spells_cast_this_turn = 0
+    game_state.spells_cast_this_turn_by_player.clear()
+
     game_state.active_player = next_player
     game_state.priority_holder = next_player
     game_state.turn += 1
