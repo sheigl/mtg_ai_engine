@@ -12,6 +12,7 @@ from mtg_engine.models.actions import (
     AttackDeclaration, BlockDeclaration, DamageAssignment
 )
 from mtg_engine.engine.zones import get_player
+from mtg_engine.engine.formats.commander import _is_commander
 from mtg_engine.engine.turn_manager import begin_step
 from mtg_engine.engine.stack import _emit_life_changed, _emit_damage_dealt, _emit_counter_placed
 
@@ -649,14 +650,18 @@ def assign_combat_damage(
                             player.life -= assign.damage
                             _emit_life_changed(game_state, player.name, old_life, player.life,
                                                -assign.damage, reason="combat_damage")
-                            # Commander damage tracking
+                            # Commander damage tracking (CR 903.10a)
                             if game_state.format == "commander" and assign.damage > 0:
                                 controller = get_player(game_state, source.controller)
-                                if controller.commander_name and source.card.name == controller.commander_name:
-                                    if source.id not in game_state.commander_damage:
-                                        game_state.commander_damage[source.id] = {}
-                                    prev = game_state.commander_damage[source.id].get(player.name, 0)
-                                    game_state.commander_damage[source.id][player.name] = prev + assign.damage
+                                if _is_commander(source.card.name, controller):
+                                    new_damage = dict(player.commander_damage)
+                                    prev = new_damage.get(source.id, 0)
+                                    new_damage[source.id] = prev + assign.damage
+                                    new_player = player.model_copy(update={"commander_damage": new_damage})
+                                    game_state.players = [
+                                        new_player if p.name == player.name else p
+                                        for p in game_state.players
+                                    ]
                             # MON-01: Combat damage to monarch transfers the monarchy
                             from mtg_engine.engine.monarch import check_combat_damage_monarch
                             game_state = check_combat_damage_monarch(

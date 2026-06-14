@@ -123,6 +123,9 @@ class GameManager:
                 p2.command_zone = [commander2_card]
                 p2.commander_cast_counts = {}
 
+        # MON-01: The Monarch — active player starts as monarch in commander/conspiracy
+        initial_monarch = player1_name if format in ("commander", "conspiracy") else None
+
         gs = GameState(
             game_id=game_id,
             seed=seed,
@@ -135,6 +138,7 @@ class GameManager:
             format=format,
             debug_enabled=debug,
             mulligan_phase_active=True,
+            monarch=initial_monarch,
         )
         gs.refresh_hash()
         self._games[game_id] = gs

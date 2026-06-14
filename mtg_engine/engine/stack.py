@@ -742,15 +742,49 @@ def _apply_triggered_effect(game_state: GameState, stack_obj: StackObject) -> Ga
     return game_state
 
 
+def _word_to_int(word: str) -> int:
+    """Convert word numbers to integers."""
+    mapping = {
+        'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+        'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10
+    }
+    return mapping.get(word.lower(), 1)
+
+
 def _apply_single_effect_text(game_state: GameState, stack_obj: StackObject, effect_text: str) -> GameState:
     """Apply the effect of a single oracle text clause against the pattern list."""
     card = stack_obj.source_card
     x_value = stack_obj.x_value
 
+    # Determine target player for effects that use "target player"
+    # Default to controller, but use stack_obj.targets[0] if it's a player name
+    target_player = stack_obj.controller
+    if stack_obj.targets and isinstance(stack_obj.targets[0], str):
+        # Check if target is a player name
+        for p in game_state.players:
+            if p.name == stack_obj.targets[0]:
+                target_player = stack_obj.targets[0]
+                break
+
     patterns = [
-        (r"draw (\d+|x) cards?",
+        # ── Spree-specific patterns (BUG-26) ───────────────────────────────
+        # "Search your library for a card, then shuffle and put that card on top."
+        (r"search your library for a card.*?put (?:that )?card on top",
+         lambda m: _tutor_to_top(game_state, stack_obj.controller)),
+        # "Target player draws N cards and loses X life" (combined effect)
+        (r"(?:target player |)draws? (\d+|x|one|two|three|four|five|six|seven|eight|nine|ten) cards?.*?loses? (\d+|x|one|two|three|four|five|six|seven|eight|nine|ten) life",
+         lambda m: _apply_combined_draw_lose_life(
+             game_state, target_player,
+             int(m.group(1)) if m.group(1).isdigit() else (x_value if m.group(1).lower() == 'x' else _word_to_int(m.group(1))),
+             int(m.group(2)) if m.group(2).isdigit() else (x_value if m.group(2).lower() == 'x' else _word_to_int(m.group(2))))),
+        # ── Regular tutor-to-hand (non-Spree) ─────────────────────────────
+        (r"search your library for a card.*?put (?:it|that card) into your hand",
+         lambda m: _tutor(game_state, stack_obj.controller, "any", "hand")),
+        # ──────────────────────────────────────────────────────────────────────
+        (r"draw (\d+|x|one|two|three|four|five|six|seven|eight|nine|ten) cards?",
          lambda m: _draw_cards(game_state, stack_obj.controller,
-                               int(m.group(1)) if m.group(1).isdigit() else x_value)),
+                                                                 int(m.group(1)) if m.group(1).isdigit() else (x_value if m.group(1).lower() == 'x' else _word_to_int(m.group(1))))),
+
         (r"destroy target [\w\s]+",
          lambda m: _destroy_permanent(game_state, stack_obj.targets[0] if stack_obj.targets else None)),
         (r"exile target [\w ]+",
@@ -760,33 +794,33 @@ def _apply_single_effect_text(game_state: GameState, stack_obj: StackObject, eff
         # Token with prowess keyword and optional colors
         (r"create (a|an|one|two|three|\d+) (\d+)/(\d+) ((?:blue|red|white|black|green) and (?:blue|red|white|black|green) )?([\w ]+) creature tokens? with prowess",
          lambda m: _create_token_with_keywords(game_state, stack_obj.controller,
-                                   m.group(1), m.group(5).strip() if m.group(5) else m.group(4),
-                                   "prowess")),
+                                    m.group(1), m.group(5).strip() if m.group(5) else m.group(4),
+                                    "prowess")),
         # Token with multiple colors (e.g., "blue and red")
         (r"create (a|an|one|two|three|\d+) (\d+)/(\d+) (blue|red|white|black|green) and (blue|red|white|black|green) ([\w ]+) creature tokens?",
          lambda m: _create_token_with_pt_and_keywords(game_state, stack_obj.controller,
-                                   m.group(1), m.group(2), m.group(3), m.group(5),
-                                   f"{m.group(3)} {m.group(4)}")),
+                                    m.group(1), m.group(2), m.group(3), m.group(5),
+                                    f"{m.group(3)} {m.group(4)}")),
         # Simple token with prowess
         (r"create (a|an|one|two|three|\d+) (\d+)/(\d+) ([\w ]+) creature tokens? with prowess",
          lambda m: _create_token_with_keywords(game_state, stack_obj.controller,
-                                   m.group(1), m.group(4), "prowess")),
+                                    m.group(1), m.group(4), "prowess")),
         (r"create (a|an|one|two|three|\d+) (\d+)/(\d+) ([\w ]+) creature tokens?",
          lambda m: _create_tokens(game_state, stack_obj.controller,
-                                   m.group(1), m.group(2), m.group(3), m.group(4))),
+                                    m.group(1), m.group(2), m.group(3), m.group(4))),
         (r"gain(?:s)? (\d+|x) life",
          lambda m: _gain_life(game_state, stack_obj.controller,
-int(m.group(1)) if m.group(1).isdigit() else x_value)),
+                                int(m.group(1)) if m.group(1).isdigit() else x_value)),
         (r"put (\d+|x) \+1/\+1 counters? on target creature",
          lambda m: _add_counters(game_state, stack_obj.targets[0] if stack_obj.targets else None,
-                                 "+1/+1", int(m.group(1)) if m.group(1).isdigit() else x_value)),
+                                  "+1/+1", int(m.group(1)) if m.group(1).isdigit() else x_value)),
         # "put a +1/+1 counter on this creature" (self-target for landfall)
         (r"put a \+1/\+1 counter on (?:this|~)",
          lambda m: _add_counters(game_state, stack_obj.source_permanent_id,
-                                 "+1/+1", 1)),
+                                  "+1/+1", 1)),
         (r"scry (\d+|x)",
-          lambda m: _apply_scry(game_state, stack_obj.controller,
-                                int(m.group(1)) if m.group(1).isdigit() else x_value)),
+           lambda m: _apply_scry(game_state, stack_obj.controller,
+                                 int(m.group(1)) if m.group(1).isdigit() else x_value)),
         (r"surveil (\d+|x)",
          lambda m: _apply_surveil(game_state, stack_obj.controller,
                                   int(m.group(1)) if m.group(1).isdigit() else x_value)),
@@ -1142,6 +1176,16 @@ def _gain_life(game_state: GameState, player_name: str, n: int) -> GameState:
     return game_state
 
 
+def _lose_life(game_state: GameState, player_name: str, n: int) -> GameState:
+    """Lose life (for spell effects like 'lose X life')."""
+    player = get_player(game_state, player_name)
+    old = player.life
+    player.life -= n
+    _emit_life_changed(game_state, player_name, old, player.life, -n, "spell")
+    logger.info("%s loses %d life", player_name, n)
+    return game_state
+
+
 def _discard_cards(game_state: GameState, player_name: str, n: int) -> GameState:
     """Discard N cards from player's hand."""
     player = get_player(game_state, player_name)
@@ -1177,6 +1221,36 @@ def _tutor(game_state: GameState, player_name: str, filter_type: str, destinatio
             _, _ = put_permanent_onto_battlefield(game_state, card, player_name, from_zone="hand")
         logger.info("%s tutors for %s", player_name, card.name)
     
+    return game_state
+
+
+def _tutor_to_top(game_state: GameState, player_name: str) -> GameState:
+    """Search library for a card and put it on top of library.
+    
+    For Spree effects like "Search your library for a card, then shuffle and put that card on top."
+    """
+    player = get_player(game_state, player_name)
+    if not player.library:
+        return game_state
+    
+    # For heuristic AI, pick the first card from library
+    # In a real implementation, this would be handled by pending_tutor_choice
+    if player.library:
+        card = player.library.pop(0)
+        player.library.insert(0, card)
+        logger.info("%s tutors for %s and puts it on top of library", player_name, card.name)
+    
+    return game_state
+
+
+def _apply_combined_draw_lose_life(game_state: GameState, player_name: str, draw_count: int, life_loss: int) -> GameState:
+    """Apply combined 'draw N cards and lose X life' effect (Spree mode).
+    
+    Example: "Target player draws three cards and loses 3 life."
+    """
+    game_state = _draw_cards(game_state, player_name, draw_count)
+    game_state = _lose_life(game_state, player_name, life_loss)
+    logger.info("%s draws %d cards and loses %d life (Spree combined effect)", player_name, draw_count, life_loss)
     return game_state
 
 

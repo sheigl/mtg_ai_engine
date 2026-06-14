@@ -206,7 +206,9 @@ class PlayerState(BaseModel):
     # Commander format
     command_zone: list[Card] = Field(default_factory=list)
     commander_name: Optional[str] = None
+    commander_names: list[str] = Field(default_factory=list)  # CMD-01: Partner support
     commander_cast_counts: dict[str, int] = Field(default_factory=dict)  # keyed by card name (partner support)
+    commander_damage: dict[str, int] = Field(default_factory=dict)  # CMD-01: permanent ID -> damage (CR 903.10a)
     # New fields for 018 feature
     suspended_cards: list[Card] = Field(default_factory=list)   # Cards exiled via Suspend (with time_counters)
     foretold_cards: list[Card] = Field(default_factory=list)    # Cards exiled face-down via Foretell
@@ -390,6 +392,10 @@ class GameState(BaseModel):
     #         "choice_type": str, "cost_amount": int, "cost_type": str,
     #         "required_type": str, "alternatives": [str]}
     pending_etb_choice: Optional[dict] = None
+    # CMD-01: Commander zone replacement choice (CR 903.9)
+    # Format: {"player": str, "card": Card, "permanent_id": str|None,
+    #         "intended_destination": str, "from_zone": str}
+    pending_commander_zone_choice: Optional[dict] = None
     # Transcript for persistence (034-game-persistence)
     transcript_entries: list[dict] = Field(default_factory=list)
     # ZN-01: Exile stacks for grouped exile tracking (CR 402.1)

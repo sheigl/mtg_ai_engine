@@ -64,35 +64,69 @@ class TestCommanderTax:
 
 class TestCommanderDamageLoss:
     def test_no_loss_below_21(self):
-        gs = _commander_gs()
-        gs.commander_damage["perm_1"] = {"p1": 20}
+        p1 = PlayerState(name="p1", life=40, commander_damage={"perm_1": 20})
+        p2 = PlayerState(name="p2", life=40)
+        gs = GameState(
+            game_id="test-cmd", seed=1,
+            active_player="p1", priority_holder="p1",
+            players=[p1, p2],
+            format="commander",
+        )
         assert check_commander_damage_loss(gs) is None
 
     def test_loss_at_21(self):
-        gs = _commander_gs()
-        gs.commander_damage["perm_1"] = {"p1": 21}
+        p1 = PlayerState(name="p1", life=40, commander_damage={"perm_1": 21})
+        p2 = PlayerState(name="p2", life=40)
+        gs = GameState(
+            game_id="test-cmd", seed=1,
+            active_player="p1", priority_holder="p1",
+            players=[p1, p2],
+            format="commander",
+        )
         assert check_commander_damage_loss(gs) == "p1"
 
     def test_loss_above_21(self):
-        gs = _commander_gs()
-        gs.commander_damage["perm_1"] = {"p1": 25}
+        p1 = PlayerState(name="p1", life=40, commander_damage={"perm_1": 25})
+        p2 = PlayerState(name="p2", life=40)
+        gs = GameState(
+            game_id="test-cmd", seed=1,
+            active_player="p1", priority_holder="p1",
+            players=[p1, p2],
+            format="commander",
+        )
         assert check_commander_damage_loss(gs) == "p1"
 
     def test_no_loss_in_standard_format(self):
-        gs = _commander_gs()
-        gs.format = "standard"
-        gs.commander_damage["perm_1"] = {"p1": 21}
+        p1 = PlayerState(name="p1", life=40, commander_damage={"perm_1": 21})
+        p2 = PlayerState(name="p2", life=40)
+        gs = GameState(
+            game_id="test-cmd", seed=1,
+            active_player="p1", priority_holder="p1",
+            players=[p1, p2],
+            format="standard",
+        )
         assert check_commander_damage_loss(gs) is None
 
     def test_multiple_players_tracked(self):
-        gs = _commander_gs()
-        gs.commander_damage["perm_1"] = {"p2": 21}
+        p1 = PlayerState(name="p1", life=40)
+        p2 = PlayerState(name="p2", life=40, commander_damage={"perm_1": 21})
+        gs = GameState(
+            game_id="test-cmd", seed=1,
+            active_player="p1", priority_holder="p1",
+            players=[p1, p2],
+            format="commander",
+        )
         assert check_commander_damage_loss(gs) == "p2"
 
     def test_two_commanders_below_21_each(self):
-        gs = _commander_gs()
-        gs.commander_damage["perm_a"] = {"p1": 20}
-        gs.commander_damage["perm_b"] = {"p1": 20}
+        p1 = PlayerState(name="p1", life=40, commander_damage={"perm_a": 20, "perm_b": 20})
+        p2 = PlayerState(name="p2", life=40)
+        gs = GameState(
+            game_id="test-cmd", seed=1,
+            active_player="p1", priority_holder="p1",
+            players=[p1, p2],
+            format="commander",
+        )
         assert check_commander_damage_loss(gs) is None
 
 

@@ -11,6 +11,10 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from mtg_engine.models.game import Card, GameState, Permanent, PlayerState, ExileStack
+from mtg_engine.engine.formats.commander import (
+    _is_commander,
+    move_card_to_command_zone as _cmd_move_to_command_zone,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -130,18 +134,30 @@ def move_card_to_zone(
     """
     player = get_player(game_state, player_name)
 
-    # Commander redirect: if a commander would go to graveyard or exile, send to command zone
+    # Commander redirect: CR 903.9 — if a commander would go to graveyard or exile,
+    # owner may put it into command zone instead.
     if (
         game_state.format == "commander"
         and to_zone in ("graveyard", "exile")
-        and player.commander_name is not None
-        and card.name == player.commander_name
+        and _is_commander(card.name, player)
     ):
         zone_list = _get_player_zone(player, from_zone) if from_zone in ("hand", "library", "graveyard", "exile", "command_zone", "sideboard") else None
         if zone_list is not None:
             zone_list[:] = [c for c in zone_list if c.id != card.id]
         elif from_zone == "stack":
             game_state.stack[:] = [s for s in game_state.stack if s.source_card.id != card.id]
+        # Human player: queue pending choice and return without completing zone change
+        if game_state.human_player_name == player_name:
+            return game_state.model_copy(update={
+                "pending_commander_zone_choice": {
+                    "player": player_name,
+                    "card": card,
+                    "permanent_id": None,
+                    "intended_destination": to_zone,
+                    "from_zone": from_zone,
+                }
+            })
+        # AI player: auto-redirect to command zone
         return move_card_to_command_zone(game_state, card, player_name)
 
     # Remove from source zone (REQ-G07: atomic removal before insertion)
@@ -224,10 +240,23 @@ def move_permanent_to_zone(
     if is_token:
         return game_state
 
-    # Commander redirect: if commander would go to graveyard or exile, send to command zone
+    # Commander redirect: CR 903.9 — if a commander would go to graveyard or exile,
+    # owner may put it into command zone instead.
     if game_state.format == "commander" and to_zone in ("graveyard", "exile"):
         player = get_player(game_state, controller)
-        if player.commander_name is not None and card.name == player.commander_name:
+        if _is_commander(card.name, player):
+            # Human player: queue pending choice and return without completing zone change
+            if game_state.human_player_name == controller:
+                return game_state.model_copy(update={
+                    "pending_commander_zone_choice": {
+                        "player": controller,
+                        "card": card,
+                        "permanent_id": permanent.id,
+                        "intended_destination": to_zone,
+                        "from_zone": "battlefield",
+                    }
+                })
+            # AI player: auto-redirect to command zone
             return move_card_to_command_zone(game_state, card, controller)
 
     # Clean up attachment references: if this permanent was attached to something,

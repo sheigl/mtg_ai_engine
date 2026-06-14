@@ -15,6 +15,29 @@ from mtg_engine.models.game import GameState, PlayerState
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Core helpers — never check commander_name directly; always use these
+# ---------------------------------------------------------------------------
+
+def _is_commander(card_name: str, player: PlayerState) -> bool:
+    """Return True if card_name is one of the player's commanders."""
+    return card_name in _get_commander_names(player)
+
+
+def _get_commander_names(player: PlayerState) -> list[str]:
+    """Return the list of commander names for a player (Partner support)."""
+    # Prefer commander_names (plural) for Partner support; fallback to commander_name
+    if player.commander_names:
+        return list(player.commander_names)
+    if player.commander_name:
+        return [player.commander_name]
+    return []
+
+
+# ---------------------------------------------------------------------------
+# Tax
+# ---------------------------------------------------------------------------
+
 def get_commander_tax(
     game_state: GameState,
     player_name: str,
@@ -36,13 +59,18 @@ def record_commander_cast(
     player_name: str,
     card_name: str,
 ) -> GameState:
-    """Increment the commander cast count for a player."""
+    """Increment the commander cast count for a player. Pure transform."""
     player = _get_player(game_state, player_name)
-    player.commander_cast_counts[card_name] = (
-        player.commander_cast_counts.get(card_name, 0) + 1
-    )
-    return game_state
+    new_counts = dict(player.commander_cast_counts)
+    new_counts[card_name] = new_counts.get(card_name, 0) + 1
+    new_player = player.model_copy(update={"commander_cast_counts": new_counts})
+    new_players = [new_player if p.name == player_name else p for p in game_state.players]
+    return game_state.model_copy(update={"players": new_players})
 
+
+# ---------------------------------------------------------------------------
+# Damage loss
+# ---------------------------------------------------------------------------
 
 def check_commander_damage_loss(
     game_state: GameState,
@@ -57,17 +85,21 @@ def check_commander_damage_loss(
     if game_state.format != "commander":
         return None
 
-    for source_id, players_damage in game_state.commander_damage.items():
-        for player_name, damage in players_damage.items():
+    for player in game_state.players:
+        for source_id, damage in player.commander_damage.items():
             if damage >= 21:
                 logger.info(
                     "Commander damage: %s dealt 21+ damage to %s (loss)",
-                    source_id, player_name,
+                    source_id, player.name,
                 )
-                return player_name
+                return player.name
 
     return None
 
+
+# ---------------------------------------------------------------------------
+# Color identity
+# ---------------------------------------------------------------------------
 
 def get_color_identity(card: 'Card') -> list[str]:
     """
@@ -154,6 +186,10 @@ def validate_deck_for_commander(
     return len(violations) == 0, violations
 
 
+# ---------------------------------------------------------------------------
+# Command zone
+# ---------------------------------------------------------------------------
+
 def get_commander_command_zone(
     game_state: GameState,
     player_name: str,
@@ -168,13 +204,41 @@ def add_commander_to_command_zone(
     player_name: str,
     card: 'Card',
 ) -> GameState:
-    """Add a card to the player's command zone as a commander."""
+    """Add a card to the player's command zone as a commander. Pure transform."""
     player = _get_player(game_state, player_name)
-    player.command_zone.append(card)
-    player.commander_name = card.name
-    logger.info("Commander: %s added %s to command zone", player_name, card.name)
-    return game_state
+    new_zone = list(player.command_zone) + [card]
+    new_names = list(player.commander_names)
+    if card.name not in new_names:
+        new_names.append(card.name)
+    new_player = player.model_copy(update={
+        "command_zone": new_zone,
+        "commander_names": new_names,
+        "commander_name": card.name if not player.commander_name else player.commander_name,
+    })
+    new_players = [new_player if p.name == player_name else p for p in game_state.players]
+    return game_state.model_copy(update={"players": new_players})
 
+
+def move_card_to_command_zone(
+    game_state: GameState,
+    card: 'Card',
+    player_name: str,
+) -> GameState:
+    """
+    Move a card to the command zone. CR 903.9.
+    This is the canonical destination for commander replacement.
+    """
+    player = _get_player(game_state, player_name)
+    new_zone = list(player.command_zone) + [card]
+    new_player = player.model_copy(update={"command_zone": new_zone})
+    new_players = [new_player if p.name == player_name else p for p in game_state.players]
+    logger.info("Commander: %s moved to command zone for %s", card.name, player_name)
+    return game_state.model_copy(update={"players": new_players})
+
+
+# ---------------------------------------------------------------------------
+# Internal
+# ---------------------------------------------------------------------------
 
 def _get_player(game_state: GameState, player_name: str) -> PlayerState:
     for p in game_state.players:

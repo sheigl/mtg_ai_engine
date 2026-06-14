@@ -1798,6 +1798,41 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
             gs.pending_dredge_choice = None
             mgr.update(game_id, gs)
 
+    elif choice_id == "commander_zone_replace":
+        # CMD-01: CR 903.9 — player chooses to put commander into command zone
+        if gs.pending_commander_zone_choice:
+            player_name = gs.pending_commander_zone_choice.get("player", gs.priority_holder)
+            card = gs.pending_commander_zone_choice.get("card")
+            from mtg_engine.engine.formats.commander import move_card_to_command_zone
+            if card:
+                gs = move_card_to_command_zone(gs, card, player_name)
+                logger.info("Commander zone choice: %s moved to command zone", card.name)
+            gs.pending_commander_zone_choice = None
+            mgr.update(game_id, gs)
+
+    elif choice_id == "commander_zone_stay":
+        # CMD-01: CR 903.9 — player chooses to let commander go to intended destination
+        if gs.pending_commander_zone_choice:
+            cmd = gs.pending_commander_zone_choice
+            player_name = cmd.get("player", gs.priority_holder)
+            card = cmd.get("card")
+            intended = cmd.get("intended_destination", "graveyard")
+            if card:
+                # The card has already been removed from its source zone by the
+                # initial move_permanent_to_zone / move_card_to_zone call that
+                # queued this pending choice. We just need to place it in the
+                # intended destination directly.
+                player_obj = next(
+                    (p for p in gs.players if p.name == player_name), None
+                )
+                if player_obj:
+                    dest_list = getattr(player_obj, intended, None)
+                    if dest_list is not None:
+                        dest_list.append(card)
+                logger.info("Commander zone choice: %s sent to %s", card.name, intended)
+            gs.pending_commander_zone_choice = None
+            mgr.update(game_id, gs)
+
     return _ok(gs)
 
 
@@ -2254,6 +2289,25 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
         # For other choice types, add similar logic
         # For now, default to enter tapped for checklands/fetchlands without pending
         # TODO: implement checkland/fetchland handling
+
+    # CMD-01: Commander zone replacement (CR 903.9)
+    if gs.pending_commander_zone_choice and gs.pending_commander_zone_choice.get("player") == player_name:
+        cmd = gs.pending_commander_zone_choice
+        card_name = cmd.get("card", {}).name if cmd.get("card") else "that commander"
+        intended = cmd.get("intended_destination", "graveyard")
+        actions.append(LegalAction(
+            action_type="choice",
+            card_name="commander_zone_replace",
+            description=f"Put {card_name} into your command zone instead of {intended}",
+        ))
+        actions.append(LegalAction(
+            action_type="choice",
+            card_name="commander_zone_stay",
+            description=f"Let {card_name} go to {intended}",
+        ))
+        if not any(a.action_type == "pass" for a in actions):
+            actions.append(LegalAction(action_type="pass", description="Pass priority"))
+        return actions
 
     # Spree mode selection
     if gs.pending_spree_choice and gs.pending_spree_choice.get("player") == player_name:

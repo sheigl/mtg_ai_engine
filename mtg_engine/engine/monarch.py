@@ -13,18 +13,29 @@ from mtg_engine.models.game import GameState
 logger = logging.getLogger(__name__)
 
 
+def is_monarch(game_state: GameState, player_name: str) -> bool:
+    """
+    Return True if the given player holds the monarch.
+
+    Used by card effects that reference "if you're the monarch" or similar conditions.
+    CR 702.147.
+    """
+    return game_state.monarch == player_name
+
+
 def set_monarch(game_state: GameState, player_name: str) -> GameState:
     """
     Set the monarch to the given player.
 
     Fires a delayed trigger for cards that care about becoming monarch.
     Does nothing if the player is already the monarch.
+
+    Returns a new GameState via model_copy (pure transform).
     """
     if game_state.monarch == player_name:
         return game_state
 
     old_monarch = game_state.monarch
-    game_state.monarch = player_name
     logger.info(
         "Monarch: %s becomes the monarch (was %s)", player_name, old_monarch or "none"
     )
@@ -40,9 +51,10 @@ def set_monarch(game_state: GameState, player_name: str) -> GameState:
         effect_description=f"{player_name} becomes the monarch",
         source_card_name="monarch",
     )
-    game_state.pending_triggers.append(trigger)
 
-    return game_state
+    # Pure transform: return new GameState via model_copy
+    new_triggers = list(game_state.pending_triggers) + [trigger]
+    return game_state.model_copy(update={"monarch": player_name, "pending_triggers": new_triggers})
 
 
 def handle_end_step_draw(game_state: GameState) -> GameState:
