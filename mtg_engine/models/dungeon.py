@@ -9,11 +9,20 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 
+class DungeonRoomChoice(BaseModel):
+    """A choice the player can make when entering a dungeon room."""
+    choice_id: str
+    description: str
+    outcome_ability: str  # oracle-text-like string applied via stack resolution
+    is_default: bool = False
+
+
 class Room(BaseModel):
     """A single room in a dungeon."""
     name: str
     index: int
     ability: str
+    choices: list[DungeonRoomChoice] = Field(default_factory=list)
 
 
 class Dungeon(BaseModel):

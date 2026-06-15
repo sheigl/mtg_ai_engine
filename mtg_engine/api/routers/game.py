@@ -1060,6 +1060,9 @@ class ProliferateRequest(BaseModel):
 @router.post("/{game_id}/proliferate")
 def proliferate(game_id: str, req: ProliferateRequest) -> dict:
     """POST /game/{game_id}/proliferate. US13: add one counter of each type to chosen targets."""
+    from mtg_engine.engine.proliferate import apply_proliferate
+    from mtg_engine.engine.triggers import check_proliferated_triggers
+
     mgr = get_manager()
     if req.dry_run:
         gs = mgr.snapshot(game_id)
@@ -1075,20 +1078,14 @@ def proliferate(game_id: str, req: ProliferateRequest) -> dict:
     for target_id in req.targets:
         if target_id not in eligible_ids:
             raise _err(f"Target {target_id!r} is not eligible for proliferate", "INVALID_ACTION")
-        # Find the target — permanent or player
-        perm = next((p for p in gs.battlefield if p.id == target_id), None)
-        if perm:
-            # Add one of each counter type the permanent already has
-            for counter_type, count in list(perm.counters.items()):
-                if not counter_type.startswith("__"):  # skip internal counters
-                    perm.counters[counter_type] = count + 1
-        else:
-            # Target is a player — add one poison counter if they have any
-            target_player = next((p for p in gs.players if p.name == target_id), None)
-            if target_player and target_player.poison_counters > 0:
-                target_player.poison_counters += 1
 
-    gs.pending_proliferate_choice = None
+    # Delegate counter application to engine (pure transform)
+    gs = apply_proliferate(gs, req.targets)
+
+    # Fire "whenever you proliferate" triggers after resolution
+    gs = check_proliferated_triggers(gs, player_name)
+
+    gs = gs.model_copy(update={"pending_proliferate_choice": None})
     gs = _run_sbas(gs)
 
     if not req.dry_run:
@@ -1833,6 +1830,31 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
             gs.pending_commander_zone_choice = None
             mgr.update(game_id, gs)
 
+    elif choice_id.startswith("dungeon_room_"):
+        # VEN-01: Dungeon room choice — player selects a specific outcome
+        if gs.pending_dungeon_room_choice:
+            pending = gs.pending_dungeon_room_choice
+            player_name = pending.get("player", gs.priority_holder)
+            choices = pending.get("choices", [])
+            selected_id = choice_id.replace("dungeon_room_", "", 1)
+
+            # Find the matching choice
+            chosen = None
+            for c in choices:
+                if c.get("choice_id") == selected_id:
+                    chosen = c
+                    break
+
+            if chosen:
+                from mtg_engine.engine.dungeon import _apply_room_effect
+                outcome_ability = chosen.get("outcome_ability", "")
+                gs = _apply_room_effect(gs, player_name, outcome_ability)
+                logger.info("Dungeon room choice: %s selected %s for %s",
+                            player_name, selected_id, outcome_ability)
+
+            gs.pending_dungeon_room_choice = None
+            mgr.update(game_id, gs)
+
     return _ok(gs)
 
 
@@ -2320,6 +2342,23 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                 description=f"+ {cost} — {effect}...",
                 valid_targets=[str(i)],
                 card_name="spree_select",
+            ))
+        if not any(a.action_type == "pass" for a in actions):
+            actions.append(LegalAction(action_type="pass", description="Pass priority"))
+        return actions
+
+    # VEN-01: Dungeon room choice (CR 701.61)
+    if gs.pending_dungeon_room_choice and gs.pending_dungeon_room_choice.get("player") == player_name:
+        pending = gs.pending_dungeon_room_choice
+        choices = pending.get("choices", [])
+        dungeon_name = pending.get("dungeon_name", "Dungeon")
+        for choice in choices:
+            cid = choice.get("choice_id", "")
+            desc = choice.get("description", f"Choose {cid}")
+            actions.append(LegalAction(
+                action_type="choice",
+                card_name=f"dungeon_room_{cid}",
+                description=f"[{dungeon_name}] {desc}",
             ))
         if not any(a.action_type == "pass" for a in actions):
             actions.append(LegalAction(action_type="pass", description="Pass priority"))

@@ -828,10 +828,13 @@ def _apply_single_effect_text(game_state: GameState, stack_obj: StackObject, eff
         (r"look at the top (\d+) cards? of your library\.? put (\d+) of them into your hand",
          lambda m: _apply_reveal_and_choose_multi(game_state, stack_obj.controller,
                                           int(m.group(1)), int(m.group(2)))),
-        # "look at the top X of your library. put one into your hand..." (e.g., Sleight of Hand)
+       # "look at the top X of your library. put one into your hand..." (e.g., Sleight of Hand)
         (r"look at the top (\d+) cards? of your library",
-         lambda m: _apply_reveal_and_choose(game_state, stack_obj.controller,
-                                          int(m.group(1)) if m.group(1).isdigit() else 2)),
+          lambda m: _apply_reveal_and_choose(game_state, stack_obj.controller,
+                                           int(m.group(1)) if m.group(1).isdigit() else 2)),
+        # ── VEN-01: Venture into the dungeon (CR 701.61) ───────────────────
+        (r"\bventure\s+into\s+(?:the\s+)?dungeon\b",
+          lambda m: _apply_venture(game_state, stack_obj.controller)),
     ]
 
     oracle_lower = effect_text.lower()
@@ -842,6 +845,23 @@ def _apply_single_effect_text(game_state: GameState, stack_obj: StackObject, eff
             if result is not None:
                 game_state = result
             return game_state
+
+    # US13 (T030): Proliferate — detect and set pending proliferate choice
+    if re.search(r'\bproliferate\b', oracle_lower):
+        from mtg_engine.engine.proliferate import setup_pending_proliferate, _resolve_proliferate_with_ai
+
+        # Determine if controller is human or AI
+        is_human = any(
+            p.name == stack_obj.controller and
+            getattr(game_state, 'human_player_name', None) == p.name
+            for p in game_state.players
+        )
+
+        if is_human:
+            game_state = setup_pending_proliferate(game_state, stack_obj.controller)
+        else:
+            game_state = _resolve_proliferate_with_ai(game_state, stack_obj.controller)
+
     return game_state
 
 
@@ -962,14 +982,17 @@ def _apply_spell_effect(game_state: GameState, stack_obj: StackObject) -> GameSt
         # 17. Shuffle library
         (r"shuffle your library",
          lambda m: _shuffle_library(game_state, stack_obj.controller)),
-        # 18. Extra turn: "take an extra turn after this" / "target player takes an extra turn"
+      # 18. Extra turn: "take an extra turn after this" / "target player takes an extra turn"
         (r"take an? extra turn after this|you take an? extra turn",
-         lambda m: _grant_extra_turn(game_state, stack_obj.controller)),
+          lambda m: _grant_extra_turn(game_state, stack_obj.controller)),
         (r"target player takes? an? extra turn",
-         lambda m: _grant_extra_turn(
-             game_state,
-             stack_obj.targets[0] if stack_obj.targets else stack_obj.controller,
-         )),
+          lambda m: _grant_extra_turn(
+              game_state,
+              stack_obj.targets[0] if stack_obj.targets else stack_obj.controller,
+          )),
+        # ── VEN-01: Venture into the dungeon (CR 701.61) ───────────────────
+        (r"\bventure\s+into\s+(?:the\s+)?dungeon\b",
+          lambda m: _apply_venture(game_state, stack_obj.controller)),
     ]
 
     # Try each pattern in order; pass the full match object to the lambda.
@@ -983,7 +1006,19 @@ def _apply_spell_effect(game_state: GameState, stack_obj: StackObject) -> GameSt
 
     # US13 (T030): Proliferate — detect and set pending proliferate choice
     if re.search(r'\bproliferate\b', oracle, re.IGNORECASE):
-        game_state = _trigger_proliferate(game_state, stack_obj.controller)
+        from mtg_engine.engine.proliferate import setup_pending_proliferate, _resolve_proliferate_with_ai
+
+        # Determine if controller is human or AI
+        is_human = any(
+            p.name == stack_obj.controller and
+            getattr(game_state, 'human_player_name', None) == p.name
+            for p in game_state.players
+        )
+
+        if is_human:
+            game_state = setup_pending_proliferate(game_state, stack_obj.controller)
+        else:
+            game_state = _resolve_proliferate_with_ai(game_state, stack_obj.controller)
         return game_state
 
     # US20 (T047): "Each opponent" pattern — apply effect to all opponents
@@ -997,36 +1032,6 @@ def _apply_spell_effect(game_state: GameState, stack_obj: StackObject) -> GameSt
 
     # If no pattern matched, log at DEBUG level (no crash — CR 608.2b: unimplemented effects no-op)
     logger.debug("Spell effect not implemented for %r: %r", card.name, oracle)
-    return game_state
-
-
-def _trigger_proliferate(game_state: GameState, controller: str) -> GameState:
-    """
-    Set pending_proliferate_choice for the controller. US13 (T030).
-    Collects all permanents and players with at least one counter.
-    """
-    eligible = []
-    for perm in game_state.battlefield:
-        if perm.counters:
-            eligible.append({
-                "id": perm.id,
-                "name": perm.card.name,
-                "counters": dict(perm.counters),
-                "type": "permanent",
-            })
-    for player in game_state.players:
-        if player.poison_counters > 0:
-            eligible.append({
-                "id": player.name,
-                "name": player.name,
-                "counters": {"poison": player.poison_counters},
-                "type": "player",
-            })
-    game_state.pending_proliferate_choice = {
-        "player": controller,
-        "eligible": eligible,
-    }
-    logger.info("Proliferate: %d eligible targets for %s", len(eligible), controller)
     return game_state
 
 
@@ -1240,6 +1245,23 @@ def _tutor_to_top(game_state: GameState, player_name: str) -> GameState:
         player.library.insert(0, card)
         logger.info("%s tutors for %s and puts it on top of library", player_name, card.name)
     
+    return game_state
+
+
+def _apply_venture(game_state: GameState, player_name: str) -> GameState:
+    """Apply 'Venture into the dungeon' effect (VEN-01, CR 701.61).
+
+    Called from stack resolution when a card effect or room ability contains
+    "venture into the dungeon". Chains through the dungeon engine's venture()
+    function which handles starting new dungeons, advancing rooms, and firing
+    room abilities.
+    """
+    from mtg_engine.engine.dungeon import venture as _venture
+
+    # Guard against infinite recursion: if player has completed all rooms
+    # in current dungeon, venture() starts a fresh one automatically.
+    game_state = _venture(game_state, player_name)
+    logger.info("Venture into the dungeon resolved for %s", player_name)
     return game_state
 
 

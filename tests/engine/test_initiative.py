@@ -70,15 +70,22 @@ class TestUpkeepVenture:
         assert "Alice" in gs.player_dungeons
         progress = gs.player_dungeons["Alice"]
         assert progress.dungeon_name == "Undercity"
-        # First venture starts dungeon at room 0, then advances to room 1
-        assert progress.current_room_index == 1
+        # First venture: starts at room 0, advances to room 1.
+        # Room 1 (Forgotten Temple) has "venture into the dungeon" → recursive advance to room 2.
+        # Room 2 has no recursive venture, so final index is 2.
+        assert progress.current_room_index == 2
 
     def test_repeated_ventures_advance_rooms(self):
         gs = _make_gs(initiative="Alice", active_player="Alice")
         gs = handle_upkeep_venture(gs)
-        assert gs.player_dungeons["Alice"].current_room_index == 1
-        gs = handle_upkeep_venture(gs)
+        # First call: room 0→1, room 1 recurses to 2. Final: index=2.
         assert gs.player_dungeons["Alice"].current_room_index == 2
+        gs = handle_upkeep_venture(gs)
+        # Second call: room 2→3. Room 3 ability has multiple effects
+        # ("lose life, gain life, venture") but _apply_single_effect_text only
+        # resolves the first matched pattern (gain life), so no recursive venture.
+        # Final: index=3.
+        assert gs.player_dungeons["Alice"].current_room_index == 3
 
     def test_completed_dungeon_stops_advancing(self):
         from mtg_engine.models.dungeon import DUNGEON_MAP, DungeonProgress

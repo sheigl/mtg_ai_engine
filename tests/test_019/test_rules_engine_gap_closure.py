@@ -14,7 +14,8 @@ from mtg_engine.engine.zones import (
     get_player,
 )
 from mtg_engine.engine.sba import _check_once
-from mtg_engine.engine.stack import _trigger_proliferate, get_opponents
+from mtg_engine.engine.proliferate import setup_pending_proliferate as _trigger_proliferate
+from mtg_engine.engine.stack import get_opponents
 from mtg_engine.engine.triggers import check_phase_triggers
 from mtg_engine.engine.replacement import apply_damage_event
 

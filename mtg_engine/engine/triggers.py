@@ -680,8 +680,10 @@ def check_proliferated_triggers(
     game_state: GameState,
     player_name: str,
 ) -> GameState:
-    """Check for "whenever you proliferate" triggers."""
+    """Check for "whenever you proliferate" triggers. Pure transform."""
     from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    new_triggers = list(game_state.pending_triggers)
 
     for perm in game_state.battlefield:
         card = perm.card
@@ -702,11 +704,11 @@ def check_proliferated_triggers(
                         source_card_name=card.name,
                         is_optional=is_optional,
                     )
-                    game_state.pending_triggers.append(trigger)
+                    new_triggers.append(trigger)
                     logger.debug("Proliferated trigger queued: %r from %s", ab.trigger_condition, card.name)
                     break
 
-    return game_state
+    return game_state.model_copy(update={"pending_triggers": new_triggers})
 
 
 def check_transformed_triggers(

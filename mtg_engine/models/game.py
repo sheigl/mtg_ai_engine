@@ -396,6 +396,10 @@ class GameState(BaseModel):
     # Format: {"player": str, "card": Card, "permanent_id": str|None,
     #         "intended_destination": str, "from_zone": str}
     pending_commander_zone_choice: Optional[dict] = None
+    # VEN-01: Dungeon room choice (CR 701.61)
+    # Format: {"player": str, "dungeon_name": str, "room_index": int,
+    #         "choices": list[DungeonRoomChoice]}
+    pending_dungeon_room_choice: Optional[dict] = None
     # Transcript for persistence (034-game-persistence)
     transcript_entries: list[dict] = Field(default_factory=list)
     # ZN-01: Exile stacks for grouped exile tracking (CR 402.1)

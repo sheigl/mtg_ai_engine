@@ -135,14 +135,14 @@ class TestProliferatedTriggers:
         gs = _make_gs()
         perm = _perm("Flux Channeler", "Whenever you proliferate, draw a card.")
         gs.battlefield.append(perm)
-        check_proliferated_triggers(gs, "Alice")
+        gs = check_proliferated_triggers(gs, "Alice")
         assert len([t for t in gs.pending_triggers if t.trigger_type == "proliferated"]) >= 1
 
     def test_player_proliferates_trigger(self):
         gs = _make_gs()
         perm = _perm("Some Card", "Whenever a player proliferates, that player draws a card.")
         gs.battlefield.append(perm)
-        check_proliferated_triggers(gs, "Bob")
+        gs = check_proliferated_triggers(gs, "Bob")
         assert len([t for t in gs.pending_triggers if t.trigger_type == "proliferated"]) >= 1
 
 

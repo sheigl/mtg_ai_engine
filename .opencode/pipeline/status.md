@@ -2,6 +2,7 @@
 
 | Feature | Dev Status | QA Status | Notes |
 |---------|-----------|-----------|-------|
+| VEN-01: Venture into the Dungeon | ✅ Complete | ✅ Passed | 65 tests pass, 2064 total — stack integration, recursive venturing, room choices |
 | MON-01: The Monarch | ✅ Complete | ✅ Passed | 60 tests pass, 2027 total — monarch tracking, combat transfer, end step draw |
 | CMD-01: Commander Rules | ✅ Complete | ✅ Passed | 66 tests pass, 0 regressions — tax, damage loss, zone replacement, partners |
 | BUG-26: Spree mechanic completion | ✅ Complete | ✅ Passed | All 13 tests pass, 0 regressions |
@@ -9,7 +10,7 @@
 | Landfall verification (BUG-23) | ✅ Complete | ✅ Passed | Verified — 3 landfall tests pass, 522 ability tests pass |
 
 ## Active Work
-CMD-01 and MON-01 complete. Next: VEN-01 Venture into the Dungeon or PRO-01 Proliferate (Sprint 1).
+Sprint 1 complete (CMD-01, MON-01, VEN-01, PRO-01 all done). Next: Sprint 2 — DNG-01 Day/Night, INT-01 Initiative, COM-01 Companion.
 
 ## 038-Gap-Analysis Backlog
 
@@ -27,8 +28,8 @@ CMD-01 and MON-01 complete. Next: VEN-01 Venture into the Dungeon or PRO-01 Prol
 |----|---------|--------|-----|----|-------------|
 | CMD-01 | Commander Rules | ✅ Complete | ✅ Done | ✅ Passed | None |
 | MON-01 | The Monarch | ✅ Complete | ✅ Done | ✅ Passed | None |
-| VEN-01 | Venture into the Dungeon | ⏳ Pending | — | — | None |
-| PRO-01 | Proliferate System | ⏳ Pending | — | — | None |
+| VEN-01 | Venture into the Dungeon | ✅ Complete | ✅ Done | ✅ Passed | None |
+| PRO-01 | Proliferate System | ✅ Complete | ✅ Done | ✅ Passed | None |
 
 ### Sprint 2: Advanced Mechanics (P2)
 | ID | Feature | Status | Dev | QA | Dependencies |
