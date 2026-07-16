@@ -12,7 +12,9 @@ REQ-R01: 500 on internal rules engine error
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+
+from pydantic import BaseModel, Field
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -35,6 +37,36 @@ from mtg_engine.models.deck_import import (
     DeckImportRequest,
     DeckPreview,
 )
+from mtg_engine.models.game import Card
+
+
+# ── FMT-01: Deck validation models ───────────────────────────────────────────
+
+class _CardEntry(BaseModel):
+    """Single card entry in a deck validation request."""
+    name: str
+    quantity: int = Field(default=1, ge=1)
+    rarity: Optional[str] = None
+    set_code: Optional[str] = None
+
+
+class DeckValidationRequest(BaseModel):
+    """POST /deck/validate request body."""
+    format: str
+    cards: list[_CardEntry]
+    commanders: Optional[list[_CardEntry]] = None
+
+
+class DeckViolation(BaseModel):
+    """A single validation violation."""
+    message: str
+
+
+class DeckValidationResponse(BaseModel):
+    """POST /deck/validate response body."""
+    valid: bool
+    violations: list[str]
+    format: str
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/deck", tags=["deck-import"])
@@ -201,7 +233,7 @@ def delete_imported_deck(deck_id: str) -> dict:
 @router.get("/metagame")
 def list_metagame_decks(format: str = "standard") -> dict:
     """GET /deck/metagame?format=standard — list cached MTGGoldfish decks."""
-    from mtg_engine.card_data.mtggoldfish import get_decks_for_format, MetagameDeck
+    from mtg_engine.card_data.mtggoldfish import get_decks_for_format
     decks = get_decks_for_format(format.lower())
     return {
         "data": [
@@ -269,3 +301,50 @@ def get_named_metagame_deck(format: str = "standard", name: str = "") -> dict:
             "commander": deck.commander,
         }
     }
+
+
+# ── FMT-01: Deck validation endpoint ─────────────────────────────────────────
+
+@router.post("/validate")
+async def validate_deck_endpoint(req: DeckValidationRequest) -> dict:
+    """
+    POST /deck/validate — validate a deck against format rules.
+
+    Returns structured response with validity and any violations.
+    Unknown formats return HTTP 400.
+    """
+    from mtg_engine.engine.formats import validate_deck, FORMAT_VALIDATORS
+
+    fmt = req.format.lower().strip()
+
+    # Reject unknown formats early
+    if fmt not in FORMAT_VALIDATORS:
+        raise _bad(f"Unknown format: {req.format}", "UNKNOWN_FORMAT", 400)
+
+    # Convert card entries to Card models (expand by quantity)
+    cards: list[Card] = []
+    for entry in req.cards:
+        for _ in range(entry.quantity):
+            cards.append(Card(
+                name=entry.name,
+                rarity=entry.rarity,
+                set_code=entry.set_code,
+            ))
+
+    # Convert commander entries to Card models
+    commanders: Optional[list[Card]] = None
+    if req.commanders:
+        commanders = [
+            Card(name=c.name, rarity=c.rarity, set_code=c.set_code)
+            for c in req.commanders
+        ]
+
+    is_valid, violations = validate_deck(cards, fmt, commanders)
+
+    response = DeckValidationResponse(
+        valid=is_valid,
+        violations=violations,
+        format=req.format,
+    )
+
+    return {"data": response.model_dump()}

@@ -11,7 +11,7 @@ CR References:
 - CR 702.67: Fading
 """
 import pytest
-from mtg_engine.models.game import GameState, PlayerState, Phase, Step, Card, CardFace, Permanent, ManaPool
+from mtg_engine.models.game import GameState, PlayerState, Phase, Step, Card, Permanent, ManaPool
 from mtg_engine.engine.turn_manager import begin_step
 from mtg_engine.engine.zones import put_permanent_onto_battlefield
 

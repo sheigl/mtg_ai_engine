@@ -44,7 +44,7 @@ The API will be available at `http://localhost:8000`. Interactive docs at `http:
 PYTHONPATH=. uv run python -m pytest tests/ -v
 ```
 
-All 193 tests should pass.
+All 2678+ tests should pass.
 
 ## API Usage
 
@@ -167,15 +167,109 @@ curl http://localhost:8000/export/{game_id}/rules-qa
 curl http://localhost:8000/export/{game_id}/outcome
 ```
 
-### 6. Delete a game
+### 6. Deck Building AI (APP-02)
 
-Deleting a completed game triggers a MongoDB write of all four export types:
+Automatically construct a legal, optimized deck from a card pool using strategy-aware scoring and format rules:
 
 ```bash
-curl -X DELETE http://localhost:8000/game/{game_id}
+curl -X POST http://localhost:8000/ai/deck/build \
+  -H "Content-Type: application/json" \
+  -d '{
+    "cards": [
+      {"name": "Lightning Bolt", "mana_cost": "{R}", "type_line": "Instant", "cmc": 1.0},
+      {"name": "Mountain", "mana_cost": "", "type_line": "Basic Land — Mountain", "cmc": 0.0},
+      {"name": "Goblin Warrior", "mana_cost": "{1}{R}", "type_line": "Creature — Goblin Warrior", "cmc": 2.0}
+    ],
+    "format": "standard",
+    "strategy": "aggro",
+    "seed": 42
+  }'
 ```
 
-## AI Agent Integration Loop
+Response includes `main_deck` (list of card entries with quantities) and optional `sideboard`. Supports all 8 formats (Standard, Pioneer, Modern, Legacy, Vintage, Commander, Brawl, Pauper) and strategies (aggro, control, midrange, combo). For Commander format, include `"commanders": ["Card Name"]` to enforce color identity filtering.
+
+### 7. Game Replay (APP-03)
+
+Replay completed games with full board state reconstruction from stored snapshots and transcripts:
+
+```bash
+# Get replay info (total events, turns, phases)
+curl http://localhost:8000/replay/{game_id}/info
+
+# List events (paginated)
+curl "http://localhost:8000/replay/{game_id}/events?page=1&page_size=25"
+
+# Step forward/backward through the game with board state reconstruction
+curl -X POST http://localhost:8000/replay/{game_id}/step \
+  -H "Content-Type: application/json" \
+  -d '{"direction": "forward", "from_event_seq": 10}'
+
+# Get timeline overview (events grouped by turn/phase)
+curl http://localhost:8000/replay/{game_id}/timeline
+```
+
+Board state reconstruction uses a two-tier approach: snapshot anchors (full GameState dumps at priority grants) provide exact state, and incremental transcript event replay fills in intermediate states. All endpoints are stateless — the client controls navigation via `from_event_seq`.
+
+### 8. Spectate WebSocket (APP-04)
+
+Watch a live game in real-time via WebSocket without affecting game state:
+
+```bash
+# Connect as spectator (wscat or any WS client)
+wscat -c ws://localhost:8000/ws/game/{game_id}
+```
+
+On connect, the server sends an `initial_state` message with the full GameState dump. Thereafter, every transcript event (casts, resolves, damage, phase changes, etc.) is streamed as JSON messages in real time. When the game ends, a `game_end` notification includes winner/loser info and the reason.
+
+The endpoint is read-only — incoming non-pong messages are silently ignored. Connections to non-existent or completed games are rejected with close code 4004 before accepting.
+
+**Message types:**
+| Type | Description |
+|------|-------------|
+| `initial_state` | Full GameState dump on connect |
+| `cast`, `resolve`, `damage`, `phase_change`, … | Transcript events as they happen |
+| `game_end` | Winner/loser + reason when game finishes |
+
+**Python example:**
+```python
+import asyncio, websockets
+
+async def spectate(game_id):
+    uri = f"ws://localhost:8000/ws/game/{game_id}"
+    async with websockets.connect(uri) as ws:
+        while True:
+            msg = await ws.recv()
+            print(msg)  # {"type": "cast", "data": {...}, ...}
+
+asyncio.run(spectate("your-game-id"))
+```
+
+### 9. Player Stats & ELO Rating (APP-06)
+
+Track persistent player statistics and ELO ratings across games via MongoDB:
+
+```bash
+# Create or update player stats (idempotent — HTTP 201 on create, 200 on update)
+curl -X POST http://localhost:8000/stats/player/Alice \
+  -H "Content-Type: application/json" \
+  -d '{}'
+
+# Get full player stats with computed total_games and win_rate
+curl http://localhost:8000/stats/player/Alice
+
+# Get leaderboard (top players by ELO descending)
+curl "http://localhost:8000/leaderboard?limit=10"
+
+# Filter leaderboard by format
+curl "http://localhost:8000/leaderboard?format=commander&limit=5"
+
+# Get per-player matchup history
+curl http://localhost:8000/stats/player/Alice/matchups
+```
+
+Stats are automatically updated when a game completes (via `DELETE /game/{id}`). The ELO system uses the standard formula with K=32. All endpoints return HTTP 503 if MongoDB is not configured.
+
+### 10. Delete a game
 
 The canonical agent loop:
 
@@ -232,8 +326,17 @@ mtg_ai_engine/                        ← repository root
 │   │   ├── game.py                    ← Core domain types: Card, Permanent,
 │   │   │                                PlayerState, GameState, StackObject,
 │   │   │                                ManaPool, CombatState, PendingTrigger
+│   │   ├── stats.py                   ← PlayerStats, FormatRecord, MatchupRecord,
+│   │   │                                StatsResponse, LeaderboardEntry, MatchupResult
 │   │   └── actions.py                 ← API request/response types: CastRequest,
 │   │                                     DeclareAttackersRequest, LegalAction, …
+│   │
+│   ├── ai/                            ← Deck Building AI (APP-02)
+│   │   └── deck_builder.py            ← Stateless deck construction: Filter → Score → Select
+│   │                                     → Validate pipeline with strategy weights (aggro/control/
+│   │                                     midrange/combo), CMC curve targeting, format-aware
+│   │                                     filtering (banned lists, singleton dedup per CR 905.2
+│   │                                     with basic land exemption, Commander color identity)
 │   │
 │   ├── card_data/                     ← Card data retrieval and parsing
 │   │   ├── scryfall.py                ← ScryfallClient: fetches card JSON from the
@@ -282,6 +385,10 @@ mtg_ai_engine/                        ← repository root
 │   │   │                                "instead" modifications. Handles infect (-1/-1
 │   │   │                                counters), shield counters, regeneration shields,
 │   │   │                                and damage prevention/reduction.
+│   │   ├── stats.py                   ← Player statistics & ELO: calculate_new_elo()
+│   │   │                                (standard formula, K=32), update_player_stats()
+│   │   │                                (pure transform via model_copy with deep copy of
+│   │   │                                nested dicts for formats and matchups)
 │   │   └── combat.py                  ← Full combat phase (CR 508-511): declare_attackers
 │   │                                     (summoning sickness, vigilance, defender checks),
 │   │                                     declare_blockers (flying/reach enforcement),
@@ -299,14 +406,19 @@ mtg_ai_engine/                        ← repository root
 │   │   ├── transcript.py              ← TranscriptRecorder: event-driven log of every
 │   │   │                                meaningful game event (phase changes, casts, resolves,
 │   │   │                                SBAs, zone changes, damage, choices). Each entry has
-│   │   │                                seq, event_type, description, turn, phase, step.
+│   │   │                                seq, event_type, description, turn, phase, step. Also
+│   │   │                                provides pub/sub listener system (register_listener /
+│   │   │                                unregister_listener) for real-time spectator streaming.
 │   │   ├── rules_qa.py                ← RulesQARecorder: 24 Q&A template functions triggered
 │   │   │                                by engine events (SBAs, damage, trample, layers,
 │   │   │                                replacement effects). Each pair includes the question,
 │   │   │                                answer, and the CR citation it demonstrates.
-│   │   └── outcome.py                 ← build_outcome: assembles the final GameOutcome record
-│   │                                     (winner, loser, turn count, snapshot count, how the
-│   │                                     game ended) after a player has_lost.
+│   │   ├── outcome.py                 ← build_outcome: assembles the final GameOutcome record
+│   │   │                                 (winner, loser, turn count, snapshot count, how the
+│   │   │                                 game ended) after a player has_lost.
+│   │   └── replay_engine.py           ← Stateless replay (APP-03): two-tier board state
+│   │                                     reconstruction from snapshot anchors + incremental
+│   │                                     event replay; timeline generation; pagination helpers
 │   │
 │   └── api/                           ← FastAPI application
 │       ├── main.py                    ← App factory: creates FastAPI instance, mounts both
@@ -323,9 +435,21 @@ mtg_ai_engine/                        ← repository root
 │           │                            pending-triggers, stack, choice. All success responses
 │           │                            wrapped in {"data": ...}; errors return HTTP 422 with
 │           │                            {"error": ..., "error_code": ...}.
-│           └── export.py              ← 4 export endpoints: GET /export/{id}/snapshots (JSONL),
-│                                         /transcript (JSON array), /rules-qa (JSON array),
-│                                         /outcome (single object).
+│           ├── export.py              ← 4 export endpoints: GET /export/{id}/snapshots (JSONL),
+│           │                             /transcript (JSON array), /rules-qa (JSON array),
+│           │                             /outcome (single object).
+│           ├── replay.py              ← 4 replay endpoints at /replay/{game_id}/*: GET /info,
+│           │                             /events (paginated), POST /step (forward/backward with
+│           │                             board state reconstruction), GET /timeline. Stateless —
+│           │                             reads from export store snapshots/transcript only.
+│           ├── player_stats.py        ← Player stats & ELO (APP-06): POST/GET /stats/player/{name},
+│           │                            GET /leaderboard, GET /stats/player/{name}/matchups; async
+│           │                            game completion hook with atomic MongoDB $inc/$set updates;
+│           │                            returns HTTP 503 when MongoDB unconfigured
+│           └── spectate.py            ← WebSocket endpoint WS /ws/game/{game_id}: real-time
+│                                         spectator streaming via pub/sub listener pattern on
+│                                         TranscriptRecorder; sends initial_state, streams events,
+│                                         game_end notification; read-only (APP-04)
 │
 ├── tests/
 │   ├── conftest.py                    ← Adds project root to sys.path
@@ -346,6 +470,8 @@ mtg_ai_engine/                        ← repository root
 │       ├── test_export.py             ← Export endpoint tests
 │       ├── test_bot_games.py          ← Scripted bot games (TASK-25) and concurrent
 │       │                                isolation with 10 simultaneous games (TASK-27)
+│       ├── test_spectate_websocket.py ← WebSocket spectator streaming (APP-04): connect,
+│       │                                event broadcast, game-end notification, cleanup
 │       └── test_performance.py        ← p99 latency benchmarks: empty board, 20 permanents,
 │                                         stack-heavy scenarios — all well under 200ms
 │
@@ -424,6 +550,7 @@ Unknown game IDs return HTTP 404.
 | SQLite cache | `mtg_engine/card_data/cache.db` | Card data cache path |
 | MongoDB URI | `mongodb://localhost:27017` | Training data export target |
 | MongoDB DB | `mtg_training` | Database name |
-| MongoDB collection | `games` | Collection name |
+| MongoDB collection | `games` | Game training data collection |
+| MongoDB collection | `player_stats` | Player stats & ELO ratings (APP-06) |
 
 MongoDB writes are best-effort — if unavailable, the DELETE endpoint still succeeds and export endpoints still return data.

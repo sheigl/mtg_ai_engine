@@ -19,8 +19,8 @@
 
 **Purpose**: Minimal setup since this is an existing project. Ensure MongoDB collection is ready.
 
-- [ ] T001 Add `get_player_defaults_collection()` getter to `mtg_engine/persistence/mongo_client.py`
-- [ ] T002 [P] Create `ensure_player_defaults_indexes()` async function in `mtg_engine/persistence/mongo_client.py` to create unique index on `player_type`
+- [x] T001 Add `get_player_defaults_collection()` getter to `mtg_engine/persistence/mongo_client.py`
+- [x] T002 [P] Create `ensure_player_defaults_indexes()` async function in `mtg_engine/persistence/mongo_client.py` to create unique index on `player_type`
 
 ---
 
@@ -30,11 +30,11 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete.
 
-- [ ] T003 [P] Create `HumanPlayerSettings`, `AiPlayerSettings`, `HeuristicPlayerSettings` Pydantic models in `mtg_engine/models/player_defaults.py`
-- [ ] T004 [P] Create `PlayerTypeDefaults` response model and `SaveDefaultsRequest` request model in `mtg_engine/models/player_defaults.py`
-- [ ] T005 [P] Create `validate_settings_for_type()` and `merge_with_defaults()` helpers in `mtg_engine/models/player_defaults.py` (request values take precedence over defaults)
-- [ ] T006 Implement async CRUD operations (`get_defaults`, `save_defaults`, `delete_defaults`, `list_defaults`) in `mtg_engine/persistence/player_defaults.py`
-- [ ] T007 Wire `ensure_player_defaults_indexes()` into the application lifespan in `mtg_engine/api/main.py`
+- [x] T003 [P] Create `HumanPlayerSettings`, `AiPlayerSettings`, `HeuristicPlayerSettings` Pydantic models in `mtg_engine/models/player_defaults.py`
+- [x] T004 [P] Create `PlayerTypeDefaults` response model and `SaveDefaultsRequest` request model in `mtg_engine/models/player_defaults.py`
+- [x] T005 [P] Create `validate_settings_for_type()` and `merge_with_defaults()` helpers in `mtg_engine/models/player_defaults.py` (request values take precedence over defaults)
+- [x] T006 Implement async CRUD operations (`get_defaults`, `save_defaults`, `delete_defaults`, `list_defaults`) in `mtg_engine/persistence/player_defaults.py`
+- [x] T007 Wire `ensure_player_defaults_indexes()` into the application lifespan in `mtg_engine/api/main.py`
 
 **Checkpoint**: Foundation ready - Pydantic models validate correctly, MongoDB collection is accessible, and CRUD functions work against the database.
 
@@ -48,11 +48,11 @@
 
 ### Implementation for User Story 1
 
-- [ ] T008 [P] [US1] Implement GET `/player-defaults` endpoint in `mtg_engine/api/routers/player_defaults.py`
-- [ ] T009 [P] [US1] Implement GET `/player-defaults/{player_type}` endpoint in `mtg_engine/api/routers/player_defaults.py`
-- [ ] T010 [US1] Implement PUT `/player-defaults/{player_type}` endpoint in `mtg_engine/api/routers/player_defaults.py`
-- [ ] T011 [P] [US1] Implement DELETE `/player-defaults/{player_type}` endpoint in `mtg_engine/api/routers/player_defaults.py`
-- [ ] T012 [US1] Register `player_defaults` router with `/player-defaults` prefix in `mtg_engine/api/main.py`
+- [x] T008 [P] [US1] Implement GET `/player-defaults` endpoint in `mtg_engine/api/routers/player_defaults.py`
+- [x] T009 [P] [US1] Implement GET `/player-defaults/{player_type}` endpoint in `mtg_engine/api/routers/player_defaults.py`
+- [x] T010 [US1] Implement PUT `/player-defaults/{player_type}` endpoint in `mtg_engine/api/routers/player_defaults.py`
+- [x] T011 [P] [US1] Implement DELETE `/player-defaults/{player_type}` endpoint in `mtg_engine/api/routers/player_defaults.py`
+- [x] T012 [US1] Register `player_defaults` router with `/player-defaults` prefix in `mtg_engine/api/main.py`
 
 **Checkpoint**: At this point, User Story 1 should be fully functional. The admin CRUD API works independently and can be tested via curl or HTTP client without any game creation logic.
 
@@ -66,10 +66,10 @@
 
 ### Implementation for User Story 2
 
-- [ ] T013 [US2] Create `get_merged_player_settings(player_type, request_values)` async helper in `mtg_engine/persistence/player_defaults.py` (fetches defaults and merges with request values)
-- [ ] T014 [US2] Modify `POST /game` in `mtg_engine/api/routers/game.py` to call the merge helper for both `player1_type` and `player2_type` before `GameManager.create_game`
-- [ ] T015 [US2] Modify `POST /human-game` in `mtg_engine/api/routers/human_game.py` to call the merge helper for the AI player and apply merged `ai_model`, `ai_base_url`, `ai_enable_thinking` values
-- [ ] T016 [US2] Modify `POST /ai-game` in `mtg_engine/api/routers/ai_game.py` to call the merge helper for both AI players before game creation
+- [x] T013 [US2] Create `get_merged_player_settings(player_type, request_values)` async helper in `mtg_engine/persistence/player_defaults.py` (fetches defaults and merges with request values)
+- [x] T014 [US2] Modify `POST /game` in `mtg_engine/api/routers/game.py` to call the merge helper for both `player1_type` and `player2_type` before `GameManager.create_game`
+- [x] T015 [US2] Modify `POST /human-game` in `mtg_engine/api/routers/human_game.py` to call the merge helper for the AI player and apply merged `ai_model`, `ai_base_url`, `ai_enable_thinking` values
+- [x] T016 [US2] Modify `POST /ai-game` in `mtg_engine/api/routers/ai_game.py` to call the merge helper for both AI players before game creation
 
 **Checkpoint**: At this point, User Stories 1 AND 2 should both work independently. Creating games with defaults configured uses those defaults; creating games without defaults uses existing behavior.
 
@@ -83,10 +83,10 @@
 
 ### Implementation for User Story 3
 
-- [ ] T017 [US3] Verify `merge_with_defaults()` helper in `mtg_engine/models/player_defaults.py` correctly gives precedence to non-empty request values over defaults
-- [ ] T018 [US3] Ensure `POST /human-game` in `mtg_engine/api/routers/human_game.py` respects explicit request values (`ai_model`, `ai_base_url`, `ai_enable_thinking`) over fetched defaults
-- [ ] T019 [US3] Ensure `POST /game` in `mtg_engine/api/routers/game.py` and `POST /ai-game` in `mtg_engine/api/routers/ai_game.py` respect explicit request values over fetched defaults
-- [ ] T020 [US3] Verify that updating defaults via PUT `/player-defaults/{player_type}` does not affect existing in-memory games (defaults are read at creation time only)
+- [x] T017 [US3] Verify `merge_with_defaults()` helper in `mtg_engine/models/player_defaults.py` correctly gives precedence to non-empty request values over defaults
+- [x] T018 [US3] Ensure `POST /human-game` in `mtg_engine/api/routers/human_game.py` respects explicit request values (`ai_model`, `ai_base_url`, `ai_enable_thinking`) over fetched defaults
+- [x] T019 [US3] Ensure `POST /game` in `mtg_engine/api/routers/game.py` and `POST /ai-game` in `mtg_engine/api/routers/ai_game.py` respect explicit request values over fetched defaults
+- [x] T020 [US3] Verify that updating defaults via PUT `/player-defaults/{player_type}` does not affect existing in-memory games (defaults are read at creation time only)
 
 **Checkpoint**: All user stories should now be independently functional. Request values override defaults, and defaults updates are non-retroactive.
 
@@ -96,12 +96,12 @@
 
 **Purpose**: Error handling, documentation, and validation across all user stories.
 
-- [ ] T021 [P] Add 422 validation for unsupported `player_type` values across all `/player-defaults` endpoints in `mtg_engine/api/routers/player_defaults.py`
-- [ ] T022 [P] Add 503 `MONGODB_NOT_CONFIGURED` responses to all new endpoints when MongoDB is not configured
-- [ ] T023 [P] Add module-level docstrings and type annotations to `mtg_engine/models/player_defaults.py`
-- [ ] T024 [P] Add module-level docstrings and type annotations to `mtg_engine/persistence/player_defaults.py`
-- [ ] T025 [P] Add module-level docstrings and type annotations to `mtg_engine/api/routers/player_defaults.py`
-- [ ] T026 Validate quickstart.md examples (PUT, GET, DELETE, game creation with defaults) against a running local server
+- [x] T021 [P] Add 422 validation for unsupported `player_type` values across all `/player-defaults` endpoints in `mtg_engine/api/routers/player_defaults.py`
+- [x] T022 [P] Add 503 `MONGODB_NOT_CONFIGURED` responses to all new endpoints when MongoDB is not configured
+- [x] T023 [P] Add module-level docstrings and type annotations to `mtg_engine/models/player_defaults.py`
+- [x] T024 [P] Add module-level docstrings and type annotations to `mtg_engine/persistence/player_defaults.py`
+- [x] T025 [P] Add module-level docstrings and type annotations to `mtg_engine/api/routers/player_defaults.py`
+- [x] T026 Validate quickstart.md examples (PUT, GET, DELETE, game creation with defaults) against a running local server
 
 ---
 

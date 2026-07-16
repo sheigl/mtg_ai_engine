@@ -4,8 +4,6 @@ Feature 011-observer-ai-commentary.
 """
 import json
 import logging
-import time
-import uuid
 from typing import Callable
 
 import openai

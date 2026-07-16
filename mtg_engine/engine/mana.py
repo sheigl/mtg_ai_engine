@@ -1,11 +1,18 @@
 """
 Mana system. REQ-A07, mana cost validation and payment.
 Supports W, U, B, R, G, C (colorless), and generic (number).
-Also supports hybrid, Phyrexian, and snow mana symbols.
+Also supports hybrid, Phyrexian, snow, split, and energy mana symbols.
+MANA-01: Enhanced mana pool with split/colored mana.
+MANA-02: Full land mana ability support.
+MANA-03: Mana production events.
 """
+import logging
 import re
+from typing import Any
 
 from mtg_engine.models.game import GameState, ManaPool
+
+logger = logging.getLogger(__name__)
 
 
 # Regex to parse mana symbols from a mana cost string like "{2}{R}{U}"
@@ -260,15 +267,260 @@ def add_mana(pool: ManaPool, symbol: str, amount: int = 1, is_snow: bool = False
             color_key = symbol if symbol != "C" else "C"
             new_pool.snow_by_color[color_key] = new_pool.snow_by_color.get(color_key, 0) + amount
     else:
-        # Unknown symbol — log and ignore
-        import logging
-        logging.getLogger(__name__).warning("add_mana: unknown symbol %r", symbol)
+        logger.warning("add_mana: unknown symbol %r", symbol)
     return new_pool
 
 
 def empty_pool(pool: ManaPool) -> ManaPool:
     """Return an empty mana pool (all zeros)."""
     return ManaPool()
+
+
+# ─── MANA-01: Mana Pool Enhancement ──────────────────────────────────────────
+
+_COLOR_SYMBOLS = {"W", "U", "B", "R", "G"}
+_SYMBOL_TO_NAME = {
+    "W": "white", "U": "blue", "B": "black", "R": "red", "G": "green",
+}
+_NAME_TO_SYMBOL = {v: k for k, v in _SYMBOL_TO_NAME.items()}
+
+
+def get_mana_colors(pool: ManaPool) -> set[str]:
+    """
+    Return the set of colors present in the mana pool.
+
+    Returns color names like {"white", "blue"}.
+    """
+    colors: set[str] = set()
+    for sym in _COLOR_SYMBOLS:
+        if getattr(pool, sym, 0) > 0:
+            colors.add(_SYMBOL_TO_NAME[sym])
+    return colors
+
+
+def pool_can_produce_color(pool: ManaPool, color: str) -> bool:
+    """
+    Check if the pool has at least one mana of the given color.
+
+    Args:
+        pool: Current mana pool.
+        color: Color name ("white"/"blue"/"black"/"red"/"green")
+                or symbol ("W"/"U"/"B"/"R"/"G").
+    """
+    sym = _NAME_TO_SYMBOL.get(color, color)
+    sym = sym.upper()
+    return sym in _COLOR_SYMBOLS and getattr(pool, sym, 0) > 0
+
+
+def add_split_mana(pool: ManaPool, symbol_a: str, symbol_b: str, amount: int = 1) -> ManaPool:
+    """
+    Add split mana to a pool. Split mana ({W/U}) means the controller
+    chooses which color to add. This helper adds both options to the
+    pool for maximum flexibility (used internally by mana abilities
+    that produce split mana).
+
+    In practice, the controller picks one. For the engine, we add both
+    and let cost payment choose.
+
+    Args:
+        pool: Current mana pool.
+        symbol_a: First mana symbol (e.g., "W").
+        symbol_b: Second mana symbol (e.g., "U").
+        amount: Amount of each symbol to add.
+
+    Returns:
+        New ManaPool with split mana added.
+    """
+    result = pool.model_copy()
+    if symbol_a in ("W", "U", "B", "R", "G", "C"):
+        setattr(result, symbol_a, getattr(result, symbol_a, 0) + amount)
+    if symbol_b in ("W", "U", "B", "R", "G", "C"):
+        setattr(result, symbol_b, getattr(result, symbol_b, 0) + amount)
+    return result
+
+
+# ─── MANA-02: Mana Abilities (Land) ──────────────────────────────────────────
+
+def parse_land_mana_production(oracle_text: str) -> list[dict[str, Any]]:
+    """
+    Parse mana production abilities from oracle text.
+
+    Returns list of dicts with keys:
+      - symbols: list of mana symbols produced (e.g., ["W", "U"])
+      - tap_required: whether {T} is in the cost
+      - sacrifice_required: whether "sacrifice" is in the cost
+      - conditional: condition text if any (e.g., "if you control an Island")
+      - choice: True if the ability offers a choice (e.g., "add {W} or {U}")
+
+    Examples:
+      "{T}: Add {G}" → [{"symbols": ["G"], "tap_required": True, "choice": False}]
+      "{T}: Add {W} or {U}" → [{"symbols": ["W", "U"], "tap_required": True, "choice": True}]
+      "When ~ enters, add {C}" → [{"symbols": ["C"], "tap_required": False, "choice": False}]
+    """
+    import re as _re
+
+    results: list[dict[str, Any]] = []
+    if not oracle_text:
+        return results
+
+    # Split oracle text into individual ability lines (split on newlines and periods followed by space)
+    ability_lines = re.split(r"\n|(?<=[.!])\s+", oracle_text)
+
+    for line in ability_lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        tap_required = "{t}" in line.lower() or "{tap}" in line.lower()
+        sacrifice_required = "sacrifice" in line.lower()
+
+        # Check for conditional ("if ...")
+        cond_match = _re.search(r"\bif\s+(.+?)(?:\.|$)", line, _re.IGNORECASE)
+        conditional = cond_match.group(1).strip() if cond_match else None
+
+        # Find "add {X}" patterns
+        add_matches = list(_re.finditer(r"\badd\s+(\{[^}]+\})", line, _re.IGNORECASE))
+        if not add_matches:
+            continue
+
+        symbols: list[str] = []
+        choice = False
+
+        # Check for "or" choice between mana symbols
+        or_match = _re.search(
+            r"\badd\s+\{([^}]+)\}\s+or\s+\{([^}]+)\}",
+            line,
+            _re.IGNORECASE,
+        )
+        if or_match:
+            symbols = [or_match.group(1).strip("{}").upper(), or_match.group(2).strip("{}").upper()]
+            choice = True
+        else:
+            for m in add_matches:
+                sym = m.group(1).strip("{}").upper()
+                symbols.append(sym)
+
+        results.append({
+            "symbols": symbols,
+            "tap_required": tap_required,
+            "sacrifice_required": sacrifice_required,
+            "conditional": conditional,
+            "choice": choice,
+        })
+
+    return results
+
+
+def get_land_mana_abilities(permanent) -> list[dict[str, Any]]:
+    """
+    Get all mana abilities a land permanent can produce.
+
+    Combines basic land defaults with parsed oracle text.
+
+    Args:
+        permanent: The land permanent on the battlefield.
+
+    Returns:
+        List of mana ability dicts.
+    """
+    card = permanent.card
+    type_line = (card.type_line or "").lower()
+
+    # Basic lands produce their default color
+    basic_map = {
+        "plains": ["W"],
+        "island": ["U"],
+        "swamp": ["B"],
+        "mountain": ["R"],
+        "forest": ["G"],
+    }
+
+    results: list[dict[str, Any]] = []
+
+    for land_type, symbols in basic_map.items():
+        if land_type in type_line:
+            results.append({
+                "symbols": symbols,
+                "tap_required": True,
+                "sacrifice_required": False,
+                "conditional": None,
+                "choice": False,
+            })
+
+    # Parse additional abilities from oracle text
+    oracle_abilities = parse_land_mana_production(card.oracle_text or "")
+    results.extend(oracle_abilities)
+
+    return results
+
+
+def resolve_land_mana_ability(
+    game_state: GameState,
+    permanent_id: str,
+    ability_index: int = 0,
+    chosen_symbol: str | None = None,
+) -> GameState:
+    """
+    Resolve a land's mana ability: tap the land and add mana to the controller's pool.
+
+    Args:
+        game_state: Current game state.
+        permanent_id: ID of the land permanent.
+        ability_index: Index into the list of mana abilities (for lands with multiple).
+        chosen_symbol: For choice abilities, which symbol to produce.
+
+    Returns:
+        Updated game state with mana added to pool.
+    """
+    permanent = next(
+        (p for p in game_state.battlefield if p.id == permanent_id),
+        None,
+    )
+    if permanent is None:
+        logger.warning("Permanent %r not found for land mana ability", permanent_id)
+        return game_state
+
+    abilities = get_land_mana_abilities(permanent)
+    if ability_index >= len(abilities):
+        logger.warning("Ability index %d out of range for %s", ability_index, permanent.card.name)
+        return game_state
+
+    ability = abilities[ability_index]
+    symbols = ability["symbols"]
+
+    # Tap the land
+    permanent.tapped = True
+
+    # Determine which symbol to add
+    if ability["choice"] and chosen_symbol and chosen_symbol in symbols:
+        produce_symbol = chosen_symbol
+    elif len(symbols) == 1:
+        produce_symbol = symbols[0]
+    elif len(symbols) > 1:
+        produce_symbol = symbols[0]  # Default to first
+    else:
+        return game_state
+
+    # Add mana to controller's pool
+    controller_name = permanent.controller
+    player = next(
+        (p for p in game_state.players if p.name == controller_name),
+        None,
+    )
+    if player is None:
+        logger.warning("Player %r not found for land mana ability", controller_name)
+        return game_state
+
+    is_snow = any("snow" in s.lower() for s in (permanent.card.supertypes or []))
+    sym_upper = produce_symbol.upper()
+    if sym_upper in ("W", "U", "B", "R", "G", "C"):
+        player.mana_pool = add_mana(player.mana_pool, sym_upper, 1, is_snow=is_snow)
+        logger.debug(
+            "Land mana: %s added {%s} to %s's pool",
+            permanent.card.name, sym_upper, controller_name,
+        )
+
+    return game_state
 
 
 def apply_keyword_cost_reductions(
@@ -291,7 +543,6 @@ def apply_keyword_cost_reductions(
         Effective cost dict {symbol: count} after applying reductions
     """
     import re
-    from mtg_engine.engine.zones import get_player
     
     # Start with base cost
     cost = parse_mana_cost(base_cost)
@@ -311,7 +562,6 @@ def apply_keyword_cost_reductions(
     
     # CR 702.142: Affinity — reduce cost by {1} for each permanent on battlefield of the type
     # (Check oracle_text for affinity pattern "affinity for [type]")
-    from mtg_engine.models.game import Card  # Import here to avoid circular imports
     
     card = next((c for p in game_state.players for c in p.hand if c.id == cast_request.card_id), None)
     if card:

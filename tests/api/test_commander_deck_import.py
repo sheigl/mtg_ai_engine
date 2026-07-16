@@ -5,11 +5,12 @@ Bug: load_commander_deck expected the commander to be inside the 100-card list,
 but DEFAULT_COMMANDER_DECK and natural API usage pass 99 non-commander cards
 with the commander specified separately via the commander1/commander2 fields.
 """
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from fastapi.testclient import TestClient
 from mtg_engine.api.main import app
 from mtg_engine.api.game_manager import get_manager

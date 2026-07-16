@@ -1,8 +1,9 @@
 import hashlib
 import uuid
 from enum import Enum
-from typing import Optional, Any
+from typing import Optional
 from pydantic import BaseModel, Field
+from mtg_engine.models.dungeon import DungeonProgress
 
 
 class DamageModifier(BaseModel):
@@ -70,6 +71,9 @@ class Card(BaseModel):
     card_layout: str = "normal" # "normal", "split", "mdfc", "adventure", "aftermath", "transform"
     # US23: Snow supertype for snow mana tracking
     supertypes: list[str] = Field(default_factory=list)
+    # FMT-01: Format validation metadata
+    rarity: Optional[str] = None       # "c", "u", "r", "m", "mythical", "special"
+    set_code: Optional[str] = None     # e.g. "MOM", "ONE", "MH1"
 
 
 class ManaPool(BaseModel):
@@ -97,6 +101,7 @@ class Permanent(BaseModel):
     turn_entered_battlefield: int = 0
     summoning_sick: bool = True
     is_face_down: bool = False
+    face_index: int = 0  # DNG-01: which face is showing for DFC/transform cards
     timestamp: float = 0.0  # for layer system ordering (CR 613.7)
     copy_of_permanent_id: Optional[str] = None  # layer 1 copy effects (014)
     # Temporary P/T bonuses from "until end of turn" effects (layer 7c)
@@ -157,6 +162,23 @@ class StackObject(BaseModel):
     is_foretold: bool = False
     mutate_target_id: Optional[str] = None
     mutate_on_top: bool = True
+    # SPL-02: Overload (CR 702.76)
+    overload_paid: bool = False
+
+
+class ExileStack(BaseModel):
+    """A group of cards exiled together by the same effect. CR 402.1"""
+    stack_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    cards: list[Card] = Field(default_factory=list)
+    reason: str = ""  # "suspend", "foretell", "adventure", "unearth", "spell_resolution", etc.
+    controller: str = ""  # Player who controls this exile stack
+    face_down: bool = False  # For foretell and other face-down exile effects
+
+
+class GraveyardEntry(BaseModel):
+    """Tracks a card in the graveyard with ordering and provenance. CR 402.2"""
+    card: Card
+    entry_order: int = 0  # Monotonically increasing; higher = more recent
 
 
 class Emblem(BaseModel):
@@ -174,7 +196,7 @@ class PlayerState(BaseModel):
     life: int = 20
     hand: list[Card] = Field(default_factory=list)
     library: list[Card] = Field(default_factory=list)  # index 0 = top
-    graveyard: list[Card] = Field(default_factory=list)
+    graveyard: list[Card] = Field(default_factory=list)  # index 0 = top (most recent)
     exile: list[Card] = Field(default_factory=list)
     poison_counters: int = 0
     mana_pool: ManaPool = Field(default_factory=ManaPool)
@@ -187,7 +209,9 @@ class PlayerState(BaseModel):
     # Commander format
     command_zone: list[Card] = Field(default_factory=list)
     commander_name: Optional[str] = None
+    commander_names: list[str] = Field(default_factory=list)  # CMD-01: Partner support
     commander_cast_counts: dict[str, int] = Field(default_factory=dict)  # keyed by card name (partner support)
+    commander_damage: dict[str, int] = Field(default_factory=dict)  # CMD-01: permanent ID -> damage (CR 903.10a)
     # New fields for 018 feature
     suspended_cards: list[Card] = Field(default_factory=list)   # Cards exiled via Suspend (with time_counters)
     foretold_cards: list[Card] = Field(default_factory=list)    # Cards exiled face-down via Foretell
@@ -198,6 +222,8 @@ class PlayerState(BaseModel):
     foretold_turns: dict[str, int] = Field(default_factory=dict)  # card_id -> turn when foretold
     # US18: Adventure — exiled adventure spell cards whose creature half can be cast
     adventure_cards: list[Card] = Field(default_factory=list)
+    # ZN-04: Sideboard zone
+    sideboard: list[Card] = Field(default_factory=list)
 
 
 class PendingTrigger(BaseModel):
@@ -218,6 +244,18 @@ class DamagePreventionEffect(BaseModel):
     remaining: Optional[int] = None   # None = unlimited (until end of turn)
     combat_only: bool = False
     color_restriction: Optional[str] = None  # prevents damage only from this color source
+    extra: dict = Field(default_factory=dict)  # expires, description, etc. (REP-01)
+
+
+class DurationEffect(BaseModel):
+    """Tracks an effect with a duration scope. CR 611.3 (REP-03)."""
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    controller: str
+    description: str = ""
+    expires: str = "end_of_turn"  # "end_of_turn" or "player:<name>"
+    target_id: Optional[str] = None
+    source_permanent_id: Optional[str] = None
+    extra: dict = Field(default_factory=dict)
 
 
 class AttackConstraint(BaseModel):
@@ -269,6 +307,7 @@ class GameState(BaseModel):
     state_hash: str = ""
     is_game_over: bool = False
     winner: Optional[str] = None
+    game_over_reason: Optional[str] = None
     combat: Optional[CombatState] = None
     # Series mode (032-game-series)
     series_id: Optional[str] = None
@@ -289,9 +328,11 @@ class GameState(BaseModel):
     block_constraints: list[BlockConstraint] = Field(default_factory=list)
     prevent_all_combat_damage: bool = False
     phase_skip_flags: dict[str, bool] = Field(default_factory=dict)
+    _explicit_phase_skip_done: bool = False
     debug_enabled: bool = False
     # Mulligan phase (017-forge-ai-parity)
     mulligan_phase_active: bool = False
+    mulligan_variant: str = "london"  # london, vancouver, paris, original
     hands_mulliganed: dict[str, int] = Field(default_factory=dict)
     players_kept: list[str] = Field(default_factory=list)
     # Cascade pending choice (017-forge-ai-parity)
@@ -301,6 +342,8 @@ class GameState(BaseModel):
     # Spree mechanic choice (036-spree)
     pending_spree_choice: Optional[dict] = None
     # Format: {"player": str, "card_id": str, "card_name": str, "modes": [{"cost": str, "effect": str}]}
+    pending_spree_effects: list[dict] = Field(default_factory=list)
+    # Format: [{"effect": str, "card_id": str}] — stores selected spree mode effects for resolution
     # Format: {"player": str, "cards": [Card], "n": int}
     pending_surveil_choice: Optional[dict] = None
     # Format: {"player": str, "cards": [Card], "n": int}
@@ -315,8 +358,11 @@ class GameState(BaseModel):
     pending_proliferate_choice: Optional[dict] = None
     # Format: {"player": str, "eligible": [{"id": str, "name": str, "counters": dict}]}
     # Transform tracking
-    spells_cast_this_turn: int = 0    # Reset each turn; checked for werewolf conditions
-    spells_cast_last_turn: int = 0    # Snapshot of previous turn's count
+    spells_cast_this_turn: int = 0    # Reset each turn (Storm: total this turn by all players)
+    spells_cast_this_turn_by_player: dict[str, int] = Field(default_factory=dict)  # per-player, for day/night
+    spells_cast_last_turn: int = 0    # Snapshot of previous active player's spell count
+    # DNG-01: Day/Night cycle (CR 730)
+    is_day: Optional[bool] = None  # None=neither, True=day, False=night
     # Extra turns queue (CR 500.7): LIFO — pop() gives next extra turn recipient
     extra_turns: list[str] = Field(default_factory=list)
     # Delayed triggered abilities (CR 603.7): fire at a future phase/step
@@ -336,13 +382,68 @@ class GameState(BaseModel):
     pending_morph_payment: Optional[dict] = None
     # US27: Echo payment
     pending_echo_payment: Optional[dict] = None
+    # MON-01: The Monarch
+    monarch: Optional[str] = None
+    # COM-01: Companion — tracks which players have used their companion activation this game
+    companion_used: dict[str, bool] = Field(default_factory=dict)
+    # INT-01: The Initiative
+    initiative: Optional[str] = None
+    # VEN-01: Venture into the Dungeon tracking
+    player_dungeons: dict[str, DungeonProgress] = Field(default_factory=dict)
+    player_completed_dungeons: dict[str, int] = Field(default_factory=dict)
     # ETB choice (034-etb-choices): shockland, checkland, fetchland, snow dual
     # Format: {"player": str, "permanent_id": str, "permanent_name": str, 
     #         "choice_type": str, "cost_amount": int, "cost_type": str,
     #         "required_type": str, "alternatives": [str]}
     pending_etb_choice: Optional[dict] = None
+    # CMD-01: Commander zone replacement choice (CR 903.9)
+    # Format: {"player": str, "card": Card, "permanent_id": str|None,
+    #         "intended_destination": str, "from_zone": str}
+    pending_commander_zone_choice: Optional[dict] = None
+    # VEN-01: Dungeon room choice (CR 701.61)
+    # Format: {"player": str, "dungeon_name": str, "room_index": int,
+    #         "choices": list[DungeonRoomChoice]}
+    pending_dungeon_room_choice: Optional[dict] = None
+    # KW-16: Kicker choice
+    # Format: {"player": str, "card_id": str, "card_name": str, "kicker_cost": str,
+    #         "base_cost": str, "resolved": bool}
+    pending_kicker_choice: Optional[dict] = None
+    # KW-17: Flashback choice
+    # Format: {"player": str, "card_id": str, "card_name": str, "flashback_cost": str,
+    #         "resolved": bool}
+    pending_flashback_exile: Optional[dict] = None
+    # KW-18: Escape choice
+    pending_escape_exile: Optional[dict] = None
+    # KW-19: Delve choice
+    # Format: {"player": str, "card_id": str, "card_name": str,
+    #         "delve_cost": str, "cards_to_exile": int,
+    #         "card_ids": list[str], "resolved": bool}
+    pending_delve_choice: Optional[dict] = None
+    # KW-22: Madness choice (CR 702.35)
+    # Format: {"player": str, "card_id": str, "card_name": str, "madness_cost": str,
+    #         "resolved": bool}
+    pending_madness_choice: Optional[dict] = None
+    # KW-24: Ninjutsu choice (CR 702.61)
+    # Format: {"player": str, "ninja_card_id": str, "ninja_card_name": str,
+    #         "attacker_perm_id": str, "attacker_name": str,
+    #         "defending_player": str, "resolved": bool}
+    pending_ninjutsu_choice: Optional[dict] = None
+    # KW-25: Dash choice (CR 702.138)
+    # Format: {"player": str, "card_id": str, "card_name": str, "dash_cost": str,
+    #         "resolved": bool}
+    pending_dash_choice: Optional[dict] = None
+    # KW-25: Dashed creatures tracking (perm_id -> owner_player)
+    dashed_creatures: dict[str, str] = Field(default_factory=dict)
     # Transcript for persistence (034-game-persistence)
     transcript_entries: list[dict] = Field(default_factory=list)
+    # ZN-01: Exile stacks for grouped exile tracking (CR 402.1)
+    exile_stacks: list[ExileStack] = Field(default_factory=list)
+    # ZN-02: Graveyard entry counter for ordering
+    graveyard_entry_counter: int = 0
+    # REP-02: Draw replacement effects
+    draw_replacements: list = Field(default_factory=list)
+    # REP-03: Duration-tracked effects
+    duration_effects: list[DurationEffect] = Field(default_factory=list)
 
     def compute_hash(self) -> str:
         """Compute deterministic hash of state, excluding state_hash itself. REQ-API05"""

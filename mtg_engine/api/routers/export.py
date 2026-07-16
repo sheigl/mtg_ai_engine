@@ -1,11 +1,10 @@
 """Export endpoints. TASK-23. REQ-D01–REQ-D10."""
-import json
 import logging
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse
 
 from mtg_engine.api.game_manager import get_manager
-from mtg_engine.export.store import get_export_store, delete_export_store
+from mtg_engine.export.store import get_export_store
 from mtg_engine.export.outcome import build_outcome
 from mtg_engine.export.game_log import build_game_log
 

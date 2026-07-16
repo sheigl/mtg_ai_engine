@@ -9,7 +9,7 @@ import uuid
 
 from mtg_engine.models.game import Card, GameState, StackObject
 from mtg_engine.engine.mana import can_pay_cost, pay_cost
-from mtg_engine.engine.zones import get_player, move_permanent_to_zone, put_permanent_onto_battlefield
+from mtg_engine.engine.zones import get_player, put_permanent_onto_battlefield
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,7 @@ def cast_spell(
     mutate_on_top: bool = True,
     from_graveyard: bool = False,
     from_adventure_exile: bool = False,
+    overload_paid: bool = False,
 ) -> GameState:
     """
     Cast a spell from a player's hand (or graveyard/adventure exile).
@@ -145,7 +146,6 @@ def cast_spell(
         # Pay generic with whatever's left
         generic_needed = cost_dict.get("generic", 0)
         if generic_needed:
-            from collections import Counter
             pool_available = sum(v for v in pool_dict.values() if v > 0)
             if pool_available >= generic_needed:
                 mana_payment["C"] = min(generic_needed, pool_available)
@@ -218,6 +218,9 @@ def cast_spell(
     is_flashback = alternative_cost == "flashback"
     is_escape = alternative_cost == "escape"
 
+    # SPL-02: Detect overload (CR 702.76)
+    has_overload = "overload" in oracle_lower
+
     # US30: Validate mutate target
     if mutate_target_id:
         target_perm = next((p for p in game_state.battlefield if p.id == mutate_target_id), None)
@@ -254,6 +257,7 @@ def cast_spell(
         is_foretold=alternative_cost in ("foretell", "cast_foretold"),
         mutate_target_id=mutate_target_id,
         mutate_on_top=mutate_on_top,
+        overload_paid=overload_paid,  # SPL-02: Overload (CR 702.76)
     )
     game_state.stack.append(stack_obj)
 
@@ -261,6 +265,11 @@ def cast_spell(
 
     # Priority returns to active player after spell is placed on stack (REQ-S01)
     game_state.priority_holder = game_state.active_player
+
+    # DNG-01: Track spell cast for Storm, day/night, etc.
+    game_state.spells_cast_this_turn += 1
+    game_state.spells_cast_this_turn_by_player[player_name] = \
+        game_state.spells_cast_this_turn_by_player.get(player_name, 0) + 1
 
     return game_state
 
@@ -607,6 +616,15 @@ def resolve_top(game_state: GameState) -> GameState:
                             update={"keywords": list(target_perm.card.keywords) + [kw]}
                         )
     elif "instant" in type_lower or "sorcery" in type_lower:
+        # SPL-02: Overload (CR 702.76) — if overload was paid, get all valid targets
+        if stack_obj.overload_paid and "overload" in oracle_lower:
+            from mtg_engine.ability.keywords.overload import get_overload_targets
+            all_targets = get_overload_targets(card.oracle_text or "", game_state)
+            if all_targets:
+                logger.info("Overload: %s affecting %d targets", card.name, len(all_targets))
+                # Update targets to include all valid targets for overload
+                stack_obj.targets = all_targets
+        
         # US7: Handle replicate before resolving (CR 702.87)
         if stack_obj.replicate_count > 0 and not stack_obj.is_copy:
             for _ in range(stack_obj.replicate_count):
@@ -724,15 +742,49 @@ def _apply_triggered_effect(game_state: GameState, stack_obj: StackObject) -> Ga
     return game_state
 
 
+def _word_to_int(word: str) -> int:
+    """Convert word numbers to integers."""
+    mapping = {
+        'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+        'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10
+    }
+    return mapping.get(word.lower(), 1)
+
+
 def _apply_single_effect_text(game_state: GameState, stack_obj: StackObject, effect_text: str) -> GameState:
     """Apply the effect of a single oracle text clause against the pattern list."""
     card = stack_obj.source_card
     x_value = stack_obj.x_value
 
+    # Determine target player for effects that use "target player"
+    # Default to controller, but use stack_obj.targets[0] if it's a player name
+    target_player = stack_obj.controller
+    if stack_obj.targets and isinstance(stack_obj.targets[0], str):
+        # Check if target is a player name
+        for p in game_state.players:
+            if p.name == stack_obj.targets[0]:
+                target_player = stack_obj.targets[0]
+                break
+
     patterns = [
-        (r"draw (\d+|x) cards?",
+        # ── Spree-specific patterns (BUG-26) ───────────────────────────────
+        # "Search your library for a card, then shuffle and put that card on top."
+        (r"search your library for a card.*?put (?:that )?card on top",
+         lambda m: _tutor_to_top(game_state, stack_obj.controller)),
+        # "Target player draws N cards and loses X life" (combined effect)
+        (r"(?:target player |)draws? (\d+|x|one|two|three|four|five|six|seven|eight|nine|ten) cards?.*?loses? (\d+|x|one|two|three|four|five|six|seven|eight|nine|ten) life",
+         lambda m: _apply_combined_draw_lose_life(
+             game_state, target_player,
+             int(m.group(1)) if m.group(1).isdigit() else (x_value if m.group(1).lower() == 'x' else _word_to_int(m.group(1))),
+             int(m.group(2)) if m.group(2).isdigit() else (x_value if m.group(2).lower() == 'x' else _word_to_int(m.group(2))))),
+        # ── Regular tutor-to-hand (non-Spree) ─────────────────────────────
+        (r"search your library for a card.*?put (?:it|that card) into your hand",
+         lambda m: _tutor(game_state, stack_obj.controller, "any", "hand")),
+        # ──────────────────────────────────────────────────────────────────────
+        (r"draw (\d+|x|one|two|three|four|five|six|seven|eight|nine|ten) cards?",
          lambda m: _draw_cards(game_state, stack_obj.controller,
-                               int(m.group(1)) if m.group(1).isdigit() else x_value)),
+                                                                 int(m.group(1)) if m.group(1).isdigit() else (x_value if m.group(1).lower() == 'x' else _word_to_int(m.group(1))))),
+
         (r"destroy target [\w\s]+",
          lambda m: _destroy_permanent(game_state, stack_obj.targets[0] if stack_obj.targets else None)),
         (r"exile target [\w ]+",
@@ -742,33 +794,33 @@ def _apply_single_effect_text(game_state: GameState, stack_obj: StackObject, eff
         # Token with prowess keyword and optional colors
         (r"create (a|an|one|two|three|\d+) (\d+)/(\d+) ((?:blue|red|white|black|green) and (?:blue|red|white|black|green) )?([\w ]+) creature tokens? with prowess",
          lambda m: _create_token_with_keywords(game_state, stack_obj.controller,
-                                   m.group(1), m.group(5).strip() if m.group(5) else m.group(4),
-                                   "prowess")),
+                                    m.group(1), m.group(5).strip() if m.group(5) else m.group(4),
+                                    "prowess")),
         # Token with multiple colors (e.g., "blue and red")
         (r"create (a|an|one|two|three|\d+) (\d+)/(\d+) (blue|red|white|black|green) and (blue|red|white|black|green) ([\w ]+) creature tokens?",
          lambda m: _create_token_with_pt_and_keywords(game_state, stack_obj.controller,
-                                   m.group(1), m.group(2), m.group(3), m.group(5),
-                                   f"{m.group(3)} {m.group(4)}")),
+                                    m.group(1), m.group(2), m.group(3), m.group(5),
+                                    f"{m.group(3)} {m.group(4)}")),
         # Simple token with prowess
         (r"create (a|an|one|two|three|\d+) (\d+)/(\d+) ([\w ]+) creature tokens? with prowess",
          lambda m: _create_token_with_keywords(game_state, stack_obj.controller,
-                                   m.group(1), m.group(4), "prowess")),
+                                    m.group(1), m.group(4), "prowess")),
         (r"create (a|an|one|two|three|\d+) (\d+)/(\d+) ([\w ]+) creature tokens?",
          lambda m: _create_tokens(game_state, stack_obj.controller,
-                                   m.group(1), m.group(2), m.group(3), m.group(4))),
+                                    m.group(1), m.group(2), m.group(3), m.group(4))),
         (r"gain(?:s)? (\d+|x) life",
          lambda m: _gain_life(game_state, stack_obj.controller,
-int(m.group(1)) if m.group(1).isdigit() else x_value)),
+                                int(m.group(1)) if m.group(1).isdigit() else x_value)),
         (r"put (\d+|x) \+1/\+1 counters? on target creature",
          lambda m: _add_counters(game_state, stack_obj.targets[0] if stack_obj.targets else None,
-                                 "+1/+1", int(m.group(1)) if m.group(1).isdigit() else x_value)),
+                                  "+1/+1", int(m.group(1)) if m.group(1).isdigit() else x_value)),
         # "put a +1/+1 counter on this creature" (self-target for landfall)
         (r"put a \+1/\+1 counter on (?:this|~)",
          lambda m: _add_counters(game_state, stack_obj.source_permanent_id,
-                                 "+1/+1", 1)),
+                                  "+1/+1", 1)),
         (r"scry (\d+|x)",
-          lambda m: _apply_scry(game_state, stack_obj.controller,
-                                int(m.group(1)) if m.group(1).isdigit() else x_value)),
+           lambda m: _apply_scry(game_state, stack_obj.controller,
+                                 int(m.group(1)) if m.group(1).isdigit() else x_value)),
         (r"surveil (\d+|x)",
          lambda m: _apply_surveil(game_state, stack_obj.controller,
                                   int(m.group(1)) if m.group(1).isdigit() else x_value)),
@@ -776,10 +828,13 @@ int(m.group(1)) if m.group(1).isdigit() else x_value)),
         (r"look at the top (\d+) cards? of your library\.? put (\d+) of them into your hand",
          lambda m: _apply_reveal_and_choose_multi(game_state, stack_obj.controller,
                                           int(m.group(1)), int(m.group(2)))),
-        # "look at the top X of your library. put one into your hand..." (e.g., Sleight of Hand)
+       # "look at the top X of your library. put one into your hand..." (e.g., Sleight of Hand)
         (r"look at the top (\d+) cards? of your library",
-         lambda m: _apply_reveal_and_choose(game_state, stack_obj.controller,
-                                          int(m.group(1)) if m.group(1).isdigit() else 2)),
+          lambda m: _apply_reveal_and_choose(game_state, stack_obj.controller,
+                                           int(m.group(1)) if m.group(1).isdigit() else 2)),
+        # ── VEN-01: Venture into the dungeon (CR 701.61) ───────────────────
+        (r"\bventure\s+into\s+(?:the\s+)?dungeon\b",
+          lambda m: _apply_venture(game_state, stack_obj.controller)),
     ]
 
     oracle_lower = effect_text.lower()
@@ -790,6 +845,23 @@ int(m.group(1)) if m.group(1).isdigit() else x_value)),
             if result is not None:
                 game_state = result
             return game_state
+
+    # US13 (T030): Proliferate — detect and set pending proliferate choice
+    if re.search(r'\bproliferate\b', oracle_lower):
+        from mtg_engine.engine.proliferate import setup_pending_proliferate, _resolve_proliferate_with_ai
+
+        # Determine if controller is human or AI
+        is_human = any(
+            p.name == stack_obj.controller and
+            getattr(game_state, 'human_player_name', None) == p.name
+            for p in game_state.players
+        )
+
+        if is_human:
+            game_state = setup_pending_proliferate(game_state, stack_obj.controller)
+        else:
+            game_state = _resolve_proliferate_with_ai(game_state, stack_obj.controller)
+
     return game_state
 
 
@@ -801,6 +873,24 @@ def _apply_spell_effect(game_state: GameState, stack_obj: StackObject) -> GameSt
     """
     card = stack_obj.source_card
     oracle = (card.oracle_text or "").lower()
+
+    # Spree mechanic (036-spree): apply selected mode effects
+    # Spree cards have mode lines in their oracle text; the modes ARE the effect,
+    # so after applying them we skip the main pattern matching to avoid duplicates.
+    applied_spree = False
+    if game_state.pending_spree_effects:
+        remaining = []
+        for spree_effect in game_state.pending_spree_effects:
+            if spree_effect.get("card_id") == card.id:
+                game_state = _apply_single_effect_text(game_state, stack_obj, spree_effect["effect"])
+                logger.info("Spree: applied mode effect for %s", card.name)
+                applied_spree = True
+            else:
+                remaining.append(spree_effect)
+        game_state.pending_spree_effects = remaining
+
+    if applied_spree:
+        return game_state
 
     # Modal spells (US4): apply only chosen modes
     if stack_obj.modes_chosen:
@@ -892,14 +982,17 @@ def _apply_spell_effect(game_state: GameState, stack_obj: StackObject) -> GameSt
         # 17. Shuffle library
         (r"shuffle your library",
          lambda m: _shuffle_library(game_state, stack_obj.controller)),
-        # 18. Extra turn: "take an extra turn after this" / "target player takes an extra turn"
+      # 18. Extra turn: "take an extra turn after this" / "target player takes an extra turn"
         (r"take an? extra turn after this|you take an? extra turn",
-         lambda m: _grant_extra_turn(game_state, stack_obj.controller)),
+          lambda m: _grant_extra_turn(game_state, stack_obj.controller)),
         (r"target player takes? an? extra turn",
-         lambda m: _grant_extra_turn(
-             game_state,
-             stack_obj.targets[0] if stack_obj.targets else stack_obj.controller,
-         )),
+          lambda m: _grant_extra_turn(
+              game_state,
+              stack_obj.targets[0] if stack_obj.targets else stack_obj.controller,
+          )),
+        # ── VEN-01: Venture into the dungeon (CR 701.61) ───────────────────
+        (r"\bventure\s+into\s+(?:the\s+)?dungeon\b",
+          lambda m: _apply_venture(game_state, stack_obj.controller)),
     ]
 
     # Try each pattern in order; pass the full match object to the lambda.
@@ -913,7 +1006,19 @@ def _apply_spell_effect(game_state: GameState, stack_obj: StackObject) -> GameSt
 
     # US13 (T030): Proliferate — detect and set pending proliferate choice
     if re.search(r'\bproliferate\b', oracle, re.IGNORECASE):
-        game_state = _trigger_proliferate(game_state, stack_obj.controller)
+        from mtg_engine.engine.proliferate import setup_pending_proliferate, _resolve_proliferate_with_ai
+
+        # Determine if controller is human or AI
+        is_human = any(
+            p.name == stack_obj.controller and
+            getattr(game_state, 'human_player_name', None) == p.name
+            for p in game_state.players
+        )
+
+        if is_human:
+            game_state = setup_pending_proliferate(game_state, stack_obj.controller)
+        else:
+            game_state = _resolve_proliferate_with_ai(game_state, stack_obj.controller)
         return game_state
 
     # US20 (T047): "Each opponent" pattern — apply effect to all opponents
@@ -927,36 +1032,6 @@ def _apply_spell_effect(game_state: GameState, stack_obj: StackObject) -> GameSt
 
     # If no pattern matched, log at DEBUG level (no crash — CR 608.2b: unimplemented effects no-op)
     logger.debug("Spell effect not implemented for %r: %r", card.name, oracle)
-    return game_state
-
-
-def _trigger_proliferate(game_state: GameState, controller: str) -> GameState:
-    """
-    Set pending_proliferate_choice for the controller. US13 (T030).
-    Collects all permanents and players with at least one counter.
-    """
-    eligible = []
-    for perm in game_state.battlefield:
-        if perm.counters:
-            eligible.append({
-                "id": perm.id,
-                "name": perm.card.name,
-                "counters": dict(perm.counters),
-                "type": "permanent",
-            })
-    for player in game_state.players:
-        if player.poison_counters > 0:
-            eligible.append({
-                "id": player.name,
-                "name": player.name,
-                "counters": {"poison": player.poison_counters},
-                "type": "player",
-            })
-    game_state.pending_proliferate_choice = {
-        "player": controller,
-        "eligible": eligible,
-    }
-    logger.info("Proliferate: %d eligible targets for %s", len(eligible), controller)
     return game_state
 
 
@@ -1099,8 +1174,20 @@ def _create_tokens(game_state: GameState, controller: str, count_str: str, power
 def _gain_life(game_state: GameState, player_name: str, n: int) -> GameState:
     """Gain life."""
     player = get_player(game_state, player_name)
+    old = player.life
     player.life += n
+    _emit_life_changed(game_state, player_name, old, player.life, n, "spell")
     logger.info("%s gains %d life", player_name, n)
+    return game_state
+
+
+def _lose_life(game_state: GameState, player_name: str, n: int) -> GameState:
+    """Lose life (for spell effects like 'lose X life')."""
+    player = get_player(game_state, player_name)
+    old = player.life
+    player.life -= n
+    _emit_life_changed(game_state, player_name, old, player.life, -n, "spell")
+    logger.info("%s loses %d life", player_name, n)
     return game_state
 
 
@@ -1139,6 +1226,53 @@ def _tutor(game_state: GameState, player_name: str, filter_type: str, destinatio
             _, _ = put_permanent_onto_battlefield(game_state, card, player_name, from_zone="hand")
         logger.info("%s tutors for %s", player_name, card.name)
     
+    return game_state
+
+
+def _tutor_to_top(game_state: GameState, player_name: str) -> GameState:
+    """Search library for a card and put it on top of library.
+    
+    For Spree effects like "Search your library for a card, then shuffle and put that card on top."
+    """
+    player = get_player(game_state, player_name)
+    if not player.library:
+        return game_state
+    
+    # For heuristic AI, pick the first card from library
+    # In a real implementation, this would be handled by pending_tutor_choice
+    if player.library:
+        card = player.library.pop(0)
+        player.library.insert(0, card)
+        logger.info("%s tutors for %s and puts it on top of library", player_name, card.name)
+    
+    return game_state
+
+
+def _apply_venture(game_state: GameState, player_name: str) -> GameState:
+    """Apply 'Venture into the dungeon' effect (VEN-01, CR 701.61).
+
+    Called from stack resolution when a card effect or room ability contains
+    "venture into the dungeon". Chains through the dungeon engine's venture()
+    function which handles starting new dungeons, advancing rooms, and firing
+    room abilities.
+    """
+    from mtg_engine.engine.dungeon import venture as _venture
+
+    # Guard against infinite recursion: if player has completed all rooms
+    # in current dungeon, venture() starts a fresh one automatically.
+    game_state = _venture(game_state, player_name)
+    logger.info("Venture into the dungeon resolved for %s", player_name)
+    return game_state
+
+
+def _apply_combined_draw_lose_life(game_state: GameState, player_name: str, draw_count: int, life_loss: int) -> GameState:
+    """Apply combined 'draw N cards and lose X life' effect (Spree mode).
+    
+    Example: "Target player draws three cards and loses 3 life."
+    """
+    game_state = _draw_cards(game_state, player_name, draw_count)
+    game_state = _lose_life(game_state, player_name, life_loss)
+    logger.info("%s draws %d cards and loses %d life (Spree combined effect)", player_name, draw_count, life_loss)
     return game_state
 
 
@@ -1316,30 +1450,27 @@ def _deal_damage(game_state: GameState, target_id: str, damage: int, source: Car
     Marks damage on permanents; reduces life for players.
     Deathtouch flag is set for SBA processing (REQ-R10).
     """
+    # Emit damage event
+    _emit_damage_dealt(game_state, source.id, game_state.active_player,
+                       target_id, damage, is_combat=False)
+
     # Check if target is a permanent on the battlefield
     for perm in game_state.battlefield:
         if perm.id == target_id:
             perm.damage_marked += damage
-            # Mark deathtouch damage for SBA processing (CR 704.5h, REQ-R10)
             if "deathtouch" in source.keywords:
                 perm.counters["__deathtouch_damage__"] = (
                     perm.counters.get("__deathtouch_damage__", 0) + damage
                 )
-            # Lifelink: controller gains life (REQ-R11)
-            # Note: lifelink life gain is handled here as a side effect of damage
-            if "lifelink" in source.keywords:
-                # The source card's controller gains life equal to damage dealt
-                # We look up the controller via the active player heuristic
-                # (In future tasks this will be tracked on source properly)
-                for player in game_state.players:
-                    # Attempt to find the controlling player from battlefield context
-                    pass  # placeholder — lifelink controller lookup requires source perm context
             return game_state
 
     # Check if target is a player (player name used as target ID)
     for player in game_state.players:
         if player.name == target_id:
+            old_life = player.life
             player.life -= damage
+            _emit_life_changed(game_state, player.name, old_life, player.life,
+                               -damage, reason="spell_damage")
             return game_state
 
     logger.warning("_deal_damage: target %r not found on battlefield or as a player", target_id)
@@ -1698,3 +1829,66 @@ def _fuse_split_card(card: Card) -> Card:
     new_card.cmc = sum(parsed.values())
     
     return new_card
+
+
+# ─── EventBus emission helpers ────────────────────────────────────────────────
+
+def _emit_life_changed(
+    gs: GameState, player_name: str, old_life: int, new_life: int,
+    change: int, reason: str = "",
+) -> None:
+    """Emit a LifeChangedEvent to the EventBus if available."""
+    try:
+        from mtg_engine.engine.events import get_default_bus, LifeChangedEvent, EventType
+        bus = get_default_bus()
+        if bus.get_listeners(EventType.LIFE_CHANGED):
+            bus.emit(LifeChangedEvent(
+                player=player_name,
+                old_life=old_life,
+                new_life=new_life,
+                change_amount=change,
+                reason=reason,
+                game_id=gs.game_id,
+            ))
+    except Exception:
+        pass
+
+
+def _emit_damage_dealt(
+    gs: GameState, source_id: str, source_controller: str,
+    target_id: str, amount: int, is_combat: bool = False,
+) -> None:
+    """Emit a DamageDealtEvent to the EventBus if available."""
+    try:
+        from mtg_engine.engine.events import get_default_bus, DamageDealtEvent, EventType
+        bus = get_default_bus()
+        if bus.get_listeners(EventType.DAMAGE_DEALT):
+            bus.emit(DamageDealtEvent(
+                source_id=source_id,
+                source_controller=source_controller,
+                target_id=target_id,
+                damage_amount=amount,
+                is_combat=is_combat,
+                game_id=gs.game_id,
+            ))
+    except Exception:
+        pass
+
+
+def _emit_counter_placed(
+    gs: GameState, permanent_id: str, counter_type: str, count: int, action: str = "add",
+) -> None:
+    """Emit a CounterPlacedEvent to the EventBus if available."""
+    try:
+        from mtg_engine.engine.events import get_default_bus, CounterPlacedEvent, EventType
+        bus = get_default_bus()
+        if bus.get_listeners(EventType.COUNTER_PLACED):
+            bus.emit(CounterPlacedEvent(
+                permanent_id=permanent_id,
+                counter_type=counter_type,
+                count=count,
+                action=action,
+                game_id=gs.game_id,
+            ))
+    except Exception:
+        pass

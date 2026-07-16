@@ -19,6 +19,49 @@ class SBAEvent:
     affected_ids: list[str] = field(default_factory=list)
 
 
+def _apply_static_abilities(
+    game_state: GameState,
+    events: list[SBAEvent],
+) -> GameState:
+    """Apply static abilities (CR 611.1 continuous effects).
+    
+    Looks for permanents with static abilities and applies them.
+    """
+    from mtg_engine.ability.staticability import ContinuousPump
+    
+    for perm in game_state.battlefield:
+        keywords = perm.card.keywords or []
+        oracle = perm.card.oracle_text or ""
+        
+        # Handle specific static ability patterns
+        # Example: "Other creatures you control get +1/+1"
+        if "+1/+1" in oracle.lower() and "other creatures" in oracle.lower():
+            # Find other creatures controller controls
+            controller_name = perm.controller
+            for other in game_state.battlefield:
+                if other.id != perm.id and other.controller == controller_name:
+                    # Apply +1/+1 pump
+                    pump = ContinuousPump(power_bonus=1, toughness_bonus=1)
+                    pump.apply(game_state, other)
+                    events.append(SBAEvent(
+                        "static_effect",
+                        f"+1/+1 pump applied to {other.card.name}",
+                        [other.id],
+                    ))
+        
+        # Add more static ability patterns as needed
+    
+    return game_state
+
+
+@dataclass
+class SBAEvent:
+    """Record of a single SBA that was applied."""
+    sba_type: str
+    description: str
+    affected_ids: list[str] = field(default_factory=list)
+
+
 def check_and_apply_sbas(game_state: GameState) -> tuple[GameState, list[SBAEvent]]:
     """
     Run SBA check loop: apply all applicable SBAs, repeat until none fire.
@@ -38,6 +81,9 @@ def check_and_apply_sbas(game_state: GameState) -> tuple[GameState, list[SBAEven
 def _check_once(game_state: GameState) -> tuple[GameState, list[SBAEvent]]:
     """Run one pass of all SBA checks. Returns events from this pass."""
     events: list[SBAEvent] = []
+
+    # Apply static abilities first (CR 611.1 - continuous effects)
+    game_state = _apply_static_abilities(game_state, events)
 
     # CR 704.5a: player at 0 or less life loses
     for p in game_state.players:
@@ -301,6 +347,8 @@ def _check_once(game_state: GameState) -> tuple[GameState, list[SBAEvent]]:
         game_state.is_game_over = True
         winners = [p for p in game_state.players if not p.has_lost]
         game_state.winner = winners[0].name if winners else None
+        loser_names = ", ".join(p.name for p in losers)
+        game_state.game_over_reason = f"player_reduced_to_zero_life: {loser_names}"
 
     return game_state, events
 

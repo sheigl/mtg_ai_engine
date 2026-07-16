@@ -1,0 +1,318 @@
+........................................................................ [  3%]
+........................................................................ [  6%]
+........................................................................ [  9%]
+........................................................................ [ 13%]
+........................................................................ [ 16%]
+........................................................................ [ 19%]
+........................................................................ [ 23%]
+........................................................................ [ 26%]
+......................................sss..............................Starting MTG AI Game
+Engine  : http://testserver
+Players : Bot [heuristic — no LLM]
+           You [heuristic — no LLM]
+Game ID : 4455fc56-b703-4eb8-b97a-8136d4868c82
+
+. [ 29%]
+.Starting MTG AI Game
+Engine  : http://testserver
+Players : Human [heuristic — no LLM]
+           Bot [heuristic — no LLM]
+Game ID : 91a9010f-5422-47f0-974f-a3a6e2bad9e7
+
+.Traceback (most recent call last):
+  File "/home/sheigl/code/mtg_ai_engine/.venv/lib/python3.13/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+.Traceback (most recent call last):
+  File "/home/sheigl/code/mtg_ai_engine/.venv/lib/python3.13/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/sheigl/code/mtg_ai_engine/.venv/lib/python3.13/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/sheigl/code/mtg_ai_engine/.venv/lib/python3.13/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/sheigl/code/mtg_ai_engine/.venv/lib/python3.13/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+        pool_request.request
+    )
+  File "/home/sheigl/code/mtg_ai_engine/.venv/lib/python3.13/site-packages/httpcore/_sync/connection.py", line 101, in handle_request
+    raise exc
+  File "/home/sheigl/code/mtg_ai_engine/.venv/lib/python3.13/site-packages/httpcore/_sync/connection.py", line 78, in handle_request
+    stream = self._connect(request)
+  File "/home/sheigl/code/mtg_ai_engine/.venv/lib/python3.13/site-packages/httpcore/_sync/connection.py", line 124, in _connect
+    stream = self._network_backend.connect_tcp(**kwargs)
+  File "/home/sheigl/code/mtg_ai_engine/.venv/lib/python3.13/site-packages/httpcore/_backends/sync.py", line 207, in connect_tcp
+    with map_exceptions(exc_map):
+         ~~~~~~~~~~~~~~^^^^^^^^^
+  File "/usr/lib/python3.13/contextlib.py", line 162, in __exit__
+    self.gen.throw(value)
+    ~~~~~~~~~~~~~~^^^^^^^
+  File "/home/sheigl/code/mtg_ai_engine/.venv/lib/python3.13/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ConnectError: [Errno -3] Temporary failure in name resolution
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+..................................................................... [ 33%]
+........................................................................ [ 36%]
+........................................................................ [ 39%]
+........................................................................ [ 43%]
+........................................................................ [ 46%]
+........................................................................ [ 49%]
+..............x......x.xx......xxxx.......x...x..x.xx................... [ 53%]
+........................................................................ [ 56%]
+........................................................................ [ 59%]
+........................................................................ [ 62%]
+........................................................................ [ 66%]
+........................................................................ [ 69%]
+........................................................................ [ 72%]
+........................................................................ [ 76%]
+........................................................................ [ 79%]
+........................................................................ [ 82%]
+........................................................................ [ 86%]
+........................................................................ [ 89%]
+........................................................................ [ 92%]
+........................................................................ [ 96%]
+........................................................................ [ 99%]
+............                                                             [100%]
+=============================== warnings summary ===============================
+.venv/lib/python3.13/site-packages/fastapi/testclient.py:1
+  /home/sheigl/code/mtg_ai_engine/.venv/lib/python3.13/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+tests/engine/formats/test_commander.py:50
+  /home/sheigl/code/mtg_ai_engine/tests/engine/formats/test_commander.py:50: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    @pytest.mark.cr("903.8")
+
+tests/engine/formats/test_commander.py:75
+  /home/sheigl/code/mtg_ai_engine/tests/engine/formats/test_commander.py:75: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    @pytest.mark.cr("903.8")
+
+tests/engine/formats/test_commander.py:114
+  /home/sheigl/code/mtg_ai_engine/tests/engine/formats/test_commander.py:114: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    @pytest.mark.cr("903.10")
+
+tests/engine/formats/test_commander.py:160
+  /home/sheigl/code/mtg_ai_engine/tests/engine/formats/test_commander.py:160: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    @pytest.mark.cr("903.9")
+
+mtg_engine/engine/replacement.py:45
+  /home/sheigl/code/mtg_ai_engine/mtg_engine/engine/replacement.py:45: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.13/migration/
+    class ReplacementEffect(BaseModel):
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_adventure_cards.py:161
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_adventure_cards.py:161: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_adventure_cards.py:162
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_adventure_cards.py:162: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_adventure_cards.py:273
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_adventure_cards.py:273: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_adventure_cards.py:274
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_adventure_cards.py:274: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_adventure_cards.py:350
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_adventure_cards.py:350: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_adventure_cards.py:351
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_adventure_cards.py:351: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_adventure_cards.py:469
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_adventure_cards.py:469: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_adventure_cards.py:470
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_adventure_cards.py:470: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_echo.py:216
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_echo.py:216: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_echo.py:217
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_echo.py:217: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_echo.py:329
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_echo.py:329: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_echo.py:330
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_echo.py:330: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_etb_replacements.py:97
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_etb_replacements.py:97: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_etb_replacements.py:98
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_etb_replacements.py:98: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_etb_replacements.py:150
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_etb_replacements.py:150: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_etb_replacements.py:151
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_etb_replacements.py:151: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_etb_replacements.py:192
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_etb_replacements.py:192: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_etb_replacements.py:193
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_etb_replacements.py:193: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_etb_replacements.py:239
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_etb_replacements.py:239: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_etb_replacements.py:240
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_etb_replacements.py:240: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_fading.py:274
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_fading.py:274: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_fading.py:275
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_fading.py:275: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_fading.py:356
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_fading.py:356: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_fading.py:357
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_fading.py:357: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_mana_abilities.py:20
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_mana_abilities.py:20: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_mana_abilities.py:21
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_mana_abilities.py:21: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_mana_abilities.py:62
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_mana_abilities.py:62: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_mana_abilities.py:63
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_mana_abilities.py:63: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_mana_abilities.py:180
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_mana_abilities.py:180: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_mana_abilities.py:181
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_mana_abilities.py:181: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_protection_full.py:23
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_protection_full.py:23: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_protection_full.py:24
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_protection_full.py:24: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_protection_full.py:175
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_protection_full.py:175: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_protection_full.py:176
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_protection_full.py:176: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_protection_full.py:278
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_protection_full.py:278: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_protection_full.py:279
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_protection_full.py:279: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_protection_full.py:415
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_protection_full.py:415: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_protection_full.py:416
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_protection_full.py:416: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_snow_mana.py:49
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_snow_mana.py:49: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_snow_mana.py:50
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_snow_mana.py:50: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_snow_mana.py:96
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_snow_mana.py:96: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_snow_mana.py:97
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_snow_mana.py:97: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_snow_mana.py:193
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_snow_mana.py:193: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_snow_mana.py:194
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_snow_mana.py:194: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_cards.py:215
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_cards.py:215: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_cards.py:216
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_cards.py:216: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_cards.py:316
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_cards.py:316: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_cards.py:317
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_cards.py:317: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_cards.py:418
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_cards.py:418: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_cards.py:419
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_cards.py:419: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_cards.py:452
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_cards.py:452: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_cards.py:453
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_cards.py:453: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_cards.py:567
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_cards.py:567: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_cards.py:568
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_cards.py:568: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_second_abilities.py:87
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_second_abilities.py:87: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_second_abilities.py:88
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_second_abilities.py:88: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_second_abilities.py:273
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_second_abilities.py:273: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_second_abilities.py:274
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_split_second_abilities.py:274: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_targeting_enforcement.py:22
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_targeting_enforcement.py:22: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_targeting_enforcement.py:23
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_targeting_enforcement.py:23: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_targeting_enforcement.py:114
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_targeting_enforcement.py:114: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_targeting_enforcement.py:115
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_targeting_enforcement.py:115: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_targeting_enforcement.py:180
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_targeting_enforcement.py:180: PytestUnknownMarkWarning: Unknown pytest.mark.comprehensive_rules - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+../../../openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_targeting_enforcement.py:181
+  /home/openchamber/workspaces/code/mtg_ai_engine/tests/test_020/test_020_targeting_enforcement.py:181: PytestUnknownMarkWarning: Unknown pytest.mark.cr - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+
+tests/api/test_api.py: 13 warnings
+tests/api/test_bot_games.py: 9 warnings
+tests/api/test_commander_deck_import.py: 2 warnings
+tests/api/test_etb_choices.py: 10 warnings
+tests/api/test_export.py: 5 warnings
+tests/api/test_game_list.py: 3 warnings
+tests/api/test_human_game.py: 5 warnings
+tests/api/test_performance.py: 5 warnings
+tests/engine/test_monarch_qa.py: 5 warnings
+  /home/sheigl/code/mtg_ai_engine/mtg_engine/persistence/game_persister.py:64: RuntimeWarning: coroutine 'MongoGamePersister._do_init_game_document' was never awaited
+    self._schedule(self._do_init_game_document(
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/api/test_api.py: 1 warning
+tests/api/test_bot_games.py: 3 warnings
+tests/api/test_etb_choices.py: 10 warnings
+tests/api/test_performance.py: 2 warnings
+  /home/sheigl/code/mtg_ai_engine/mtg_engine/persistence/game_persister.py:180: RuntimeWarning: coroutine 'MongoGamePersister._insert_transcript' was never awaited
+    self._schedule(self._insert_transcript(entry))
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+2156 passed, 3 skipped, 13 xfailed, 143 warnings in 405.02s (0:06:45)

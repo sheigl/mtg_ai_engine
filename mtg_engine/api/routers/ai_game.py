@@ -6,7 +6,6 @@ Creates the game synchronously via GameManager, then starts the AI decision
 loop in a daemon thread so the endpoint returns immediately with the game_id.
 """
 import logging
-import sys
 import threading
 
 from fastapi import APIRouter, HTTPException, Request
@@ -260,7 +259,7 @@ def _run_ai_loop(
     Runs in a daemon thread; exceptions are logged but do not crash the server.
     """
     print(f"[ai-game] Loop thread starting for game {game_id[:8]} (engine: {engine_url})", flush=True)
-    print(f"[ai-game] Testing HTTP connectivity...", flush=True)
+    print("[ai-game] Testing HTTP connectivity...", flush=True)
     
     import httpx
     try:
@@ -279,7 +278,7 @@ def _run_ai_loop(
         from ai_client.game_loop import GameLoop
         from ai_client.client import EngineClient
         from ai_client.observer import ObserverAI
-        from ai_client.prompts import DEFAULT_DECK, DEFAULT_COMMANDER_DECK
+        from ai_client.prompts import DEFAULT_DECK
 
         # Build PlayerConfig objects — use merged values from defaults (Feature 028)
         pc1 = PlayerConfig(

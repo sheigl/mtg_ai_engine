@@ -2,7 +2,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-from mtg_engine.models.game import GameState, Phase, Step, PlayerState, Card
+from mtg_engine.models.game import GameState, PlayerState, Card
 from mtg_engine.engine.zones import (
     move_card_to_zone,
     move_permanent_to_zone,

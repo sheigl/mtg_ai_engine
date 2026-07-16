@@ -3,8 +3,8 @@
 Flanking: Whenever this creature becomes blocked by a creature without flanking,
 the blocking creature gets -1/-1 until end of turn.
 """
-import pytest
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from mtg_engine.models.game import (

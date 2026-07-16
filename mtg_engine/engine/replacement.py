@@ -2,13 +2,29 @@
 Replacement effects. REQ-R04, REQ-R05, REQ-R06.
 CR 614: "instead" effects intercept events before they happen.
 CR 616: multiple replacement effects — controller chooses order.
+
+Phase 800: REP-01 (prevention), REP-02 (draw replacement), REP-03 (duration).
 """
 import logging
+import uuid
 from typing import Any
-from pydantic import BaseModel
-from mtg_engine.models.game import GameState, Permanent
+from pydantic import BaseModel, Field
+from mtg_engine.models.game import GameState, DamagePreventionEffect
 
 logger = logging.getLogger(__name__)
+
+
+# ─── REP-02: Draw Replacement Effect Model ──────────────────────────────────
+
+class DrawReplacementEffect(BaseModel):
+    """A replacement effect for card draw events. CR 614."""
+    effect_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    controller: str
+    source_permanent_id: str | None = None
+    replacement_card_ids: list[str] = Field(default_factory=list)
+    once: bool = True
+    description: str = ""
+    expires: str = "end_of_turn"
 
 
 class GameEvent(BaseModel):
@@ -254,7 +270,6 @@ def apply_damage_event(
     has_lifelink   = "lifelink" in source_keywords
     has_infect     = "infect" in source_keywords
 
-    from mtg_engine.engine.zones import get_player
 
     # Apply damage to target
     target_perm = next((p for p in game_state.battlefield if p.id == redirect), None)
@@ -291,3 +306,156 @@ def apply_damage_event(
     # (simplified: lifelink handled in combat.py where we know the attacker's controller)
 
     return game_state
+
+
+# ─── REP-01: Prevention Effect Creation API ─────────────────────────────────
+
+def create_prevention_effect(
+    game_state: GameState,
+    controller: str,
+    amount: int | None = None,
+    source_permanent_id: str | None = None,
+    target_id: str | None = None,
+    combat_only: bool = False,
+    expires: str | None = "end_of_turn",
+    description: str = "",
+) -> GameState:
+    """
+    Create a damage prevention effect. CR 614.1.
+
+    Args:
+        game_state: Current game state
+        controller: Player controlling the prevention effect
+        amount: Amount of damage to prevent (None = unlimited until end of turn)
+        source_permanent_id: Permanent providing the effect
+        target_id: Specific permanent to protect (None = global/all combat)
+        combat_only: Only prevent combat damage
+        expires: Expiry scope ("end_of_turn" or None for persistent)
+        description: Human-readable description
+
+    Returns:
+        Updated game state with prevention effect added.
+    """
+    effect = DamagePreventionEffect(
+        source_permanent_id=source_permanent_id,
+        target_id=target_id,
+        remaining=amount,
+        combat_only=combat_only,
+    )
+    if expires:
+        effect.extra["expires"] = expires
+    if description:
+        effect.extra["description"] = description
+    game_state.prevention_effects.append(effect)
+    logger.info(
+        "Prevention effect created for %s: amount=%s, expires=%s",
+        controller, amount, expires,
+    )
+    return game_state
+
+
+def remove_expired_prevention_effects(
+    game_state: GameState,
+    expiry_scope: str = "end_of_turn",
+) -> GameState:
+    """
+    Remove prevention effects that have expired.
+
+    Args:
+        game_state: Current game state
+        expiry_scope: Expiry scope to check ("end_of_turn" by default)
+
+    Returns:
+        Updated game state with expired effects removed.
+    """
+    before = len(game_state.prevention_effects)
+    game_state.prevention_effects[:] = [
+        eff for eff in game_state.prevention_effects
+        if eff.extra.get("expires") != expiry_scope
+    ]
+    removed = before - len(game_state.prevention_effects)
+    if removed:
+        logger.info("Removed %d expired prevention effects (scope: %s)", removed, expiry_scope)
+    return game_state
+
+
+# ─── REP-02: Draw Replacement API ───────────────────────────────────────────
+
+def create_draw_replacement(
+    game_state: GameState,
+    controller: str,
+    replacement_card_ids: list[str] | None = None,
+    source_permanent_id: str | None = None,
+    once: bool = True,
+    description: str = "",
+    expires: str = "end_of_turn",
+) -> GameState:
+    """
+    Create a draw replacement effect. CR 614.
+
+    Args:
+        game_state: Current game state
+        controller: Player controlling the replacement
+        replacement_card_ids: Card IDs to draw instead
+        source_permanent_id: Permanent providing the effect
+        once: Consume after one use
+        description: Human-readable description
+        expires: Expiry scope
+
+    Returns:
+        Updated game state with draw replacement added.
+    """
+    effect = DrawReplacementEffect(
+        controller=controller,
+        source_permanent_id=source_permanent_id,
+        replacement_card_ids=replacement_card_ids or [],
+        once=once,
+        description=description or f"Draw replacement for {controller}",
+        expires=expires,
+    )
+    game_state.draw_replacements.append(effect)
+    logger.info(
+        "Draw replacement created for %s: %d replacement cards, once=%s",
+        controller, len(effect.replacement_card_ids), once,
+    )
+    return game_state
+
+
+def process_draw_event(
+    event: GameEvent,
+    game_state: GameState,
+) -> tuple[GameEvent, GameState]:
+    """
+    Process a draw event through replacement effects. CR 614.
+
+    Args:
+        event: Draw event to process
+        game_state: Current game state
+
+    Returns:
+        (modified event, updated game state)
+    """
+    if event.event_type != "draw":
+        return event, game_state
+
+    if not game_state.draw_replacements:
+        return event, game_state
+
+    # Find applicable replacement for this player
+    for i, repl in enumerate(game_state.draw_replacements):
+        if repl.controller == event.target_id:
+            # Apply replacement
+            event.replaced = True
+            event.extra["replacement_card_ids"] = repl.replacement_card_ids
+            event.extra["replacement_description"] = repl.description
+            logger.info(
+                "Draw event replaced for %s: %d alternate cards",
+                event.target_id, len(repl.replacement_card_ids),
+            )
+
+            # Consume if once
+            if repl.once:
+                game_state.draw_replacements.pop(i)
+            break
+
+    return event, game_state

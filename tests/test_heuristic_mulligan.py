@@ -5,7 +5,8 @@ Bug: _score_mulligan returned the same score for both "Keep hand" and "Mulligan"
 actions, causing "Pass priority" (score 0) to win over "Keep hand" (score -50)
 when the hand was keepable. The mulligan phase never resolved.
 """
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from ai_client.heuristic_player import HeuristicPlayer

@@ -99,7 +99,7 @@
 - [X] T023 Add engine API error handling in `ai_client/client.py` — if any `httpx` call returns a non-2xx status, log the error with response body and raise a custom `EngineError`; catch `EngineError` in `GameLoop.run()`, print error, exit with code 1
 - [X] T024 Add `max_turns` safety limit in `ai_client/game_loop.py` — if `turn_count >= GameConfig.max_turns`, set `termination_reason="max_turns_reached"`, print `GameSummary`, and exit cleanly with code 0
 - [X] T025 [P] Add startup banner to `ai_client/__main__.py` — print engine URL, each player's name/model/endpoint, and game ID once the engine confirms game creation
-- [ ] T026 Validate end-to-end with `quickstart.md` minimal invocation against a live engine and Ollama; confirm turn logs appear for every turn and final summary prints correctly
+- [x] T026 Validate end-to-end with `quickstart.md` minimal invocation against a live engine and Ollama; confirm turn logs appear for every turn and final summary prints correctly
 
 ---
 

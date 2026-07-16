@@ -1,11 +1,12 @@
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-from mtg_engine.models.game import GameState, PlayerState, Card, Phase, Step, ManaPool
-from mtg_engine.models.actions import AttackDeclaration, BlockDeclaration, DamageAssignment
+from mtg_engine.models.game import GameState, PlayerState, Card, Phase, Step
+from mtg_engine.models.actions import AttackDeclaration, BlockDeclaration
 from mtg_engine.engine.zones import put_permanent_onto_battlefield
 from mtg_engine.engine.combat import (
-    declare_attackers, declare_blockers, assign_combat_damage, end_combat
+    declare_attackers, declare_blockers, assign_combat_damage
 )
 from mtg_engine.engine.sba import check_and_apply_sbas
 
@@ -178,7 +179,6 @@ def test_reach_can_block_flyer():
 
 def test_combat_damage_trigger_queued():
     """US2: 'whenever this deals combat damage to a player' trigger fires after unblocked attack."""
-    from mtg_engine.engine.triggers import check_damage_triggers
     gs = _make_combat_game()
     oracle = "Whenever this creature deals combat damage to a player, you may draw a card."
     card = Card(

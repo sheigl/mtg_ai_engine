@@ -11,7 +11,7 @@ CR References:
 - CR 614.1e: Enters with X counters
 """
 import pytest
-from mtg_engine.models.game import GameState, PlayerState, Phase, Step, Card, Permanent, ManaPool
+from mtg_engine.models.game import GameState, PlayerState, Phase, Step, Card, ManaPool
 from mtg_engine.engine.zones import put_permanent_onto_battlefield
 
 

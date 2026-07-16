@@ -1,5 +1,4 @@
 import logging
-import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -15,6 +14,12 @@ from mtg_engine.api.routers import human_game as human_game_router
 from mtg_engine.api.routers import game_records as game_records_router
 from mtg_engine.api.routers import player_defaults as player_defaults_router
 from mtg_engine.api.routers import card_images as card_images_router
+from mtg_engine.api.routers import card_search as card_search_router
+from mtg_engine.api.routers import deck_build_ai as deck_build_ai_router
+from mtg_engine.api.routers import replay as replay_router
+from mtg_engine.api.routers import spectate as spectate_router
+from mtg_engine.api.routers import draft_ai as draft_ai_router
+from mtg_engine.api.routers import player_stats as player_stats_router
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +74,12 @@ app.include_router(human_game_router.router)
 app.include_router(game_records_router.router)
 app.include_router(player_defaults_router.router)
 app.include_router(card_images_router.router)
+app.include_router(card_search_router.router)
+app.include_router(deck_build_ai_router.router)
+app.include_router(replay_router.router)
+app.include_router(spectate_router.router)
+app.include_router(draft_ai_router.router)
+app.include_router(player_stats_router.router)
 
 
 @app.get("/health")

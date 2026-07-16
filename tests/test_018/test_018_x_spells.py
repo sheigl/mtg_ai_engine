@@ -8,8 +8,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from mtg_engine.models.game import GameState, Phase, Step, PlayerState, Card, ManaPool
 from mtg_engine.engine.stack import cast_spell, resolve_top
-from mtg_engine.engine.zones import put_permanent_onto_battlefield
-from mtg_engine.engine.sba import check_and_apply_sbas
 
 
 def _gs() -> GameState:

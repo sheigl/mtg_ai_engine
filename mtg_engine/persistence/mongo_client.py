@@ -13,6 +13,7 @@ _decisions_collection = None
 _rules_qa_collection = None
 _transcript_collection = None
 _player_defaults_collection = None
+_player_stats_collection = None
 _initialized = False
 _main_loop = None
 
@@ -29,7 +30,7 @@ def get_main_loop():
 
 
 def _init() -> None:
-    global _client, _collection, _decisions_collection, _rules_qa_collection, _transcript_collection, _player_defaults_collection, _initialized
+    global _client, _collection, _decisions_collection, _rules_qa_collection, _transcript_collection, _player_defaults_collection, _player_stats_collection, _initialized
     if _initialized:
         return
     _initialized = True
@@ -54,6 +55,7 @@ def _init() -> None:
         _rules_qa_collection = _client[db_name]["rules_qa"]
         _transcript_collection = _client[db_name]["transcript"]
         _player_defaults_collection = _client[db_name]["player_defaults"]
+        _player_stats_collection = _client[db_name]["player_stats"]
         logger.info("MongoDB configured: %s / %s / %s", url, db_name, collection_name)
     except Exception:
         logger.exception("Failed to initialize MongoDB client")
@@ -63,6 +65,7 @@ def _init() -> None:
         _rules_qa_collection = None
         _transcript_collection = None
         _player_defaults_collection = None
+        _player_stats_collection = None
 
 
 def is_configured() -> bool:
@@ -101,6 +104,12 @@ def get_player_defaults_collection():
     return _player_defaults_collection
 
 
+def get_player_stats_collection():
+    """Return the player_stats AsyncIOMotorCollection, or None if not configured."""
+    _init()
+    return _player_stats_collection
+
+
 async def ensure_indexes() -> None:
     """Create all indexes for the normalized collections."""
     import pymongo
@@ -126,6 +135,12 @@ async def ensure_indexes() -> None:
         if col is not None:
             await col.create_index("player_type", unique=True, background=True)
             logger.info("MongoDB: player_defaults indexes created/verified")
+
+        col = get_player_stats_collection()
+        if col is not None:
+            await col.create_index("player_name", unique=True, background=True)
+            await col.create_index([("elo", pymongo.DESCENDING)], background=True)
+            logger.info("MongoDB: player_stats indexes created/verified")
 
     except Exception:
         logger.warning("MongoDB: failed to create normalized indexes", exc_info=True)

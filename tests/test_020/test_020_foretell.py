@@ -11,7 +11,6 @@ from mtg_engine.models.game import (
     GameState, PlayerState, Card, Phase, Step, ManaPool,
 )
 from mtg_engine.engine.stack import cast_spell, resolve_top
-from mtg_engine.engine.zones import put_permanent_onto_battlefield
 
 
 def _creature(name, power, toughness, keywords=None, oracle_text="", type_line="Creature — Beast"):
@@ -54,7 +53,7 @@ class TestForetell:
 
     def test_foretell_card_goes_to_foretold_cards(self):
         """Scenario 1: Foretell a card — pay {2}, card exiled to foretold_cards."""
-        from mtg_engine.api.routers.game import _compute_legal_actions, _err
+        from mtg_engine.api.routers.game import _compute_legal_actions
 
         gs = _gs()
         gs.players[0].mana_pool = ManaPool(C=2)

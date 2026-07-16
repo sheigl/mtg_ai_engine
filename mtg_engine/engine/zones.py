@@ -10,7 +10,11 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Callable
 
-from mtg_engine.models.game import Card, GameState, Permanent, PlayerState, StackObject
+from mtg_engine.models.game import Card, GameState, Permanent, PlayerState, ExileStack
+from mtg_engine.engine.formats.commander import (
+    _is_commander,
+    move_card_to_command_zone as _cmd_move_to_command_zone,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +34,46 @@ def _emit_zone_change(event: ZoneChangeEvent, game_state: GameState) -> None:
     """Emit a zone-change event to all registered listeners."""
     for fn in _zone_change_listeners:
         fn(event, game_state)
+    _emit_eventbus_zone(event, game_state)
+
+
+def _emit_eventbus_zone(event: ZoneChangeEvent, game_state: GameState) -> None:
+    """Emit a typed ZoneChangeEvent to the EventBus if available."""
+    try:
+        from mtg_engine.engine.events import (
+            get_default_bus, ZoneChangeEvent as TypedZCE,
+            PermanentEntersEvent, PermanentLeavesEvent, EventType,
+        )
+        bus = get_default_bus()
+        game_id = game_state.game_id
+        if bus.get_listeners(EventType.ZONE_CHANGE):
+            bus.emit(TypedZCE(
+                card_id=event.get("card_id", ""),
+                card_name=event.get("card_name"),
+                from_zone=event.get("from_zone", ""),
+                to_zone=event.get("to_zone", ""),
+                player=event.get("player", ""),
+                is_token=event.get("is_token", False),
+                game_id=game_id,
+            ))
+        if event.get("to_zone") == "battlefield" and bus.get_listeners(EventType.PERMANENT_ENTERS):
+            bus.emit(PermanentEntersEvent(
+                permanent_id=event.get("card_id", ""),
+                controller=event.get("player", ""),
+                card_name=event.get("card_name") or "",
+                game_id=game_id,
+            ))
+        if event.get("from_zone") == "battlefield" and bus.get_listeners(EventType.PERMANENT_LEAVES):
+            bus.emit(PermanentLeavesEvent(
+                permanent_id=event.get("card_id", ""),
+                controller=event.get("player", ""),
+                card_name=event.get("card_name") or "",
+                from_zone=event.get("from_zone", ""),
+                to_zone=event.get("to_zone", ""),
+                game_id=game_id,
+            ))
+    except Exception:
+        logger.debug("EventBus not available for zone event", exc_info=True)
 
 
 def get_player(game_state: GameState, player_name: str) -> PlayerState:
@@ -48,6 +92,7 @@ def _get_player_zone(player: PlayerState, zone: str) -> list[Card]:
         "graveyard": player.graveyard,
         "exile": player.exile,
         "command_zone": player.command_zone,
+        "sideboard": player.sideboard,
     }
     if zone not in zone_map:
         raise ValueError(f"Unknown player zone: {zone!r}")
@@ -77,7 +122,7 @@ def move_card_to_command_zone(
 def move_card_to_zone(
     game_state: GameState,
     card: Card,
-    from_zone: str,   # "hand" | "library" | "graveyard" | "exile" | "battlefield" | "stack"
+    from_zone: str,   # "hand" | "library" | "graveyard" | "exile" | "battlefield" | "stack" | "sideboard" | "command_zone"
     to_zone: str,
     player_name: str,
     position: str = "top",  # "top" | "bottom" | "random" (for library) — REQ-G08
@@ -89,22 +134,34 @@ def move_card_to_zone(
     """
     player = get_player(game_state, player_name)
 
-    # Commander redirect: if a commander would go to graveyard or exile, send to command zone
+    # Commander redirect: CR 903.9 — if a commander would go to graveyard or exile,
+    # owner may put it into command zone instead.
     if (
         game_state.format == "commander"
         and to_zone in ("graveyard", "exile")
-        and player.commander_name is not None
-        and card.name == player.commander_name
+        and _is_commander(card.name, player)
     ):
-        zone_list = _get_player_zone(player, from_zone) if from_zone in ("hand", "library", "graveyard", "exile", "command_zone") else None
+        zone_list = _get_player_zone(player, from_zone) if from_zone in ("hand", "library", "graveyard", "exile", "command_zone", "sideboard") else None
         if zone_list is not None:
             zone_list[:] = [c for c in zone_list if c.id != card.id]
         elif from_zone == "stack":
             game_state.stack[:] = [s for s in game_state.stack if s.source_card.id != card.id]
+        # Human player: queue pending choice and return without completing zone change
+        if game_state.human_player_name == player_name:
+            return game_state.model_copy(update={
+                "pending_commander_zone_choice": {
+                    "player": player_name,
+                    "card": card,
+                    "permanent_id": None,
+                    "intended_destination": to_zone,
+                    "from_zone": from_zone,
+                }
+            })
+        # AI player: auto-redirect to command zone
         return move_card_to_command_zone(game_state, card, player_name)
 
     # Remove from source zone (REQ-G07: atomic removal before insertion)
-    if from_zone in ("hand", "library", "graveyard", "exile"):
+    if from_zone in ("hand", "library", "graveyard", "exile", "command_zone", "sideboard"):
         zone_list = _get_player_zone(player, from_zone)
         zone_list[:] = [c for c in zone_list if c.id != card.id]
     elif from_zone == "stack":
@@ -112,7 +169,7 @@ def move_card_to_zone(
     # battlefield removal is handled by move_permanent_to_zone
 
     # Add to destination zone (REQ-G08: library position is preserved)
-    if to_zone in ("hand", "library", "graveyard", "exile"):
+    if to_zone in ("hand", "library", "graveyard", "exile", "command_zone", "sideboard"):
         dest_list = _get_player_zone(player, to_zone)
         if to_zone == "library":
             if position == "top":
@@ -183,10 +240,23 @@ def move_permanent_to_zone(
     if is_token:
         return game_state
 
-    # Commander redirect: if commander would go to graveyard or exile, send to command zone
+    # Commander redirect: CR 903.9 — if a commander would go to graveyard or exile,
+    # owner may put it into command zone instead.
     if game_state.format == "commander" and to_zone in ("graveyard", "exile"):
         player = get_player(game_state, controller)
-        if player.commander_name is not None and card.name == player.commander_name:
+        if _is_commander(card.name, player):
+            # Human player: queue pending choice and return without completing zone change
+            if game_state.human_player_name == controller:
+                return game_state.model_copy(update={
+                    "pending_commander_zone_choice": {
+                        "player": controller,
+                        "card": card,
+                        "permanent_id": permanent.id,
+                        "intended_destination": to_zone,
+                        "from_zone": "battlefield",
+                    }
+                })
+            # AI player: auto-redirect to command zone
             return move_card_to_command_zone(game_state, card, controller)
 
     # Clean up attachment references: if this permanent was attached to something,
@@ -240,7 +310,7 @@ def move_permanent_to_zone(
         game_state.battlefield.append(permanent)
         return game_state
 
-    if to_zone in ("hand", "library", "graveyard", "exile"):
+    if to_zone in ("hand", "library", "graveyard", "exile", "sideboard"):
         player = get_player(game_state, controller)
 
         # Check for "return to owner's hand" replacement effect (e.g. Rancor)
@@ -486,7 +556,6 @@ def _resolve_etb_choice_with_ai(
     Returns (game_state, should_be_tapped).
     AI makes decision based on board state and game conditions.
     """
-    import random
     
     player = next((p for p in game_state.players if p.name == player_name), None)
     if not player:
@@ -728,3 +797,352 @@ def draw_card(game_state: GameState, player_name: str) -> tuple[GameState, Card 
     }
     _emit_zone_change(event, game_state)
     return game_state, card
+
+
+# ---------------------------------------------------------------------------
+# ZN-01: Exile Zone Enhancement
+# ---------------------------------------------------------------------------
+
+def create_exile_stack(
+    game_state: GameState,
+    cards: list[Card],
+    reason: str,
+    controller: str,
+    face_down: bool = False,
+) -> ExileStack:
+    """Create a new exile stack grouping cards exiled together. CR 402.1
+
+    Cards in the same exile stack remain grouped and can be manipulated
+    together (e.g., "search among exiled cards", "reveal cards exiled with").
+    """
+    stack = ExileStack(
+        cards=cards,
+        reason=reason,
+        controller=controller,
+        face_down=face_down,
+    )
+    game_state.exile_stacks.append(stack)
+    return stack
+
+
+def get_exile_stack(
+    game_state: GameState,
+    stack_id: str,
+) -> ExileStack | None:
+    """Get an exile stack by its ID."""
+    for stack in game_state.exile_stacks:
+        if stack.stack_id == stack_id:
+            return stack
+    return None
+
+
+def get_exile_stacks_by_reason(
+    game_state: GameState,
+    reason: str,
+    controller: str | None = None,
+) -> list[ExileStack]:
+    """Get all exile stacks matching a reason (and optionally controller)."""
+    result = []
+    for stack in game_state.exile_stacks:
+        if stack.reason == reason:
+            if controller is None or stack.controller == controller:
+                result.append(stack)
+    return result
+
+
+def add_to_exile_stack(
+    game_state: GameState,
+    stack_id: str,
+    card: Card,
+) -> ExileStack | None:
+    """Add a card to an existing exile stack."""
+    stack = get_exile_stack(game_state, stack_id)
+    if stack is None:
+        return None
+    stack.cards.append(card)
+    # Also add to player's flat exile list for backward compatibility
+    player = get_player(game_state, stack.controller)
+    player.exile.append(card)
+    return stack
+
+
+def remove_from_exile_stack(
+    game_state: GameState,
+    stack_id: str,
+    card_id: str,
+) -> Card | None:
+    """Remove a card from an exile stack by card ID."""
+    stack = get_exile_stack(game_state, stack_id)
+    if stack is None:
+        return None
+    for i, card in enumerate(stack.cards):
+        if card.id == card_id:
+            removed = stack.cards.pop(i)
+            # Also remove from player's flat exile list
+            player = get_player(game_state, stack.controller)
+            player.exile[:] = [c for c in player.exile if c.id != card_id]
+            return removed
+    return None
+
+
+def exile_card_with_reason(
+    game_state: GameState,
+    card: Card,
+    from_zone: str,
+    player_name: str,
+    reason: str,
+    face_down: bool = False,
+) -> ExileStack:
+    """Exile a card from a zone, creating a tracked exile stack.
+
+    This is the preferred way to exile cards when the reason matters
+    (suspend, foretell, adventure, spell resolution, etc.).
+    """
+    player = get_player(game_state, player_name)
+
+    # Remove from source zone
+    if from_zone in ("hand", "library", "graveyard", "exile", "command_zone", "sideboard"):
+        zone_list = _get_player_zone(player, from_zone)
+        zone_list[:] = [c for c in zone_list if c.id != card.id]
+    elif from_zone == "stack":
+        game_state.stack[:] = [s for s in game_state.stack if s.source_card.id != card.id]
+
+    # Add to exile
+    player.exile.append(card)
+
+    # Create exile stack for tracking
+    stack = create_exile_stack(game_state, [card], reason, player_name, face_down)
+
+    event: ZoneChangeEvent = {
+        "card_id": card.id,
+        "card_name": card.name,
+        "from_zone": from_zone,
+        "to_zone": "exile",
+        "player": player_name,
+        "is_token": False,
+        "exile_reason": reason,
+    }
+    _emit_zone_change(event, game_state)
+    return stack
+
+
+def clear_exile_stack(
+    game_state: GameState,
+    stack_id: str,
+) -> list[Card]:
+    """Remove an exile stack entirely, returning the cards it contained."""
+    for i, stack in enumerate(game_state.exile_stacks):
+        if stack.stack_id == stack_id:
+            removed_stack = game_state.exile_stacks.pop(i)
+            # Remove cards from player's flat exile list
+            player = get_player(game_state, stack.controller)
+            card_ids = {c.id for c in removed_stack.cards}
+            player.exile[:] = [c for c in player.exile if c.id not in card_ids]
+            return removed_stack.cards
+    return []
+
+
+# ---------------------------------------------------------------------------
+# ZN-02: Graveyard Enhancement
+# ---------------------------------------------------------------------------
+
+def get_graveyard_top(
+    game_state: GameState,
+    player_name: str,
+) -> Card | None:
+    """Get the top card of a player's graveyard (most recently added = last appended). CR 402.2"""
+    player = get_player(game_state, player_name)
+    if not player.graveyard:
+        return None
+    return player.graveyard[-1]
+
+
+def get_graveyard_size(
+    game_state: GameState,
+    player_name: str,
+) -> int:
+    """Get the number of cards in a player's graveyard."""
+    player = get_player(game_state, player_name)
+    return len(player.graveyard)
+
+
+def search_graveyard(
+    game_state: GameState,
+    player_name: str,
+    card_name: str | None = None,
+    card_type: str | None = None,
+) -> list[Card]:
+    """Search a player's graveyard for matching cards.
+
+    CR 402.2: Graveyard is a public zone, so searching is allowed.
+    """
+    player = get_player(game_state, player_name)
+    results = []
+    for card in player.graveyard:
+        if card_name and card.name.lower() != card_name.lower():
+            continue
+        if card_type and card_type.lower() not in card.type_line.lower():
+            continue
+        results.append(card)
+    return results
+
+
+def reorder_graveyard(
+    game_state: GameState,
+    player_name: str,
+    order: list[str],
+) -> GameState:
+    """Reorder a player's graveyard by card IDs. CR 404.2
+
+    Used for effects like "arrange cards in any order".
+    """
+    player = get_player(game_state, player_name)
+    card_map = {c.id: c for c in player.graveyard}
+    reordered = []
+    for card_id in order:
+        if card_id in card_map:
+            reordered.append(card_map[card_id])
+    # Add any cards not in the order list to the bottom
+    for card in player.graveyard:
+        if card.id not in order:
+            reordered.append(card)
+    player.graveyard = reordered
+    return game_state
+
+
+# ---------------------------------------------------------------------------
+# ZN-03: Command Zone Enhancement
+# ---------------------------------------------------------------------------
+
+def get_command_zone_cards(
+    game_state: GameState,
+    player_name: str,
+) -> list[Card]:
+    """Get all cards in a player's command zone."""
+    player = get_player(game_state, player_name)
+    return player.command_zone
+
+
+def move_card_from_command_zone(
+    game_state: GameState,
+    card: Card,
+    player_name: str,
+    to_zone: str,
+) -> GameState:
+    """Move a card from command zone to another zone."""
+    player = get_player(game_state, player_name)
+    player.command_zone[:] = [c for c in player.command_zone if c.id != card.id]
+
+    if to_zone in ("hand", "library", "graveyard", "exile"):
+        dest = _get_player_zone(player, to_zone)
+        if to_zone == "library":
+            dest.append(card)  # Bottom of library
+        else:
+            dest.append(card)
+
+    event: ZoneChangeEvent = {
+        "card_id": card.id,
+        "card_name": card.name,
+        "from_zone": "command_zone",
+        "to_zone": to_zone,
+        "player": player_name,
+        "is_token": False,
+    }
+    _emit_zone_change(event, game_state)
+    return game_state
+
+
+# ---------------------------------------------------------------------------
+# ZN-04: Sideboard
+# ---------------------------------------------------------------------------
+
+def swap_sideboard_card(
+    game_state: GameState,
+    player_name: str,
+    hand_card_id: str,
+    sideboard_card_id: str,
+) -> tuple[GameState, Card, Card]:
+    """Swap a card from hand with a card from sideboard.
+
+    Returns (game_state, hand_card, sideboard_card).
+    Sideboard swaps are typically only allowed between rounds in Commander.
+    """
+    player = get_player(game_state, player_name)
+
+    # Find the card in hand
+    hand_card = None
+    for i, card in enumerate(player.hand):
+        if card.id == hand_card_id:
+            hand_card = player.hand.pop(i)
+            break
+
+    if hand_card is None:
+        raise ValueError(f"Card {hand_card_id!r} not found in {player_name}'s hand")
+
+    # Find the card in sideboard
+    sideboard_card = None
+    for i, card in enumerate(player.sideboard):
+        if card.id == sideboard_card_id:
+            sideboard_card = player.sideboard.pop(i)
+            break
+
+    if sideboard_card is None:
+        raise ValueError(f"Card {sideboard_card_id!r} not found in {player_name}'s sideboard")
+
+    # Perform the swap
+    player.hand.append(sideboard_card)
+    player.sideboard.append(hand_card)
+
+    logger.info(
+        "Sideboard swap for %s: %s <-> %s",
+        player_name, hand_card.name, sideboard_card.name,
+    )
+
+    event: ZoneChangeEvent = {
+        "card_id": hand_card.id,
+        "card_name": hand_card.name,
+        "from_zone": "hand",
+        "to_zone": "sideboard",
+        "player": player_name,
+        "is_token": False,
+    }
+    _emit_zone_change(event, game_state)
+
+    event: ZoneChangeEvent = {
+        "card_id": sideboard_card.id,
+        "card_name": sideboard_card.name,
+        "from_zone": "sideboard",
+        "to_zone": "hand",
+        "player": player_name,
+        "is_token": False,
+    }
+    _emit_zone_change(event, game_state)
+
+    return game_state, hand_card, sideboard_card
+
+
+def get_sideboard_size(
+    game_state: GameState,
+    player_name: str,
+) -> int:
+    """Get the number of cards in a player's sideboard."""
+    player = get_player(game_state, player_name)
+    return len(player.sideboard)
+
+
+def search_sideboard(
+    game_state: GameState,
+    player_name: str,
+    card_name: str | None = None,
+    card_type: str | None = None,
+) -> list[Card]:
+    """Search a player's sideboard for matching cards."""
+    player = get_player(game_state, player_name)
+    results = []
+    for card in player.sideboard:
+        if card_name and card.name.lower() != card_name.lower():
+            continue
+        if card_type and card_type.lower() not in card.type_line.lower():
+            continue
+        results.append(card)
+    return results

@@ -132,7 +132,7 @@
 - [X] T043 [P] Persist the debug panel toggle preference in `localStorage` key `mtg_debug_panel_enabled` in `frontend/src/components/DebugPanel.tsx`; read on mount so preference survives page refresh
 - [X] T044 [P] Add "No debug data for this game" empty-state message to `DebugPanel` in `frontend/src/components/DebugPanel.tsx`: shown when the panel is enabled and the `entries` array is empty (i.e., game was run without `--debug`)
 - [X] T045 [P] Add `--observer` CLI arg to `ai_client/__main__.py` (separate LLM endpoint/model for observer AI); default to same endpoint as playing AIs if not provided — per quickstart.md
-- [ ] T046 Run end-to-end validation per `specs/011-observer-ai-commentary/quickstart.md`: start engine, run `python -m ai_client --debug`, open UI, enable panel, verify all 4 user story behaviours work in a single game
+- [x] T046 Run end-to-end validation per `specs/011-observer-ai-commentary/quickstart.md`: start engine, run `python -m ai_client --debug`, open UI, enable panel, verify all 4 user story behaviours work in a single game
 
 ---
 

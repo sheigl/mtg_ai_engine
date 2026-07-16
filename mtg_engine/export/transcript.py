@@ -2,9 +2,8 @@
 Play-by-play transcript recorder. REQ-D04, REQ-D05, REQ-D06.
 Records every engine event in sequence with natural-language descriptions.
 """
-import uuid
 from typing import Any, Callable
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class TranscriptEntry(BaseModel):
@@ -30,6 +29,13 @@ class TranscriptRecorder:
     def register_listener(self, fn: Callable[["TranscriptEntry"], None]) -> None:
         """Register a callback invoked for every new TranscriptEntry."""
         self._listeners.append(fn)
+
+    def unregister_listener(self, fn: Callable[["TranscriptEntry"], None]) -> None:
+        """Remove a previously registered listener. No-op if not found."""
+        try:
+            self._listeners.remove(fn)
+        except ValueError:
+            pass
 
     def _notify_listeners(self, entry: "TranscriptEntry") -> None:
         for fn in self._listeners:

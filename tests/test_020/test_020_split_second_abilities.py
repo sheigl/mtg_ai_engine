@@ -124,7 +124,6 @@ class TestSplitSecondBlocksNonManaAbilities:
         
         # Activating it should raise error about split second
         with pytest.raises(ValueError, match="split.?second"):
-            from mtg_engine.api.routers.game import _get_gs
             from mtg_engine.models.actions import ActivateRequest
             
             # Simulate the /activate endpoint call

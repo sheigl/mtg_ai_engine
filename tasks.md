@@ -400,18 +400,18 @@
   - Map errors to requirement numbers (REQ-D01, REQ-S02, REQ-R01)
 
   ### Done when:
-  - [ ] Pydantic models for `DeckImportRequest`, `DeckPreview`, `CardPreview` are defined
-  - [ ] Archidekt JSON parser works with real Archidekt deck URLs
-  - [ ] Text format parser handles standard decklist formats
-  - [ ] Deck validation enforces 60-card minimum, 4-copy limit
-  - [ ] Security validation rejects malicious file uploads
-  - [ ] Rate limiting prevents abuse (10 imports/minute/IP)
-  - [ ] API endpoints return correct HTTP status codes and error messages
-  - [ ] Preview workflow completes in under 30 seconds for valid decks
-  - [ ] Performance benchmarks: 100+ card deck loads in under 5s
-  - [ ] Integration tests pass for all edge cases (REQ-T01 to REQ-T04)
-  - [ ] Clear error messages displayed for invalid deck formats
-  - [ ] Progress indicators shown for large file uploads
+  - [x] Pydantic models for `DeckImportRequest`, `DeckPreview`, `CardPreview` are defined
+  - [x] Archidekt JSON parser works with real Archidekt deck URLs
+  - [x] Text format parser handles standard decklist formats
+  - [x] Deck validation enforces 60-card minimum, 4-copy limit
+  - [x] Security validation rejects malicious file uploads
+  - [x] Rate limiting prevents abuse (10 imports/minute/IP)
+  - [x] API endpoints return correct HTTP status codes and error messages
+  - [x] Preview workflow completes in under 30 seconds for valid decks
+  - [x] Performance benchmarks: 100+ card deck loads in under 5s
+  - [x] Integration tests pass for all edge cases (REQ-T01 to REQ-T04)
+  - [x] Clear error messages displayed for invalid deck formats
+  - [x] Progress indicators shown for large file uploads
 
   ### Testing Requirements
   - Unit tests for all parser functions

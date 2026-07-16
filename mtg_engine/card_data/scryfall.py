@@ -11,6 +11,10 @@ import httpx
 
 from mtg_engine.models.game import Card, CardFace
 
+
+# Valid MTG colors for filtering
+VALID_COLORS = {"W", "U", "B", "R", "G", "C"}
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_DB = Path(__file__).parent / "cache.db"
@@ -130,7 +134,7 @@ class ScryfallClient:
                     return self._build_card(raw)
             except Exception as exc:
                 logger.warning("MongoDB lookup failed for %r: %s", name, exc)
-        raw = self._api_get(f"/cards/named", params={"exact": name})
+        raw = self._api_get("/cards/named", params={"exact": name})
         self._cache_put(raw)
         return self._build_card(raw)
 
@@ -142,6 +146,160 @@ class ScryfallClient:
         raw = self._api_get(f"/cards/{scryfall_id}")
         self._cache_put(raw)
         return self._build_card(raw)
+
+    def search_cards(
+        self,
+        q: Optional[str] = None,
+        type_line: Optional[str] = None,
+        colors: Optional[list[str]] = None,
+        cmc_min: Optional[float] = None,
+        cmc_max: Optional[float] = None,
+        mana_cost: Optional[str] = None,
+        keyword: Optional[str] = None,
+        rarity: Optional[str] = None,
+        set_code: Optional[str] = None,
+        page: int = 1,
+        per_page: int = 25,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+    ) -> tuple[list[Card], int]:
+        """Search cached cards by multiple filters. Returns (cards, total_count).
+
+        All filters combine with AND logic. Operates entirely on the local SQLite cache.
+        """
+        if page < 1:
+            raise ValueError("page must be >= 1")
+        if per_page < 1 or per_page > 100:
+            raise ValueError("per_page must be between 1 and 100")
+        if sort_by not in ("name", "cmc"):
+            raise ValueError(f"sort_by must be 'name' or 'cmc', got '{sort_by}'")
+        if sort_order not in ("asc", "desc"):
+            raise ValueError(f"sort_order must be 'asc' or 'desc', got '{sort_order}'")
+
+        # Validate colors
+        if colors:
+            for c in colors:
+                if c.upper() not in VALID_COLORS:
+                    raise ValueError(f"Invalid color '{c}'; valid colors are {sorted(VALID_COLORS)}")
+            colors = [c.upper() for c in colors]
+
+        conditions: list[str] = []
+        params: list = []
+
+        # Free-text search (name + oracle_text)
+        if q:
+            conditions.append(
+                "(LOWER(name) LIKE '%' || LOWER(?) || '%' "
+                "OR LOWER(COALESCE(json_extract(data_json, '$.oracle_text'), '')) LIKE '%' || LOWER(?) || '%')"
+            )
+            params.extend([q, q])
+
+        # Type line substring match
+        if type_line:
+            conditions.append("json_extract(data_json, '$.type_line') LIKE ?")
+            params.append(f"%{type_line}%")
+
+        # Colors — card must contain ALL specified colors (AND logic)
+        if colors:
+            for c in colors:
+                conditions.append("json_extract(data_json, '$.colors') LIKE ?")
+                params.append(f'%"{c}"%')
+
+        # CMC range
+        if cmc_min is not None:
+            conditions.append("CAST(json_extract(data_json, '$.cmc') AS REAL) >= ?")
+            params.append(cmc_min)
+        if cmc_max is not None:
+            conditions.append("CAST(json_extract(data_json, '$.cmc') AS REAL) <= ?")
+            params.append(cmc_max)
+
+        # Exact mana cost match
+        if mana_cost:
+            conditions.append("json_extract(data_json, '$.mana_cost') = ?")
+            params.append(mana_cost)
+
+        # Keyword — case-insensitive quoted keyword in JSON array
+        if keyword:
+            conditions.append("LOWER(json_extract(data_json, '$.keywords')) LIKE ?")
+            params.append(f'%"{keyword.lower()}"%')
+
+        # Rarity (case-insensitive)
+        if rarity:
+            conditions.append("LOWER(json_extract(data_json, '$.rarity')) = LOWER(?)")
+            params.append(rarity)
+
+        # Set code
+        if set_code:
+            conditions.append("json_extract(data_json, '$.set') = ?")
+            params.append(set_code)
+
+        where_clause = ""
+        if conditions:
+            where_clause = "WHERE " + " AND ".join(conditions)
+
+        # Sort clause
+        dir_ = "ASC" if sort_order == "asc" else "DESC"
+        if sort_by == "cmc":
+            order_clause = f"ORDER BY CAST(json_extract(data_json, '$.cmc') AS REAL) {dir_}, name ASC"
+        else:
+            order_clause = f"ORDER BY name {dir_}"
+
+        offset = (page - 1) * per_page
+
+        with sqlite3.connect(self.db_path) as conn:
+            # COUNT query for total
+            count_sql = f"SELECT COUNT(*) FROM cards {where_clause}"
+            total = conn.execute(count_sql, params).fetchone()[0]
+
+            # SELECT query for page results
+            select_sql = (
+                f"SELECT data_json FROM cards {where_clause} "
+                f"{order_clause} LIMIT ? OFFSET ?"
+            )
+            rows = conn.execute(select_sql, params + [per_page, offset]).fetchall()
+
+        cards: list[Card] = []
+        for row in rows:
+            raw = json.loads(row[0])
+            cards.append(self._build_search_card(raw))
+
+        return cards, total
+
+    def _build_search_card(self, raw: dict) -> Card:
+        """Map cached Scryfall JSON to a Card model for search results."""
+        faces: Optional[list[CardFace]] = None
+        if "card_faces" in raw:
+            faces = [
+                CardFace(
+                    name=f.get("name", ""),
+                    mana_cost=f.get("mana_cost"),
+                    type_line=f.get("type_line", ""),
+                    oracle_text=f.get("oracle_text"),
+                    power=f.get("power"),
+                    toughness=f.get("toughness"),
+                    loyalty=f.get("loyalty"),
+                    colors=f.get("colors", []),
+                )
+                for f in raw["card_faces"]
+            ]
+        return Card(
+            id=str(uuid.uuid4()),  # unique instance ID
+            scryfall_id=raw.get("id"),
+            name=raw.get("name", ""),
+            mana_cost=raw.get("mana_cost"),
+            type_line=raw.get("type_line", ""),
+            oracle_text=raw.get("oracle_text"),
+            power=raw.get("power"),
+            toughness=raw.get("toughness"),
+            loyalty=raw.get("loyalty"),
+            colors=raw.get("colors", []),
+            color_identity=raw.get("color_identity", []),
+            keywords=[k.lower() for k in raw.get("keywords", [])],
+            faces=faces,
+            cmc=float(raw.get("cmc", 0.0)),
+            rarity=raw.get("rarity"),
+            set_code=raw.get("set"),
+        )
 
     # --- Cache helpers ---
 

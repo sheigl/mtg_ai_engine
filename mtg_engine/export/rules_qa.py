@@ -86,7 +86,7 @@ def _qa_legend_rule(ctx: dict) -> QAPair | None:
         return None
     return QAPair(
         question=f"A player controls two legendary permanents both named {card}. What happens?",
-        answer=f"The legend rule applies (CR 704.5j): the player chooses one to keep, and the rest are put into their owners' graveyards as a state-based action.",
+        answer="The legend rule applies (CR 704.5j): the player chooses one to keep, and the rest are put into their owners' graveyards as a state-based action.",
         game_id=ctx["game_id"],
         turn=ctx["turn"],
         trigger_event="legend_rule_sba",
@@ -357,7 +357,7 @@ def _qa_layer_system(ctx: dict) -> QAPair | None:
         return None
     return QAPair(
         question=f"Both {card1} and {card2} have continuous effects that affect creatures. In what order are they applied?",
-        answer=f"Continuous effects are applied in layer order (CR 613.1): Layer 1 (copy), Layer 2 (control), Layer 3 (text), Layer 4 (type), Layer 5 (color), Layer 6 (ability), Layer 7 (power/toughness: 7a CDA, 7b set, 7c modify, 7d switch). Within a layer, effects are applied in timestamp order (CR 613.7) unless a dependency exists (CR 613.8).",
+        answer="Continuous effects are applied in layer order (CR 613.1): Layer 1 (copy), Layer 2 (control), Layer 3 (text), Layer 4 (type), Layer 5 (color), Layer 6 (ability), Layer 7 (power/toughness: 7a CDA, 7b set, 7c modify, 7d switch). Within a layer, effects are applied in timestamp order (CR 613.7) unless a dependency exists (CR 613.8).",
         game_id=ctx["game_id"],
         turn=ctx["turn"],
         trigger_event="layer_interaction",

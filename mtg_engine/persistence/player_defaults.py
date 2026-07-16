@@ -9,7 +9,6 @@ from typing import Any
 
 from mtg_engine.persistence.mongo_client import get_player_defaults_collection
 from mtg_engine.models.player_defaults import (
-    VALID_PLAYER_TYPES,
     validate_settings_for_type,
     merge_with_defaults,
 )

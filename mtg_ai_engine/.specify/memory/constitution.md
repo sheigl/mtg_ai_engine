@@ -1,50 +1,40 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+# mtg_ai_engine Constitution
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. Test-First Development (NON-NEGOTIABLE)
+All implementation MUST have passing tests before integration. Each feature requires: tests written → tests fail → then implement. New effect/trigger/keyword classes require 3-5 unit tests minimum.
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+### II. CR-Compliant Rules Engine
+All game logic MUST follow the Magic: The Gathering Comprehensive Rules (CR). Implementation must cite the relevant CR section (e.g., CR 614 for replacement effects, CR 611 for layers). Deviations must be documented with rationale.
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+### III. Forge Parity Alignment
+Engine subsystems should mirror Forge's architectural patterns where pragmatic. File-for-file parity is NOT required, but functional parity IS. Each gap category (G1-G13) must track implementation coverage quantitatively.
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+### IV. Modular Library Architecture
+Core game logic lives in `mtg_engine/` as independent modules. Ability effects, keywords, triggers, and replacement effects each have their own subdirectory. No circular dependencies between engine modules.
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+### V. Incremental Delivery
+Large gaps are addressed in phases. Each phase produces shippable, testable value. Deferred items are explicitly tracked in tasks.md with dependency chains. No phase exceeds 3 sprints without a checkpoint.
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+## Technology Stack
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
+- **Language**: Python 3.11+
+- **API layer**: FastAPI + Pydantic v2
+- **Persistence**: motor (async MongoDB driver) — optional, game state is in-memory
+- **Testing**: pytest (mandatory)
+- **Linting**: ruff
 
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
+## Development Workflow
 
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+1. **Specify**: Update SPEC.md with FR/SC identifiers for each gap category
+2. **Plan**: Update plan.md with phases, dependencies, and measurable success criteria
+3. **Task**: Break into testable tasks in tasks.md
+4. **Implement**: Tests first → code → verify all tests pass
+5. **Review**: Verify CR citation, test coverage, Forge functional parity
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+This constitution supersedes all other development guidelines. Amendments require documentation, team approval, and a migration plan. Constitution conflicts are CRITICAL and require adjustment of the spec, plan, or tasks — not dilution of the principle.
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+**Version**: 1.0.0 | **Ratified**: 2026-05-21 | **Last Amended**: 2026-05-21

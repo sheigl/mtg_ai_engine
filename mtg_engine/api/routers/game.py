@@ -1,5 +1,4 @@
 """Game action endpoints. REQ-API01–REQ-API05."""
-import copy
 import logging
 from typing import Any
 from fastapi import APIRouter, HTTPException
@@ -13,16 +12,14 @@ from mtg_engine.models.actions import (
     DeclareAttackersRequest, DeclareBlockersRequest, OrderBlockersRequest,
     AssignCombatDamageRequest, ChoiceRequest, PassRequest,
     PutTriggerRequest, SpecialActionRequest,
-    MulliganRequest, ActivateLoyaltyRequest, CascadeChoiceRequest,
-    LegalAction, LegalActionsResponse, ErrorResponse,
-    ForetellRequest,
+    LegalAction, ForetellRequest,
 )
 from mtg_engine.engine.sba import check_and_apply_sbas
 from mtg_engine.engine.turn_manager import pass_priority
-from mtg_engine.engine.stack import cast_spell, resolve_top
-from mtg_engine.engine.zones import get_player, move_card_to_zone, put_permanent_onto_battlefield
+from mtg_engine.engine.stack import cast_spell
+from mtg_engine.engine.zones import get_player, put_permanent_onto_battlefield
 from mtg_engine.engine.combat import (
-    declare_attackers, declare_blockers, order_blockers, assign_combat_damage, end_combat
+    declare_attackers, declare_blockers, order_blockers, assign_combat_damage
 )
 from mtg_engine.engine.triggers import put_trigger_on_stack
 from mtg_engine.card_data.deck_loader import load_deck, load_commander_deck
@@ -464,6 +461,20 @@ def delete_game(game_id: str) -> dict:
     except KeyError:
         raise _err("Game not found", "GAME_NOT_FOUND", 404)
     _write_to_mongodb(game_id, gs)
+
+    # APP-06: Update player stats asynchronously after game completion
+    try:
+        import asyncio
+        from mtg_engine.api.routers.player_stats import update_stats_for_game_completion
+        from mtg_engine.persistence.mongo_client import get_main_loop
+        loop = get_main_loop() or asyncio.get_event_loop()
+        if loop is None or not loop.is_running():
+            logger.warning("No running event loop — stats update for game %s will be skipped", game_id)
+            return {"data": {"game_id": game_id, "status": "deleted", "winner": gs.winner}}
+        asyncio.run_coroutine_threadsafe(update_stats_for_game_completion(game_id, gs), loop)
+    except Exception:
+        logger.warning("Failed to schedule stats update for game %s", game_id, exc_info=True)
+
     return {"data": {"game_id": game_id, "status": "deleted", "winner": gs.winner}}
 
 
@@ -725,11 +736,19 @@ def cast(game_id: str, req: CastRequest) -> dict:
     elif req.alternative_cost == "delve":
         # Exile specified graveyard cards to pay generic mana
         player_for_delve = get_player(gs, gs.priority_holder)
-        for gid in req.targets:
+        # Use pending_delve_choice card_ids if available (from apply())
+        delve_card_ids = []
+        if gs.pending_delve_choice and gs.pending_delve_choice.get("card_ids"):
+            delve_card_ids = gs.pending_delve_choice["card_ids"]
+        if not delve_card_ids:
+            delve_card_ids = req.targets
+        for gid in delve_card_ids:
             delve_card = next((c for c in player_for_delve.graveyard if c.id == gid), None)
             if delve_card:
                 player_for_delve.graveyard.remove(delve_card)
                 player_for_delve.exile.append(delve_card)
+        # Clear pending choice after resolution
+        gs.pending_delve_choice = None
         req = req.model_copy(update={"targets": []})
     
     # Find the card in hand OR graveyard (needed for payment calculation)
@@ -942,7 +961,7 @@ def cycle(game_id: str, req: CastRequest) -> dict:
         raise _err(f"{card.name} doesn't have cycling", "INVALID_ACTION")
 
     cycling_cost = cycling_match.group(1)
-    from mtg_engine.engine.mana import can_pay_cost, is_mana_ability
+    from mtg_engine.engine.mana import can_pay_cost
     if not can_pay_cost(player.mana_pool, cycling_cost):
         raise _err(f"Cannot pay cycling cost {cycling_cost}", "INVALID_ACTION")
 
@@ -1063,6 +1082,9 @@ class ProliferateRequest(BaseModel):
 @router.post("/{game_id}/proliferate")
 def proliferate(game_id: str, req: ProliferateRequest) -> dict:
     """POST /game/{game_id}/proliferate. US13: add one counter of each type to chosen targets."""
+    from mtg_engine.engine.proliferate import apply_proliferate
+    from mtg_engine.engine.triggers import check_proliferated_triggers
+
     mgr = get_manager()
     if req.dry_run:
         gs = mgr.snapshot(game_id)
@@ -1078,20 +1100,14 @@ def proliferate(game_id: str, req: ProliferateRequest) -> dict:
     for target_id in req.targets:
         if target_id not in eligible_ids:
             raise _err(f"Target {target_id!r} is not eligible for proliferate", "INVALID_ACTION")
-        # Find the target — permanent or player
-        perm = next((p for p in gs.battlefield if p.id == target_id), None)
-        if perm:
-            # Add one of each counter type the permanent already has
-            for counter_type, count in list(perm.counters.items()):
-                if not counter_type.startswith("__"):  # skip internal counters
-                    perm.counters[counter_type] = count + 1
-        else:
-            # Target is a player — add one poison counter if they have any
-            target_player = next((p for p in gs.players if p.name == target_id), None)
-            if target_player and target_player.poison_counters > 0:
-                target_player.poison_counters += 1
 
-    gs.pending_proliferate_choice = None
+    # Delegate counter application to engine (pure transform)
+    gs = apply_proliferate(gs, req.targets)
+
+    # Fire "whenever you proliferate" triggers after resolution
+    gs = check_proliferated_triggers(gs, player_name)
+
+    gs = gs.model_copy(update={"pending_proliferate_choice": None})
     gs = _run_sbas(gs)
 
     if not req.dry_run:
@@ -1451,8 +1467,6 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
                 for c in scry_cards:
                     if c.get("id") == selected_id:
                         # Create a Card object for it
-                        from mtg_engine.models.game import Card
-                        from mtg_engine.models.game import Card as _Card
                         
                         # Try to find in library by name (simplified)
                         lib_top = player.library[:n]
@@ -1551,8 +1565,11 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
                             player.mana_pool = _pc_spree(player.mana_pool, spree_cost, payment)
                             logger.info("Spree: paid additional %s for mode", spree_cost)
                     
-                    # Store selected mode for effect resolution
-                    gs.pending_spree_choice["selected_mode"] = selected
+                    # Store selected mode effect for resolution on the stack
+                    gs.pending_spree_effects.append({
+                        "effect": selected.get("effect", ""),
+                        "card_id": gs.pending_spree_choice.get("card_id", ""),
+                    })
                     gs.pending_spree_choice = None
                     mgr.update(game_id, gs)
                     return _ok(gs)
@@ -1710,7 +1727,7 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
                 is_winternight = gs.pending_discard_choice.get("is_winternight_stories", False)
                 
                 if selected_id:
-                    from mtg_engine.engine.zones import get_player as _get_player_draw, draw_card as _draw_card
+                    from mtg_engine.engine.zones import get_player as _get_player_draw
                     player_name = gs.pending_discard_choice.get("player", gs.priority_holder)
                     player = _get_player_draw(gs, player_name)
                     if player:
@@ -1798,6 +1815,85 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
             from mtg_engine.engine.zones import draw_card
             gs, _ = draw_card(gs, dredge_player_name)
             gs.pending_dredge_choice = None
+            mgr.update(game_id, gs)
+
+    # KW-19: Delve choice (CR 702.86) — resolve pending delve exile
+    elif choice_id == "delve_resolve":
+        if gs.pending_delve_choice:
+            player_name = gs.pending_delve_choice.get("player", gs.priority_holder)
+            from mtg_engine.engine.zones import get_player as _get_delve_player
+            player = _get_delve_player(gs, player_name)
+            if player:
+                # Exile the specified cards from graveyard
+                card_ids = gs.pending_delve_choice.get("card_ids", [])
+                for cid in card_ids:
+                    delve_card = next((c for c in player.graveyard if c.id == cid), None)
+                    if delve_card:
+                        player.graveyard.remove(delve_card)
+                        player.exile.append(delve_card)
+                        logger.info("Delve: %s exiled %s from graveyard", player_name, delve_card.name)
+                # Clear pending choice
+                gs.pending_delve_choice = None
+            mgr.update(game_id, gs)
+
+    elif choice_id == "commander_zone_replace":
+        # CMD-01: CR 903.9 — player chooses to put commander into command zone
+        if gs.pending_commander_zone_choice:
+            player_name = gs.pending_commander_zone_choice.get("player", gs.priority_holder)
+            card = gs.pending_commander_zone_choice.get("card")
+            from mtg_engine.engine.formats.commander import move_card_to_command_zone
+            if card:
+                gs = move_card_to_command_zone(gs, card, player_name)
+                logger.info("Commander zone choice: %s moved to command zone", card.name)
+            gs.pending_commander_zone_choice = None
+            mgr.update(game_id, gs)
+
+    elif choice_id == "commander_zone_stay":
+        # CMD-01: CR 903.9 — player chooses to let commander go to intended destination
+        if gs.pending_commander_zone_choice:
+            cmd = gs.pending_commander_zone_choice
+            player_name = cmd.get("player", gs.priority_holder)
+            card = cmd.get("card")
+            intended = cmd.get("intended_destination", "graveyard")
+            if card:
+                # The card has already been removed from its source zone by the
+                # initial move_permanent_to_zone / move_card_to_zone call that
+                # queued this pending choice. We just need to place it in the
+                # intended destination directly.
+                player_obj = next(
+                    (p for p in gs.players if p.name == player_name), None
+                )
+                if player_obj:
+                    dest_list = getattr(player_obj, intended, None)
+                    if dest_list is not None:
+                        dest_list.append(card)
+                logger.info("Commander zone choice: %s sent to %s", card.name, intended)
+            gs.pending_commander_zone_choice = None
+            mgr.update(game_id, gs)
+
+    elif choice_id.startswith("dungeon_room_"):
+        # VEN-01: Dungeon room choice — player selects a specific outcome
+        if gs.pending_dungeon_room_choice:
+            pending = gs.pending_dungeon_room_choice
+            player_name = pending.get("player", gs.priority_holder)
+            choices = pending.get("choices", [])
+            selected_id = choice_id.replace("dungeon_room_", "", 1)
+
+            # Find the matching choice
+            chosen = None
+            for c in choices:
+                if c.get("choice_id") == selected_id:
+                    chosen = c
+                    break
+
+            if chosen:
+                from mtg_engine.engine.dungeon import _apply_room_effect
+                outcome_ability = chosen.get("outcome_ability", "")
+                gs = _apply_room_effect(gs, player_name, outcome_ability)
+                logger.info("Dungeon room choice: %s selected %s for %s",
+                            player_name, selected_id, outcome_ability)
+
+            gs.pending_dungeon_room_choice = None
             mgr.update(game_id, gs)
 
     return _ok(gs)
@@ -2051,7 +2147,6 @@ def resume_game(game_id: str) -> dict:
 @router.post("/{game_id}/copy-spell")
 def copy_spell(game_id: str, req) -> dict:
     """POST /game/{game_id}/copy-spell — Copy a spell on the stack. US7 (014)."""
-    from mtg_engine.models.actions import CopySpellRequest
     from mtg_engine.engine.stack import copy_spell_on_stack
     if not isinstance(req, dict):
         req = req.model_dump() if hasattr(req, "model_dump") else {}
@@ -2080,7 +2175,9 @@ def copy_spell(game_id: str, req) -> dict:
 
 @router.post("/{game_id}/mulligan")
 def mulligan(game_id: str, req: dict) -> dict:
-    """POST /game/{game_id}/mulligan — London mulligan decision."""
+    """POST /game/{game_id}/mulligan — Mulligan decision (any variant)."""
+    from mtg_engine.engine.mulligan import apply_mulligan, get_mulligan_type
+
     gs = _get_gs(game_id)
 
     player_name = req.get("player_name", "")
@@ -2097,28 +2194,20 @@ def mulligan(game_id: str, req: dict) -> dict:
         raise _err(f"{player_name} has already committed to their hand", "ALREADY_KEPT")
 
     hand_size = len(player.hand)
+    if not keep and hand_size <= 1:
+        raise _err("Hand already at minimum size", "HAND_TOO_SMALL")
 
-    if keep or hand_size <= 5:
-        if player_name not in gs.players_kept:
-            gs.players_kept.append(player_name)
-    else:
-        if hand_size <= 1:
-            raise _err("Hand already at minimum size", "HAND_TOO_SMALL")
-        import random as _rand
-        player.library = list(player.hand) + list(player.library)
-        _rand.shuffle(player.library)
-        new_size = hand_size - 1
-        player.hand = player.library[:new_size]
-        player.library = player.library[new_size:]
-        gs.hands_mulliganed[player_name] = gs.hands_mulliganed.get(player_name, 0) + 1
+    mull_type = get_mulligan_type(gs)
 
-    if all(p.name in gs.players_kept for p in gs.players):
-        gs.mulligan_phase_active = False
+    try:
+        gs = apply_mulligan(gs, player_name, keep, mull_type)
+    except ValueError as exc:
+        raise _err(str(exc), "MULLIGAN_ERROR")
 
     mgr = get_manager()
     mgr.update(game_id, gs)
     return {
-        "kept": keep or hand_size <= 5,
+        "kept": keep or hand_size <= 1,
         "new_hand_size": len(player.hand),
         "hand": [c.model_dump() for c in player.hand],
     }
@@ -2264,6 +2353,25 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
         # For now, default to enter tapped for checklands/fetchlands without pending
         # TODO: implement checkland/fetchland handling
 
+    # CMD-01: Commander zone replacement (CR 903.9)
+    if gs.pending_commander_zone_choice and gs.pending_commander_zone_choice.get("player") == player_name:
+        cmd = gs.pending_commander_zone_choice
+        card_name = cmd.get("card", {}).name if cmd.get("card") else "that commander"
+        intended = cmd.get("intended_destination", "graveyard")
+        actions.append(LegalAction(
+            action_type="choice",
+            card_name="commander_zone_replace",
+            description=f"Put {card_name} into your command zone instead of {intended}",
+        ))
+        actions.append(LegalAction(
+            action_type="choice",
+            card_name="commander_zone_stay",
+            description=f"Let {card_name} go to {intended}",
+        ))
+        if not any(a.action_type == "pass" for a in actions):
+            actions.append(LegalAction(action_type="pass", description="Pass priority"))
+        return actions
+
     # Spree mode selection
     if gs.pending_spree_choice and gs.pending_spree_choice.get("player") == player_name:
         modes = gs.pending_spree_choice.get("modes", [])
@@ -2275,6 +2383,29 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                 description=f"+ {cost} — {effect}...",
                 valid_targets=[str(i)],
                 card_name="spree_select",
+            ))
+        if not any(a.action_type == "pass" for a in actions):
+            actions.append(LegalAction(action_type="pass", description="Pass priority"))
+        return actions
+
+    # KW-19: Delve choice (CR 702.86)
+    if gs.pending_delve_choice and gs.pending_delve_choice.get("player") == player_name:
+        actions.append(LegalAction(
+            action_type="delve_resolve",
+            description="Resolve Delve: exile cards from graveyard to reduce cost",
+        ))
+    # VEN-01: Dungeon room choice (CR 701.61)
+    if gs.pending_dungeon_room_choice and gs.pending_dungeon_room_choice.get("player") == player_name:
+        pending = gs.pending_dungeon_room_choice
+        choices = pending.get("choices", [])
+        dungeon_name = pending.get("dungeon_name", "Dungeon")
+        for choice in choices:
+            cid = choice.get("choice_id", "")
+            desc = choice.get("description", f"Choose {cid}")
+            actions.append(LegalAction(
+                action_type="choice",
+                card_name=f"dungeon_room_{cid}",
+                description=f"[{dungeon_name}] {desc}",
             ))
         if not any(a.action_type == "pass" for a in actions):
             actions.append(LegalAction(action_type="pass", description="Pass priority"))
@@ -2292,7 +2423,7 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
             # Player chooses one card to put into hand, rest go to bottom
             actions.append(LegalAction(
                 action_type="choice",
-                description=f"Choose a card to put in your hand",
+                description="Choose a card to put in your hand",
                 valid_targets=card_ids,
                 card_name="reveal_put_hand",
             ))

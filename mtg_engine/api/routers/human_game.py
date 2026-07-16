@@ -312,7 +312,6 @@ def _run_hybrid_loop(
     try:
         from ai_client.models import GameConfig, PlayerConfig
         from ai_client.heuristic_player import HeuristicPlayer
-        from ai_client.ai_player import AIPlayer
         from ai_client.hybrid_game_loop import HybridGameLoop
         from ai_client.client import EngineClient
         from ai_client.observer import ObserverAI
@@ -370,7 +369,7 @@ def _run_hybrid_loop(
             )
             summary = loop.run()
 
-    except Exception as exc:
+    except Exception:
         import traceback
         logger.exception("Hybrid game loop for %s raised an unhandled exception", game_id)
         traceback.print_exc()

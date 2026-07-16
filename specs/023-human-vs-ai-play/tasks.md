@@ -110,7 +110,7 @@
 
 - [X] T038 [US4] Add observer regression test in `tests/api/test_human_game.py`: observer endpoints accessible for human games verified in test_observer_endpoints_accessible_for_human_game
 - [X] T039 [US4] Add verbose log test in `tests/api/test_human_game.py`: game creation with verbose flag works; transcript accessible via export endpoint
-- [ ] T040 [US4] Manual verification step (documented): start human game via UI, open observer board at `/ui/game/{id}` in a second tab, confirm commentary panel shows commentary after human plays a card — no code change needed, just mark done after manual check
+- [x] T040 [US4] Manual verification step (documented): start human game via UI, open observer board at `/ui/game/{id}` in a second tab, confirm commentary panel shows commentary after human plays a card — no code change needed, just mark done after manual check
 
 **Checkpoint**: Observer and verbose log confirmed working for human games. No regressions.
 
@@ -137,7 +137,7 @@
 - [X] T044 [P] Disable interactive controls in `HumanGameBoard.tsx` while `isPending` is true (from `useHumanAction`) to prevent double-submission; `isPending` prop passed to `InteractiveHand` and `ActionPanel`
 - [X] T045 [P] Handle mid-resolution choices beyond targeting in `ChoiceModal.tsx`: `MulliganModal`, `DiscardModal`, `ScryModal` implemented; mulligan and discard detection wired in `HumanGameBoard.tsx`
 - [X] T046 [P] Add X-spell handling in `ChoiceModal.tsx`: `TargetChoiceModal` includes numeric X input when `action.x_value` is set
-- [ ] T047 Run manual browser test checklist from `specs/023-human-vs-ai-play/quickstart.md`: full turn, response window, blocker assignment, target selection, auto-pass, win/loss overlay, observer panel — mark done after passing all items
+- [x] T047 Run manual browser test checklist from `specs/023-human-vs-ai-play/quickstart.md`: full turn, response window, blocker assignment, target selection, auto-pass, win/loss overlay, observer panel — mark done after passing all items
 - [X] T048 Run `python -m pytest tests/api/test_human_game.py -v` — 9 passed ✓
 
 ---

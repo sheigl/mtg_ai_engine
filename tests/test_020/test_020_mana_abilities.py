@@ -14,7 +14,7 @@ CR References:
 - CR 605.5: An ability with a target is not a mana ability
 """
 import pytest
-from mtg_engine.models.game import GameState, PlayerState, Phase, Step, Permanent, Card
+from mtg_engine.models.game import Phase, Step, Permanent, Card
 
 
 @pytest.mark.comprehensive_rules
@@ -87,8 +87,6 @@ class TestManaAbilityImmediateResolution:
         ))
         
         # Call the activate endpoint logic directly
-        from mtg_engine.api.routers.game import _get_gs, _ok
-        from mtg_engine.models.actions import ActivateRequest
         
         # Dry run first to check behavior
         gs_dry = gs.model_copy(deep=True)
