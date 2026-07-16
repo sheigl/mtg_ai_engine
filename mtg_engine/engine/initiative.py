@@ -5,31 +5,31 @@ CR 702.148: The Initiative.
 - When a creature deals combat damage to the initiative holder, the attacker gains it.
 - At the beginning of the initiative holder's upkeep, they venture into Undercity.
 - Undercity is a 5-room dungeon defined in models/dungeon.py.
+
+All state transforms are pure: functions return new GameState via model_copy.
 """
 import logging
+import uuid
 
-from mtg_engine.models.game import GameState
+from mtg_engine.models.game import GameState, PendingTrigger
 
 logger = logging.getLogger(__name__)
 
 
 def set_initiative(game_state: GameState, player_name: str) -> GameState:
     """
-    Set the initiative to the given player.
+    Set the initiative to the given player. Returns new GameState.
     Fires a trigger for cards that care about gaining initiative.
     """
     if game_state.initiative == player_name:
         return game_state
 
     old = game_state.initiative
-    game_state.initiative = player_name
     logger.info(
         "Initiative: %s gains the initiative (was %s)",
         player_name, old or "none",
     )
 
-    from mtg_engine.models.game import PendingTrigger
-    import uuid
     trigger = PendingTrigger(
         id=str(uuid.uuid4()),
         source_permanent_id="initiative",
@@ -38,9 +38,11 @@ def set_initiative(game_state: GameState, player_name: str) -> GameState:
         trigger_type="gain_initiative",
         effect_description=f"{player_name} gains the initiative",
     )
-    game_state.pending_triggers.append(trigger)
 
-    return game_state
+    return game_state.model_copy(update={
+        "initiative": player_name,
+        "pending_triggers": [*game_state.pending_triggers, trigger],
+    })
 
 
 def handle_upkeep_venture(game_state: GameState) -> GameState:

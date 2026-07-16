@@ -461,6 +461,20 @@ def delete_game(game_id: str) -> dict:
     except KeyError:
         raise _err("Game not found", "GAME_NOT_FOUND", 404)
     _write_to_mongodb(game_id, gs)
+
+    # APP-06: Update player stats asynchronously after game completion
+    try:
+        import asyncio
+        from mtg_engine.api.routers.player_stats import update_stats_for_game_completion
+        from mtg_engine.persistence.mongo_client import get_main_loop
+        loop = get_main_loop() or asyncio.get_event_loop()
+        if loop is None or not loop.is_running():
+            logger.warning("No running event loop — stats update for game %s will be skipped", game_id)
+            return {"data": {"game_id": game_id, "status": "deleted", "winner": gs.winner}}
+        asyncio.run_coroutine_threadsafe(update_stats_for_game_completion(game_id, gs), loop)
+    except Exception:
+        logger.warning("Failed to schedule stats update for game %s", game_id, exc_info=True)
+
     return {"data": {"game_id": game_id, "status": "deleted", "winner": gs.winner}}
 
 
@@ -722,11 +736,19 @@ def cast(game_id: str, req: CastRequest) -> dict:
     elif req.alternative_cost == "delve":
         # Exile specified graveyard cards to pay generic mana
         player_for_delve = get_player(gs, gs.priority_holder)
-        for gid in req.targets:
+        # Use pending_delve_choice card_ids if available (from apply())
+        delve_card_ids = []
+        if gs.pending_delve_choice and gs.pending_delve_choice.get("card_ids"):
+            delve_card_ids = gs.pending_delve_choice["card_ids"]
+        if not delve_card_ids:
+            delve_card_ids = req.targets
+        for gid in delve_card_ids:
             delve_card = next((c for c in player_for_delve.graveyard if c.id == gid), None)
             if delve_card:
                 player_for_delve.graveyard.remove(delve_card)
                 player_for_delve.exile.append(delve_card)
+        # Clear pending choice after resolution
+        gs.pending_delve_choice = None
         req = req.model_copy(update={"targets": []})
     
     # Find the card in hand OR graveyard (needed for payment calculation)
@@ -1795,6 +1817,25 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
             gs.pending_dredge_choice = None
             mgr.update(game_id, gs)
 
+    # KW-19: Delve choice (CR 702.86) — resolve pending delve exile
+    elif choice_id == "delve_resolve":
+        if gs.pending_delve_choice:
+            player_name = gs.pending_delve_choice.get("player", gs.priority_holder)
+            from mtg_engine.engine.zones import get_player as _get_delve_player
+            player = _get_delve_player(gs, player_name)
+            if player:
+                # Exile the specified cards from graveyard
+                card_ids = gs.pending_delve_choice.get("card_ids", [])
+                for cid in card_ids:
+                    delve_card = next((c for c in player.graveyard if c.id == cid), None)
+                    if delve_card:
+                        player.graveyard.remove(delve_card)
+                        player.exile.append(delve_card)
+                        logger.info("Delve: %s exiled %s from graveyard", player_name, delve_card.name)
+                # Clear pending choice
+                gs.pending_delve_choice = None
+            mgr.update(game_id, gs)
+
     elif choice_id == "commander_zone_replace":
         # CMD-01: CR 903.9 — player chooses to put commander into command zone
         if gs.pending_commander_zone_choice:
@@ -2347,6 +2388,12 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
             actions.append(LegalAction(action_type="pass", description="Pass priority"))
         return actions
 
+    # KW-19: Delve choice (CR 702.86)
+    if gs.pending_delve_choice and gs.pending_delve_choice.get("player") == player_name:
+        actions.append(LegalAction(
+            action_type="delve_resolve",
+            description="Resolve Delve: exile cards from graveyard to reduce cost",
+        ))
     # VEN-01: Dungeon room choice (CR 701.61)
     if gs.pending_dungeon_room_choice and gs.pending_dungeon_room_choice.get("player") == player_name:
         pending = gs.pending_dungeon_room_choice

@@ -63,10 +63,10 @@ DEATH_TRIGGER_PATTERNS = [
     _re.compile(r"whenever (?:a|an) (.*?) is put into a graveyard from the battlefield", _re.IGNORECASE),
 ]
 
-# Trigger patterns for "whenever you draw a card"
+# Trigger patterns for "whenever you draw a card" / "whenever a player draws a card"
 DRAW_TRIGGER_PATTERNS = [
-    _re.compile(r"whenever you draw (?:a|an|one) card", _re.IGNORECASE),
-    _re.compile(r"whenever a player draws (?:a|an|one) card", _re.IGNORECASE),
+    _re.compile(r"whenever you draw (?:a|an|one) .*?", _re.IGNORECASE),
+    _re.compile(r"whenever a player draws (?:a|an|one) .*?", _re.IGNORECASE),
 ]
 
 # Trigger patterns for "whenever damage is dealt"
@@ -100,22 +100,23 @@ COMBAT_START_TRIGGER_PATTERNS = [
     _re.compile(r"at the start of (?:each|your) combat", _re.IGNORECASE),
 ]
 
-# Trigger patterns for discard effects (not triggers but related)
+# Trigger patterns for "whenever you discard a card" / "whenever a player discards a card"
 DISCARD_TRIGGER_PATTERNS = [
-    _re.compile(r"whenever you discard (?:a|an|one) card", _re.IGNORECASE),
-    _re.compile(r"whenever a player discards (?:a|an|one) card", _re.IGNORECASE),
+    _re.compile(r"whenever you discard (?:a|an|one) .*?", _re.IGNORECASE),
+    _re.compile(r"whenever a player discards (?:a|an|one) .*?", _re.IGNORECASE),
 ]
 
-# Trigger patterns for "whenever a token is created"
+# Trigger patterns for "whenever a token enters the battlefield" / "whenever you create a token"
 TOKEN_TRIGGER_PATTERNS = [
-    _re.compile(r"whenever you create (?:a|an|one) token", _re.IGNORECASE),
-    _re.compile(r"whenever (?:a|an) (.*?) becomes a token", _re.IGNORECASE),
+    _re.compile(r"whenever you create .*? token", _re.IGNORECASE),
+    _re.compile(r"whenever .*? token enters the battlefield", _re.IGNORECASE),
 ]
 
-# Trigger patterns for "whenever a spell is countered"
+# Trigger patterns for "whenever a counter is put on / removed from"
 COUNTER_TRIGGER_PATTERNS = [
-    _re.compile(r"whenever (?:a|an) spell is countered", _re.IGNORECASE),
-    _re.compile(r"whenever you counter (?:a|an) spell", _re.IGNORECASE),
+    _re.compile(r"whenever a .*? counter is put on (?:a|an) .*? you control", _re.IGNORECASE),
+    _re.compile(r"whenever a .*? counter is put on", _re.IGNORECASE),
+    _re.compile(r"whenever a counter is removed from", _re.IGNORECASE),
 ]
 
 # Trigger patterns for landfall
@@ -125,10 +126,10 @@ LANDFALL_TRIGGER_PATTERNS = [
     _re.compile(r"landfall", _re.IGNORECASE),
 ]
 
-# Trigger patterns for "whenever a player planeswalks"
+# Trigger patterns for "whenever this planeswalker planeswalks" / loyalty abilities
 PLANESWALK_TRIGGER_PATTERNS = [
-    _re.compile(r"whenever you planeswalk", _re.IGNORECASE),
-    _re.compile(r"whenever a player planeswalks to (?:a|an)", _re.IGNORECASE),
+    _re.compile(r"whenever a planeswalker you control planeswalks", _re.IGNORECASE),
+    _re.compile(r"whenever this planeswalker planeswalks", _re.IGNORECASE),
 ]
 
 # Trigger patterns for "whenever a creature is turned face up"
@@ -143,6 +144,8 @@ MANA_PRODUCTION_TRIGGER_PATTERNS = [
     _re.compile(r"whenever a land produces mana", _re.IGNORECASE),
     _re.compile(r"whenever you add mana", _re.IGNORECASE),
     _re.compile(r"whenever a source you control adds mana", _re.IGNORECASE),
+    # TRG-20 Fix 9: "Whenever a player spends mana" also matches mana production triggers
+    _re.compile(r"whenever a player spends mana", _re.IGNORECASE),
 ]
 
 # ─── B1: Missing Trigger Categories (Sprint 3) ──────────────────────────────
@@ -152,6 +155,8 @@ SACRIFICE_TRIGGER_PATTERNS = [
     _re.compile(r"whenever (?:a|an) (.*?) you control is sacrificed", _re.IGNORECASE),
     _re.compile(r"whenever you sacrifice (?:a|an) (.*?)(?:,|\.|\?|$)", _re.IGNORECASE),
     _re.compile(r"whenever a player sacrifices (?:a|an) (.*?)(?:,|\.|\?|$)", _re.IGNORECASE),
+    # TRG-20 Fix 1: "Whenever a creature dies" also matches sacrifice triggers
+    _re.compile(r"whenever (?:a|an) .*? dies", _re.IGNORECASE),
 ]
 
 # Life gain/loss triggers — e.g. [[Karametra's Blessing]], [[Geth's Grimoire]]
@@ -175,7 +180,7 @@ PROLIFERATED_TRIGGER_PATTERNS = [
 
 # Transformed triggers — e.g. [[Jace, Vryn's Prodigy]], [[Tovolar's Huntmaster]]
 TRANSFORMED_TRIGGER_PATTERNS = [
-    _re.compile(r"whenever (?:this|~) transforms", _re.IGNORECASE),
+    _re.compile(r"whenever (?:this(?:\s+creature)?|~) transforms", _re.IGNORECASE),
     _re.compile(r"whenever a double-faced card you control transforms", _re.IGNORECASE),
 ]
 
@@ -571,13 +576,20 @@ def check_damage_triggers(
 
 # ─── B1: Check Functions for Missing Trigger Categories (Sprint 3) ──────────────
 
+def _is_you_pattern(pattern_idx: int) -> bool:
+    """Pattern index 0 in each list is the 'you' (self-referential) variant."""
+    return pattern_idx == 0
+
+
 def check_sacrifice_triggers(
     game_state: GameState,
     sacrificed_perm_ids: list[str],
     controller: str,
 ) -> GameState:
-    """Check for "whenever a creature you control is sacrificed" triggers."""
+    """Check for "whenever a creature you control is sacrificed" triggers. Pure transform."""
     from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    new_triggers = list(game_state.pending_triggers)
 
     for perm in game_state.battlefield:
         card = perm.card
@@ -586,7 +598,7 @@ def check_sacrifice_triggers(
             if not isinstance(ab, TriggeredAbility):
                 continue
             cond = ab.trigger_condition.lower()
-            for pattern in SACRIFICE_TRIGGER_PATTERNS:
+            for pattern_idx, pattern in enumerate(SACRIFICE_TRIGGER_PATTERNS):
                 if pattern.search(cond):
                     is_optional = ab.effect.lower().startswith("you may")
                     trigger = PendingTrigger(
@@ -598,11 +610,11 @@ def check_sacrifice_triggers(
                         source_card_name=card.name,
                         is_optional=is_optional,
                     )
-                    game_state.pending_triggers.append(trigger)
+                    new_triggers.append(trigger)
                     logger.debug("Sacrifice trigger queued: %r from %s", ab.trigger_condition, card.name)
                     break
 
-    return game_state
+    return game_state.model_copy(update={"pending_triggers": new_triggers})
 
 
 def check_life_gain_lost_triggers(
@@ -610,8 +622,10 @@ def check_life_gain_lost_triggers(
     player_name: str,
     amount: int,
 ) -> GameState:
-    """Check for "whenever you gain/lose life" triggers."""
+    """Check for "whenever you gain/lose life" triggers. Pure transform."""
     from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    new_triggers = list(game_state.pending_triggers)
 
     for perm in game_state.battlefield:
         card = perm.card
@@ -620,8 +634,11 @@ def check_life_gain_lost_triggers(
             if not isinstance(ab, TriggeredAbility):
                 continue
             cond = ab.trigger_condition.lower()
-            for pattern in LIFE_GAIN_LOST_TRIGGER_PATTERNS:
+            for pattern_idx, pattern in enumerate(LIFE_GAIN_LOST_TRIGGER_PATTERNS):
                 if pattern.search(cond):
+                    # TRG-20 Fix 2: "whenever you gain/lose life" only fires for controller
+                    if _is_you_pattern(pattern_idx) and perm.controller != player_name:
+                        continue
                     is_optional = ab.effect.lower().startswith("you may")
                     trigger = PendingTrigger(
                         id=str(uuid.uuid4()),
@@ -632,19 +649,21 @@ def check_life_gain_lost_triggers(
                         source_card_name=card.name,
                         is_optional=is_optional,
                     )
-                    game_state.pending_triggers.append(trigger)
+                    new_triggers.append(trigger)
                     logger.debug("Life gain/lost trigger queued: %r from %s", ab.trigger_condition, card.name)
                     break
 
-    return game_state
+    return game_state.model_copy(update={"pending_triggers": new_triggers})
 
 
 def check_fight_triggers(
     game_state: GameState,
     fighter_ids: list[str],
 ) -> GameState:
-    """Check for "whenever this creature fights" triggers."""
+    """Check for "whenever this creature fights" triggers. Pure transform."""
     from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    new_triggers = list(game_state.pending_triggers)
 
     for perm in game_state.battlefield:
         card = perm.card
@@ -669,11 +688,11 @@ def check_fight_triggers(
                         source_card_name=card.name,
                         is_optional=is_optional,
                     )
-                    game_state.pending_triggers.append(trigger)
+                    new_triggers.append(trigger)
                     logger.debug("Fight trigger queued: %r from %s", ab.trigger_condition, card.name)
                     break
 
-    return game_state
+    return game_state.model_copy(update={"pending_triggers": new_triggers})
 
 
 def check_proliferated_triggers(
@@ -692,8 +711,11 @@ def check_proliferated_triggers(
             if not isinstance(ab, TriggeredAbility):
                 continue
             cond = ab.trigger_condition.lower()
-            for pattern in PROLIFERATED_TRIGGER_PATTERNS:
+            for pattern_idx, pattern in enumerate(PROLIFERATED_TRIGGER_PATTERNS):
                 if pattern.search(cond):
+                    # TRG-20 Fix 3: "whenever you proliferate" only fires for controller
+                    if _is_you_pattern(pattern_idx) and perm.controller != player_name:
+                        continue
                     is_optional = ab.effect.lower().startswith("you may")
                     trigger = PendingTrigger(
                         id=str(uuid.uuid4()),
@@ -715,8 +737,10 @@ def check_transformed_triggers(
     game_state: GameState,
     transformed_perm_ids: list[str],
 ) -> GameState:
-    """Check for "whenever this transforms" triggers."""
+    """Check for "whenever this transforms" triggers. Pure transform."""
     from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    new_triggers = list(game_state.pending_triggers)
 
     for perm in game_state.battlefield:
         card = perm.card
@@ -741,19 +765,21 @@ def check_transformed_triggers(
                         source_card_name=card.name,
                         is_optional=is_optional,
                     )
-                    game_state.pending_triggers.append(trigger)
+                    new_triggers.append(trigger)
                     logger.debug("Transformed trigger queued: %r from %s", ab.trigger_condition, card.name)
                     break
 
-    return game_state
+    return game_state.model_copy(update={"pending_triggers": new_triggers})
 
 
 def check_tutor_triggers(
     game_state: GameState,
     player_name: str,
 ) -> GameState:
-    """Check for "whenever you search your library" triggers."""
+    """Check for "whenever you search your library" triggers. Pure transform."""
     from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    new_triggers = list(game_state.pending_triggers)
 
     for perm in game_state.battlefield:
         card = perm.card
@@ -762,8 +788,11 @@ def check_tutor_triggers(
             if not isinstance(ab, TriggeredAbility):
                 continue
             cond = ab.trigger_condition.lower()
-            for pattern in TUTOR_TRIGGER_PATTERNS:
+            for pattern_idx, pattern in enumerate(TUTOR_TRIGGER_PATTERNS):
                 if pattern.search(cond):
+                    # TRG-20 Fix 5: "whenever you search" only fires for controller
+                    if _is_you_pattern(pattern_idx) and perm.controller != player_name:
+                        continue
                     is_optional = ab.effect.lower().startswith("you may")
                     trigger = PendingTrigger(
                         id=str(uuid.uuid4()),
@@ -774,19 +803,21 @@ def check_tutor_triggers(
                         source_card_name=card.name,
                         is_optional=is_optional,
                     )
-                    game_state.pending_triggers.append(trigger)
+                    new_triggers.append(trigger)
                     logger.debug("Tutor trigger queued: %r from %s", ab.trigger_condition, card.name)
                     break
 
-    return game_state
+    return game_state.model_copy(update={"pending_triggers": new_triggers})
 
 
 def check_becomes_target_triggers(
     game_state: GameState,
     target_perm_id: str,
 ) -> GameState:
-    """Check for "whenever this becomes the target of a spell or ability" triggers."""
+    """Check for "whenever this becomes the target of a spell or ability" triggers. Pure transform."""
     from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    new_triggers = list(game_state.pending_triggers)
 
     for perm in game_state.battlefield:
         card = perm.card
@@ -807,27 +838,34 @@ def check_becomes_target_triggers(
                         source_card_name=card.name,
                         is_optional=is_optional,
                     )
-                    game_state.pending_triggers.append(trigger)
+                    new_triggers.append(trigger)
                     logger.debug("Becomes target trigger queued: %r from %s", ab.trigger_condition, card.name)
                     break
 
-    return game_state
+    return game_state.model_copy(update={"pending_triggers": new_triggers})
 
 
 def check_attach_triggers(
     game_state: GameState,
     aura_perm_id: str,
 ) -> GameState:
-    """Check for "whenever this becomes attached to another permanent" triggers."""
+    """Check for "whenever this becomes attached to another permanent" triggers. Pure transform."""
     from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    new_triggers = list(game_state.pending_triggers)
 
     for perm in game_state.battlefield:
         card = perm.card
         abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+        found_trigger = False
         for ab in abilities:
             if not isinstance(ab, TriggeredAbility):
                 continue
             cond = ab.trigger_condition.lower()
+            # TRG-20 Fix 6: "whenever this becomes attached" only fires for the aura being attached
+            is_this_trigger = bool(_re.compile(r"whenever this becomes attached", _re.IGNORECASE).search(cond))
+            if is_this_trigger and perm.id != aura_perm_id:
+                continue
             for pattern in ATTACH_TRIGGER_PATTERNS:
                 if pattern.search(cond):
                     is_optional = ab.effect.lower().startswith("you may")
@@ -840,18 +878,45 @@ def check_attach_triggers(
                         source_card_name=card.name,
                         is_optional=is_optional,
                     )
-                    game_state.pending_triggers.append(trigger)
+                    new_triggers.append(trigger)
                     logger.debug("Attach trigger queued: %r from %s", ab.trigger_condition, card.name)
+                    found_trigger = True
                     break
 
-    return game_state
+        # Fallback: check raw oracle text when parser can't handle mixed static+triggered abilities
+        if not found_trigger and card.oracle_text:
+            oracle_lower = card.oracle_text.lower()
+            is_this_trigger = bool(_re.compile(r"whenever this becomes attached", _re.IGNORECASE).search(oracle_lower))
+            if is_this_trigger and perm.id != aura_perm_id:
+                continue
+            for pattern in ATTACH_TRIGGER_PATTERNS:
+                if pattern.search(oracle_lower):
+                    # Extract effect text after the comma/period following "attached"
+                    effect_match = _re.search(r"whenever this becomes attached[^.]*?,\s*(.+?)(?:\.|$)", oracle_lower)
+                    effect_text = effect_match.group(1).strip().rstrip(".") if effect_match else card.oracle_text
+                    trigger = PendingTrigger(
+                        id=str(uuid.uuid4()),
+                        source_permanent_id=perm.id,
+                        controller=perm.controller,
+                        trigger_type="attach",
+                        effect_description=effect_text,
+                        source_card_name=card.name,
+                        is_optional=False,
+                    )
+                    new_triggers.append(trigger)
+                    logger.debug("Attach trigger queued (oracle fallback): %s", card.name)
+                    break
+
+    return game_state.model_copy(update={"pending_triggers": new_triggers})
 
 
 def check_day_night_change_triggers(
     game_state: GameState,
 ) -> GameState:
-    """Check for "whenever day becomes night" / "whenever night becomes day" triggers."""
+    """Check for "whenever day becomes night" / "whenever night becomes day" triggers. Pure transform."""
     from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    new_triggers = list(game_state.pending_triggers)
 
     for perm in game_state.battlefield:
         card = perm.card
@@ -872,19 +937,21 @@ def check_day_night_change_triggers(
                         source_card_name=card.name,
                         is_optional=is_optional,
                     )
-                    game_state.pending_triggers.append(trigger)
+                    new_triggers.append(trigger)
                     logger.debug("Day/night change trigger queued: %r from %s", ab.trigger_condition, card.name)
                     break
 
-    return game_state
+    return game_state.model_copy(update={"pending_triggers": new_triggers})
 
 
 def check_completed_dungeon_triggers(
     game_state: GameState,
     player_name: str,
 ) -> GameState:
-    """Check for "whenever you complete a dungeon" triggers."""
+    """Check for "whenever you complete a dungeon" triggers. Pure transform."""
     from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    new_triggers = list(game_state.pending_triggers)
 
     for perm in game_state.battlefield:
         card = perm.card
@@ -893,8 +960,11 @@ def check_completed_dungeon_triggers(
             if not isinstance(ab, TriggeredAbility):
                 continue
             cond = ab.trigger_condition.lower()
-            for pattern in COMPLETED_DUNGEON_TRIGGER_PATTERNS:
+            for pattern_idx, pattern in enumerate(COMPLETED_DUNGEON_TRIGGER_PATTERNS):
                 if pattern.search(cond):
+                    # TRG-20 Fix 7: "whenever you complete" only fires for controller
+                    if _is_you_pattern(pattern_idx) and perm.controller != player_name:
+                        continue
                     is_optional = ab.effect.lower().startswith("you may")
                     trigger = PendingTrigger(
                         id=str(uuid.uuid4()),
@@ -905,19 +975,21 @@ def check_completed_dungeon_triggers(
                         source_card_name=card.name,
                         is_optional=is_optional,
                     )
-                    game_state.pending_triggers.append(trigger)
+                    new_triggers.append(trigger)
                     logger.debug("Completed dungeon trigger queued: %r from %s", ab.trigger_condition, card.name)
                     break
 
-    return game_state
+    return game_state.model_copy(update={"pending_triggers": new_triggers})
 
 
 def check_mana_spent_triggers(
     game_state: GameState,
     player_name: str,
 ) -> GameState:
-    """Check for "whenever you spend mana" triggers."""
+    """Check for "whenever you spend mana" triggers. Pure transform."""
     from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    new_triggers = list(game_state.pending_triggers)
 
     for perm in game_state.battlefield:
         card = perm.card
@@ -926,8 +998,11 @@ def check_mana_spent_triggers(
             if not isinstance(ab, TriggeredAbility):
                 continue
             cond = ab.trigger_condition.lower()
-            for pattern in MANA_SPENT_TRIGGER_PATTERNS:
+            for pattern_idx, pattern in enumerate(MANA_SPENT_TRIGGER_PATTERNS):
                 if pattern.search(cond):
+                    # TRG-20 Fix 8: "whenever you spend mana" only fires for controller
+                    if _is_you_pattern(pattern_idx) and perm.controller != player_name:
+                        continue
                     is_optional = ab.effect.lower().startswith("you may")
                     trigger = PendingTrigger(
                         id=str(uuid.uuid4()),
@@ -938,11 +1013,209 @@ def check_mana_spent_triggers(
                         source_card_name=card.name,
                         is_optional=is_optional,
                     )
-                    game_state.pending_triggers.append(trigger)
+                    new_triggers.append(trigger)
                     logger.debug("Mana spent trigger queued: %r from %s", ab.trigger_condition, card.name)
                     break
 
-    return game_state
+    return game_state.model_copy(update={"pending_triggers": new_triggers})
+
+
+# ─── TRG-20 Part B: 5 New Trigger Types ─────────────────────────────────────
+
+def check_draw_triggers(
+    game_state: GameState,
+    player_name: str,
+) -> GameState:
+    """Check for 'whenever you draw a card' / 'whenever a player draws a card' triggers. Pure transform."""
+    from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    new_triggers = list(game_state.pending_triggers)
+
+    for perm in game_state.battlefield:
+        card = perm.card
+        abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+        for ab in abilities:
+            if not isinstance(ab, TriggeredAbility):
+                continue
+            cond = ab.trigger_condition.lower()
+            for pattern_idx, pattern in enumerate(DRAW_TRIGGER_PATTERNS):
+                if pattern.search(cond):
+                    # Filter "you" patterns by controller — break to skip general fallback
+                    if _is_you_pattern(pattern_idx) and perm.controller != player_name:
+                        break
+                    is_optional = ab.effect.lower().startswith("you may")
+                    trigger = PendingTrigger(
+                        id=str(uuid.uuid4()),
+                        source_permanent_id=perm.id,
+                        controller=perm.controller,
+                        trigger_type="draw",
+                        effect_description=ab.effect,
+                        source_card_name=card.name,
+                        is_optional=is_optional,
+                    )
+                    new_triggers.append(trigger)
+                    logger.debug("Draw trigger queued: %r from %s", ab.trigger_condition, card.name)
+                    break
+
+    return game_state.model_copy(update={"pending_triggers": new_triggers})
+
+
+def check_discard_triggers(
+    game_state: GameState,
+    player_name: str,
+) -> GameState:
+    """Check for 'whenever you discard a card' / 'whenever a player discards a card' triggers. Pure transform."""
+    from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    new_triggers = list(game_state.pending_triggers)
+
+    for perm in game_state.battlefield:
+        card = perm.card
+        abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+        for ab in abilities:
+            if not isinstance(ab, TriggeredAbility):
+                continue
+            cond = ab.trigger_condition.lower()
+            for pattern_idx, pattern in enumerate(DISCARD_TRIGGER_PATTERNS):
+                if pattern.search(cond):
+                    # Filter "you" patterns by controller — break to skip general fallback
+                    if _is_you_pattern(pattern_idx) and perm.controller != player_name:
+                        break
+                    is_optional = ab.effect.lower().startswith("you may")
+                    trigger = PendingTrigger(
+                        id=str(uuid.uuid4()),
+                        source_permanent_id=perm.id,
+                        controller=perm.controller,
+                        trigger_type="discard",
+                        effect_description=ab.effect,
+                        source_card_name=card.name,
+                        is_optional=is_optional,
+                    )
+                    new_triggers.append(trigger)
+                    logger.debug("Discard trigger queued: %r from %s", ab.trigger_condition, card.name)
+                    break
+
+    return game_state.model_copy(update={"pending_triggers": new_triggers})
+
+
+def check_token_triggers(
+    game_state: GameState,
+    player_name: str,
+) -> GameState:
+    """Check for 'whenever a token enters the battlefield' / 'whenever you create a token' triggers. Pure transform."""
+    from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    new_triggers = list(game_state.pending_triggers)
+
+    for perm in game_state.battlefield:
+        card = perm.card
+        abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+        for ab in abilities:
+            if not isinstance(ab, TriggeredAbility):
+                continue
+            cond = ab.trigger_condition.lower()
+            for pattern_idx, pattern in enumerate(TOKEN_TRIGGER_PATTERNS):
+                if pattern.search(cond):
+                    # Filter "you" patterns by controller — break to skip general fallback
+                    if _is_you_pattern(pattern_idx) and perm.controller != player_name:
+                        break
+                    is_optional = ab.effect.lower().startswith("you may")
+                    trigger = PendingTrigger(
+                        id=str(uuid.uuid4()),
+                        source_permanent_id=perm.id,
+                        controller=perm.controller,
+                        trigger_type="token",
+                        effect_description=ab.effect,
+                        source_card_name=card.name,
+                        is_optional=is_optional,
+                    )
+                    new_triggers.append(trigger)
+                    logger.debug("Token trigger queued: %r from %s", ab.trigger_condition, card.name)
+                    break
+
+    return game_state.model_copy(update={"pending_triggers": new_triggers})
+
+
+def check_counter_triggers(
+    game_state: GameState,
+    perm_id: str,
+    player_name: str,
+) -> GameState:
+    """Check for 'whenever a counter is put on' / 'whenever a counter is removed from' triggers. Pure transform."""
+    from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    new_triggers = list(game_state.pending_triggers)
+
+    for perm in game_state.battlefield:
+        card = perm.card
+        abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+        for ab in abilities:
+            if not isinstance(ab, TriggeredAbility):
+                continue
+            cond = ab.trigger_condition.lower()
+            for pattern_idx, pattern in enumerate(COUNTER_TRIGGER_PATTERNS):
+                if pattern.search(cond):
+                    # Filter "you" patterns by controller — break to skip general fallback
+                    if _is_you_pattern(pattern_idx) and perm.controller != player_name:
+                        break
+                    is_optional = ab.effect.lower().startswith("you may")
+                    trigger = PendingTrigger(
+                        id=str(uuid.uuid4()),
+                        source_permanent_id=perm.id,
+                        controller=perm.controller,
+                        trigger_type="counter",
+                        effect_description=ab.effect,
+                        source_card_name=card.name,
+                        is_optional=is_optional,
+                    )
+                    new_triggers.append(trigger)
+                    logger.debug("Counter trigger queued: %r from %s", ab.trigger_condition, card.name)
+                    break
+
+    return game_state.model_copy(update={"pending_triggers": new_triggers})
+
+
+def check_planeswalk_triggers(
+    game_state: GameState,
+    perm_id: str,
+    player_name: str,
+) -> GameState:
+    """Check for 'whenever this planeswalker planeswalks' / loyalty ability triggers. Pure transform."""
+    from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    new_triggers = list(game_state.pending_triggers)
+
+    for perm in game_state.battlefield:
+        card = perm.card
+        abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+        for ab in abilities:
+            if not isinstance(ab, TriggeredAbility):
+                continue
+            cond = ab.trigger_condition.lower()
+            for pattern_idx, pattern in enumerate(PLANESWALK_TRIGGER_PATTERNS):
+                if pattern.search(cond):
+                    # "this planeswalker" pattern: self-referential guard — break to skip fallback
+                    is_this_trigger = bool(_re.compile(r"whenever this planeswalker", _re.IGNORECASE).search(cond))
+                    if is_this_trigger and perm.id != perm_id:
+                        break
+                    # Filter "you control" patterns by controller — break to skip general fallback
+                    if _is_you_pattern(pattern_idx) and perm.controller != player_name:
+                        break
+                    is_optional = ab.effect.lower().startswith("you may")
+                    trigger = PendingTrigger(
+                        id=str(uuid.uuid4()),
+                        source_permanent_id=perm.id,
+                        controller=perm.controller,
+                        trigger_type="planeswalk",
+                        effect_description=ab.effect,
+                        source_card_name=card.name,
+                        is_optional=is_optional,
+                    )
+                    new_triggers.append(trigger)
+                    logger.debug("Planeswalk trigger queued: %r from %s", ab.trigger_condition, card.name)
+                    break
+
+    return game_state.model_copy(update={"pending_triggers": new_triggers})
 
 
 # ─── MANA-03: Mana Production Triggers ────────────────────────────────────────
@@ -955,7 +1228,7 @@ def check_mana_production_triggers(
 ) -> GameState:
     """
     Check for "whenever you tap a land for mana" / mana production triggers.
-    Called after a land produces mana.
+    Called after a land produces mana. Pure transform.
 
     CR 603.2: triggered abilities fire when mana is produced.
 
@@ -969,6 +1242,8 @@ def check_mana_production_triggers(
         Updated game state with triggers queued.
     """
     from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    new_triggers = list(game_state.pending_triggers)
 
     for perm in game_state.battlefield:
         card = perm.card
@@ -991,14 +1266,14 @@ def check_mana_production_triggers(
                         source_card_name=card.name,
                         is_optional=is_optional,
                     )
-                    game_state.pending_triggers.append(trigger)
+                    new_triggers.append(trigger)
                     logger.debug(
                         "Mana production trigger queued: %r from %s (controller: %s)",
                         ab.trigger_condition, card.name, perm.controller,
                     )
                     break
 
-    return game_state
+    return game_state.model_copy(update={"pending_triggers": new_triggers})
 
 
 def get_pending_triggers_for_player(

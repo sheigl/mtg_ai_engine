@@ -80,30 +80,56 @@ class TestDayNightTransitions:
 
     def test_night_to_day_adds_trigger(self):
         gs = _gs(is_day=False, prev_casts=2)
-        gs = check_daynight_transition(gs)
-        assert any("night_to_day" in t.trigger_type for t in gs.pending_triggers)
+        new_gs = check_daynight_transition(gs)
+        assert any("night_to_day" in t.trigger_type for t in new_gs.pending_triggers)
+
+    def test_no_transition_returns_same_object(self):
+        """When no transition occurs, the same GameState object is returned."""
+        gs = _gs(is_day=True, prev_casts=1)
+        result = check_daynight_transition(gs)
+        assert result is gs  # Same object when no change needed
 
 
 class TestSetExplicit:
     def test_set_day(self):
         gs = _gs(is_day=None)
-        gs = set_day(gs)
-        assert is_daytime(gs) is True
+        new_gs = set_day(gs)
+        assert is_daytime(new_gs) is True
 
     def test_set_day_adds_trigger(self):
         gs = _gs(is_day=None)
-        gs = set_day(gs)
-        assert any("set_to_day" in t.trigger_type for t in gs.pending_triggers)
+        new_gs = set_day(gs)
+        assert any("set_to_day" in t.trigger_type for t in new_gs.pending_triggers)
 
     def test_set_night(self):
         gs = _gs(is_day=None)
-        gs = set_night(gs)
-        assert is_daytime(gs) is False
+        new_gs = set_night(gs)
+        assert is_daytime(new_gs) is False
 
     def test_set_night_adds_trigger(self):
         gs = _gs(is_day=None)
-        gs = set_night(gs)
-        assert any("set_to_night" in t.trigger_type for t in gs.pending_triggers)
+        new_gs = set_night(gs)
+        assert any("set_to_night" in t.trigger_type for t in new_gs.pending_triggers)
+
+    def test_set_day_does_not_mutate_original(self):
+        """set_day returns a new GameState, original unchanged."""
+        gs = _gs(is_day=None)
+        triggers_before = len(gs.pending_triggers)
+        new_gs = set_day(gs)
+
+        assert id(new_gs) != id(gs)
+        assert is_daytime(gs) is None  # Original unchanged
+        assert len(gs.pending_triggers) == triggers_before  # Original triggers list unchanged
+
+    def test_set_night_does_not_mutate_original(self):
+        """set_night returns a new GameState, original unchanged."""
+        gs = _gs(is_day=None)
+        triggers_before = len(gs.pending_triggers)
+        new_gs = set_night(gs)
+
+        assert id(new_gs) != id(gs)
+        assert is_daytime(gs) is None  # Original unchanged
+        assert len(gs.pending_triggers) == triggers_before  # Original triggers list unchanged
 
 
 class TestDayboundTransform:
@@ -124,9 +150,25 @@ class TestDayboundTransform:
         gs = _gs(is_day=True, prev_casts=0)
         gs.battlefield = [perm]
 
-        gs = check_daynight_transition(gs)
+        new_gs = check_daynight_transition(gs)
 
-        assert perm.face_index == 1  # flipped to night face
+        # Original permanent unchanged (immutability)
+        assert perm.face_index == 0
+        # New battlefield has a different permanent object with flipped face
+        new_perm = new_gs.battlefield[0]
+        assert id(new_perm) != id(perm)
+        assert new_perm.face_index == 1  # flipped to night face
+
+    def test_day_to_night_does_not_mutate_original(self):
+        """check_daynight_transition returns a new GameState, original unchanged."""
+        gs = _gs(is_day=True, prev_casts=0)
+        original_id = id(gs)
+        original_is_day = gs.is_day
+
+        new_gs = check_daynight_transition(gs)
+
+        assert id(new_gs) != original_id
+        assert gs.is_day is original_is_day  # Still True on original
 
     def test_no_transform_without_daybound(self):
         """Regular creatures don't transform on day/night transition."""
@@ -137,9 +179,11 @@ class TestDayboundTransform:
         gs = _gs(is_day=True, prev_casts=0)
         gs.battlefield = [perm]
 
-        gs = check_daynight_transition(gs)
+        new_gs = check_daynight_transition(gs)
 
         assert perm.face_index == 0  # unchanged
+        # Non-daybound permanents are the same object reference (no copy needed)
+        assert new_gs.battlefield[0] is perm
 
 
 class TestSpellTracking:

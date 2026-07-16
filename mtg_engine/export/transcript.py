@@ -30,6 +30,13 @@ class TranscriptRecorder:
         """Register a callback invoked for every new TranscriptEntry."""
         self._listeners.append(fn)
 
+    def unregister_listener(self, fn: Callable[["TranscriptEntry"], None]) -> None:
+        """Remove a previously registered listener. No-op if not found."""
+        try:
+            self._listeners.remove(fn)
+        except ValueError:
+            pass
+
     def _notify_listeners(self, entry: "TranscriptEntry") -> None:
         for fn in self._listeners:
             try:

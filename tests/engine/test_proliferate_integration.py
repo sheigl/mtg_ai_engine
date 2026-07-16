@@ -173,10 +173,10 @@ class TestTriggerFiring:
         gs = apply_proliferate(gs, ["perm-1"])
         gs = check_proliferated_triggers(gs, "Alice")  # Alice proliferates
 
-        # Flux Channeler is controlled by Bob; trigger should still fire
-        # (the trigger checks oracle text on all permanents regardless of who proliferated)
+        # Flux Channeler is controlled by Bob; "you" = Bob, not Alice
+        # Trigger should NOT fire because Alice (not Bob) proliferated
         prolif_triggers = [t for t in gs.pending_triggers if t.trigger_type == "proliferated"]
-        assert len(prolif_triggers) >= 1
+        assert len(prolif_triggers) == 0
 
 
 class TestInternalCounterExclusion:

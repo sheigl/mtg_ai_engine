@@ -30,27 +30,50 @@ def _card(name: str) -> Card:
 class TestSetInitiative:
     def test_sets_initiative(self):
         gs = _make_gs()
-        gs = set_initiative(gs, "Alice")
-        assert gs.initiative == "Alice"
+        new_gs = set_initiative(gs, "Alice")
+        assert new_gs.initiative == "Alice"
 
     def test_noop_if_already_initiative(self):
         gs = _make_gs(initiative="Alice")
         before = len(gs.pending_triggers)
-        gs = set_initiative(gs, "Alice")
-        assert gs.initiative == "Alice"
-        assert len(gs.pending_triggers) == before
+        new_gs = set_initiative(gs, "Alice")
+        assert new_gs.initiative == "Alice"
+        assert len(new_gs.pending_triggers) == before
 
     def test_changes_initiative(self):
         gs = _make_gs(initiative="Alice")
-        gs = set_initiative(gs, "Bob")
-        assert gs.initiative == "Bob"
+        new_gs = set_initiative(gs, "Bob")
+        assert new_gs.initiative == "Bob"
 
     def test_fires_gain_initiative_trigger(self):
         gs = _make_gs()
-        gs = set_initiative(gs, "Alice")
-        triggers = [t for t in gs.pending_triggers if t.trigger_type == "gain_initiative"]
+        new_gs = set_initiative(gs, "Alice")
+        triggers = [t for t in new_gs.pending_triggers if t.trigger_type == "gain_initiative"]
         assert len(triggers) >= 1
         assert triggers[-1].controller == "Alice"
+
+    def test_immutability_original_unchanged(self):
+        """set_initiative must not mutate the original GameState."""
+        gs = _make_gs(initiative="Alice")
+        old_id = id(gs)
+        old_initiative = gs.initiative
+        old_triggers_count = len(gs.pending_triggers)
+
+        new_gs = set_initiative(gs, "Bob")
+
+        # Original is unchanged
+        assert id(gs) == old_id
+        assert gs.initiative == old_initiative
+        assert len(gs.pending_triggers) == old_triggers_count
+        # New state has the change
+        assert new_gs.initiative == "Bob"
+        assert len(new_gs.pending_triggers) == old_triggers_count + 1
+
+    def test_immutability_noop_returns_same_object(self):
+        """set_initiative with same player returns the original object."""
+        gs = _make_gs(initiative="Alice")
+        new_gs = set_initiative(gs, "Alice")
+        assert new_gs is gs
 
 
 class TestUpkeepVenture:

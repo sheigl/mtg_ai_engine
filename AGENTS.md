@@ -24,6 +24,187 @@ cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLO
 Python 3.11: Follow standard conventions
 
 ## Recent Changes
+- 2026-07-15: **APP-06 Player Stats / ELO Rating System complete** — Persistent player statistics and ELO ratings via MongoDB
+  - Created `mtg_engine/models/stats.py`: Pydantic v2 models (`PlayerStats`, `FormatRecord`, `MatchupRecord`) with API response models (`StatsResponse`, `LeaderboardEntry`, `MatchupResult`)
+  - Created `mtg_engine/engine/stats.py`: Pure functions — `calculate_new_elo()` (standard ELO formula, K=32), `update_player_stats()` returning new PlayerStats via model_copy with deep copy of nested dicts (formats, matchups)
+  - Created `mtg_engine/api/routers/player_stats.py`: FastAPI router with endpoints: `POST /stats/player/{name}` (idempotent create/update, HTTP 201/200), `GET /stats/player/{name}` (full stats with computed total_games and win_rate), `GET /leaderboard` (top players by ELO descending, optional format filter and limit), `GET /stats/player/{name}/matchups` (per-player matchup list); all return HTTP 503 when MongoDB unconfigured
+  - Async `update_stats_for_game_completion()` in the same router: automatically updates stats on game completion with atomic `$inc` for existing players, `$set` upsert for new players; per-player try/except isolation prevents overwriting successful updates
+  - Updated `mtg_engine/persistence/mongo_client.py`: added `_player_stats_collection` singleton and getter
+  - Updated `mtg_engine/api/main.py`: mounted `player_stats_router`
+  - Updated `mtg_engine/api/routers/game.py`: hooked async stats update into sync `delete_game()` via `run_coroutine_threadsafe()` with event loop running check
+  - Created 39 tests (13 engine + 12 API + 5 game completion hook)
+  - Status: 39 APP-06 tests pass, 2678 total regression tests pass (3 skipped, 13 xfailed), 0 regressions
+
+- 2026-07-15: **APP-05 Draft/Sealed Simulation complete** — Limited-format deck construction simulation via REST API
+  - Created `mtg_engine/ai/draft.py`: Pack generation from Scryfall set data with rarity-weighted random selection; snake-draft pick order (odd rounds pass left, even rounds pass right); bot auto-pick using `estimate_card_quality()` scoring with strategy-aware weighting and color synergy; sealed pool mode (one 15-card pack per player) with automatic deck construction via APP-02 `build_deck()`; LRU session eviction (`MAX_DRAFT_SESSIONS=100`, completed sessions evicted first); format validation for both draft and sealed modes
+  - Created `mtg_engine/api/routers/draft_ai.py`: FastAPI endpoints at `POST /ai/draft/start`, `GET /ai/draft/{id}/state`, `POST /ai/draft/{id}/pick`, `GET /ai/draft/{id}/results`, `POST /ai/sealed/start`; Pydantic request/response models with field validators; auto-resolve bot picks after human pick or session start
+  - In-memory session storage (`_draft_sessions` dict) — documented as non-thread-safe, Redis recommended for production; `_process_pick()` intentionally mutates in-place (documented exception to pure transform pattern for lightweight lifecycle objects)
+  - Created 37 engine tests + 20 API integration tests in `tests/ai/test_draft.py` and `tests/api/test_draft_ai.py`
+  - Status: 57 APP-05 tests pass, 2610 total regression tests pass (3 skipped, 13 xfailed), 0 regressions
+
+- 2026-07-15: **APP-04 Spectate WebSocket complete** — Real-time game state streaming for spectators via `WS /ws/game/{game_id}`
+   - Created `mtg_engine/api/routers/spectate.py`: FastAPI WebSocket endpoint with pub/sub listener pattern; sends initial_state on connect, streams transcript events in real time, sends game_end notification when game finishes or is deleted
+   - Added `unregister_listener()` to `TranscriptRecorder` in `mtg_engine/export/transcript.py` for clean listener lifecycle management
+   - Read-only endpoint — incoming non-pong messages silently ignored; rejects connections to non-existent/completed games (close code 4004 before accept)
+   - Registry uses list-based tracking per game_id with identity-based cleanup on disconnect
+   - No heartbeat task (removed from initial design): competing `ws.receive_json()` calls caused deadlocks in TestClient scenarios
+   - Code review fixes: proper game-over detection (`_check_game_over_and_notify`), exception handling around sends, typed listeners (`ListenerType`), lifecycle logging, constants for queue max and idle interval
+   - Created 16 tests covering connect/initial_state, event broadcasting, multiple connections, game-end notification, rejection cases, cleanup, field completeness, sequence ordering, spectator count tracking, queue overflow behavior, rapid reconnect
+   - Status: 16 APP-04 tests pass, 2553 total regression tests pass (3 skipped, 13 xfailed), 0 regressions
+
+- 2026-07-13: **APP-02 Deck Building AI complete** — Automated deck construction via `POST /ai/deck/build`
+  - Created `mtg_engine/ai/deck_builder.py`: Filter → Score → Select → Validate pipeline with strategy weights (aggro/control/midrange/combo), CMC curve targeting, card classification, format-aware filtering (banned lists, singleton dedup per CR 905.2 with basic land exemption, Commander color identity via `get_color_identity()` fallback)
+  - Created `mtg_engine/api/routers/deck_build_ai.py`: FastAPI router with `CardPoolEntry`, `DeckBuildRequest`, `DeckEntry`, `DeckBuildResponse` Pydantic models; field validators for strategy and format
+  - Filter stage: removes banned cards, enforces legality windows, singleton rules (basic land exemption), restricted limits (Vintage), commander color identity filtering
+  - Score stage: `estimate_card_quality()` baseline × strategy_multiplier × cmc_curve_bonus for composite scoring
+  - Select stage: greedy selection with deterministic tie-breaking via seed, land balancing (~24% minimum), sideboard construction up to 15 cards
+  - Validate stage: FMT-01 `validate_deck()` integration, returns validation errors if deck is invalid
+  - Format support: all 8 formats — Standard, Pioneer, Modern, Legacy, Vintage, Commander, Brawl, Pauper
+  - Created 52 unit tests + 7 API integration tests in `tests/ai/test_deck_builder.py`
+  - Status: 59 APP-02 tests pass, 2384 total regression tests pass, 0 regressions
+
+- 2026-07-13: **APP-01 Card Search API complete** — `GET /cards/search` REST endpoint querying local SQLite Scryfall cache
+  - Created `mtg_engine/api/routers/card_search.py`: FastAPI router with `SearchCardResponse`/`CardSearchResponse` Pydantic models, parameter validation (HTTP 400 on invalid params)
+  - Added `ScryfallClient.search_cards()` in `mtg_engine/card_data/scryfall.py`: two-query pagination (COUNT + SELECT) with SQLite json_extract() filtering, case-insensitive LIKE for free-text search across name and oracle_text, AND logic for combined filters
+  - Filters: `q` (free-text), `type`, `colors`, `cmc_min`, `cmc_max`, `mana_cost`, `keyword`, `rarity`, `set_code`; pagination (default 25/page, max 100); sorting by name or cmc asc/desc
+  - Mounted router in `mtg_engine/api/main.py`
+  - Created 49 tests (35 engine + 14 API) covering all filters, pagination, sorting, errors
+  - Status: 49 tests pass, no regressions
+
+- 2026-07-13: **FMT-01 Format Rules Engine complete** — Deck validation for 8 MTG formats with `POST /deck/validate` API endpoint
+  - Created `mtg_engine/engine/formats/banned.py`: case-insensitive banned/restricted list lookups (`is_banned`, `is_restricted`, `get_format_banned_list`) with sample data for Standard, Pioneer, Modern, Legacy, Vintage, Commander, Brawl
+  - Created `mtg_engine/engine/formats/__init__.py`: `validate_deck()` dispatcher + 8 format validators enforcing deck size, banned cards, legality windows (set_code), rarity (Pauper common-only), restricted max-1-copy (Vintage)
+  - Added `rarity` and `set_code` optional fields to Card model in `models/game.py` for backward-compatible format validation
+  - Added `POST /deck/validate` API endpoint in `api/routers/deck_import.py` with structured JSON response (`DeckValidationRequest`/`DeckValidationResponse`)
+  - Created 42 tests (36 engine + 6 API) across 12 test classes covering all formats and edge cases
+  - Status: 1836 total tests pass, 13 xfailed (pre-existing), 0 regressions
+
+- 2026-07-13: **KW-28 Reach query helpers complete** — Passive keyword flying-blocker validation (CR 702.165)
+  - Implemented `has_reach(gs, perm_id)` and `can_block_flying(gs, blocker_perm_id)` in `mtg_engine/ability/keywords/reach.py`
+    - Reach: allows creatures to block flying; query helpers iterate battlefield permanents to check keyword presence (flying or reach)
+  - Added 8 integration tests in `tests/engine/test_keywords_integration.py` (Tests 89-96) following menace/hexproof pattern covering has_reach true/false/not found, can_block_flying with reach/flying/neither, distinction test, not-found edge cases
+  - Status: 747 total engine tests pass, 13 xfailed, no regressions
+
+- 2026-07-13: **KW-31 Menace query helpers complete** — Passive keyword blocking validation (CR 702.146)
+  - Implemented `is_menacing(gs, perm_id)` and `can_block_menacing(gs, attacker_perm_id, blocker_perm_ids)` in `mtg_engine/ability/keywords/menace.py`
+    - Menace: requires at least 2 blockers per CR 702.146b; query helpers iterate battlefield permanents to check keyword presence and blocker count legality
+  - Added 12 unit tests in `tests/ability/keywords/test_menace.py` (TestMenaceQueryHelpers class) covering is_menacing true/false/not found, can_block with various blocker counts, attacker not on battlefield edge case, menace vs non-menace distinction
+  - Added 5 integration tests in `tests/engine/test_keywords_integration.py` (Tests 84-88) following hexproof/shroud pattern
+  - Status: 130 total tests pass (105 integration + 25 unit), full keyword suite: 402 passed, no regressions
+
+- 2026-07-13: **KW-29/KW-30 Hexproof & Shroud query helpers complete** — Passive keyword targeting validation functions
+  - Implemented `is_hexproof(gs, perm_id_or_player_name)` and `can_target_hexproof(gs, target, source_controller)` in `mtg_engine/ability/keywords/hexproof.py` (CR 702.54)
+    - Hexproof: blocks targeting by opponents only; controller can still target own hexproof permanents
+    - `_find_target_controller()` helper resolves permanent ID or player name to controller
+  - Implemented `is_shrouded(gs, perm_id_or_player_name)` and `can_target_shrouded(gs, target)` in `mtg_engine/ability/keywords/shroud.py` (CR 702.41)
+    - Shroud: blocks ALL targeting regardless of controller
+  - Both modules updated with proper type hints (`from __future__ import annotations`, `TYPE_CHECKING`) and logging
+  - Created 7 integration tests in `tests/engine/test_keywords_integration.py` (Tests 77-83)
+  - Status: 121 total tests pass (95 integration + 26 unit), no regressions
+
+- 2026-07-13: **KW-25 Dash implementation complete** — Full Dash keyword (CR 702.138) implemented and tested
+  - Implemented `apply()` method in `mtg_engine/ability/keywords/dash.py`:
+    - Human players: queues `pending_dash_choice` on GameState with player, card info, dash_cost
+    - AI players: auto-resolves based on mana affordability (pays if affordable, skips if not)
+    - Adds haste keyword to permanent, tracks in `dashed_creatures` dict for end-step return
+    - Pure transform: returns new GameState via `model_copy(update={...})`, never mutates directly
+  - Added `handle_dash_return_to_hand()` for CR 702.138b end-step cleanup (returns dashed creatures to hand)
+  - Added `pending_dash_choice` and `dashed_creatures` fields to `GameState` in `models/game.py`
+  - Created 8 Dash integration tests in `tests/engine/test_keywords_integration.py` (Tests 69-76)
+  - Status: 8 Dash integration tests pass, full suite: 727 passed, 13 xfailed, no regressions
+
+- 2026-07-13: **KW-24 Ninjutsu implementation complete** — Full Ninjutsu keyword (CR 702.61) implemented and tested
+  - Implemented `apply()` method in `mtg_engine/ability/keywords/ninjutsu.py`:
+    - Human players: queues `pending_ninjutsu_choice` on GameState with player, card info, attacker_perm_id, defending_player
+    - AI players: auto-resolves by finding unblocked attacking creature, returning it to hand, putting ninja creature onto battlefield tapped and attacking same target
+    - Pure transform: returns new GameState via `model_copy(update={...})`, never mutates directly
+  - Added `pending_ninjutsu_choice` field to `GameState` in `models/game.py`
+  - Created 6 Ninjutsu integration tests in `tests/engine/test_keywords_integration.py` (Tests 63-68)
+  - Status: 6 Ninjutsu integration tests pass, full suite: 727 passed, 13 xfailed, no regressions
+
+- 2026-07-13: **KW-23 Dredge implementation complete** — Full Dredge cost payment logic implemented and tested
+  - Implemented real `apply()` method in `mtg_engine/ability/keywords/dredge.py`:
+    - Human players: queues `pending_dredge_choice` on GameState with player, card info, dredge_n
+    - AI players: auto-resolves based on library size (dredges if enough cards, skips if not)
+    - Pure transform: returns new GameState via `model_copy(update={...})`, never mutates directly
+    - Early-return guard so cards without Dredge keyword are properly no-op'd
+  - Created 9 Dredge integration tests in `tests/engine/test_keywords_integration.py` (Tests 54-62)
+  - Test coverage: human choice queuing, AI auto-resolution with sufficient/insufficient library, pure transform, detection/parsing, noop guard
+  - Status: 9 Dredge integration tests pass, full suite: 74 passed, no regressions
+
+- 2026-07-13: **KW-22 Madness implementation complete** — Full Madness cost payment logic implemented and tested
+  - Added `pending_madness_choice: Optional[dict] = None` to `GameState` model in `models/game.py`
+  - Implemented real `apply()` method in `mtg_engine/ability/keywords/madness.py`:
+    - Human players: queues `pending_madness_choice` on GameState with player, card info, madness_cost
+    - AI players: auto-resolves based on available mana (pays if affordable, skips if not)
+    - Pure transform: returns new GameState via `model_copy(update={...})`, never mutates directly
+    - Mana pool deduction: calculates payment from mana pool slots, updates player in game state
+  - Created 10 Madness integration tests in `tests/engine/test_keywords_integration.py` (Tests 44-53)
+  - Test coverage: human choice queuing, AI auto-resolution with sufficient/insufficient mana, pure transform, detection/parsing, noop guard, colored mana cost
+  - Status: 10 Madness integration tests pass, full suite: 74 passed, no regressions
+
+- 2026-07-13: **KW-19 Delve bugfixes** — Fixed 3 bugs in `mtg_engine/ability/keywords/delve.py`
+  - Fixed `parse_delve_cost()` regex to handle multi-part costs like `{2}{U}` (was only capturing single `{...}` blocks)
+  - Fixed `parse_delve_count()` regex to match word numbers ("two") in addition to digits (`\d+`)
+  - Added early-return guard in `apply()` so cards without Delve keyword are properly no-op'd instead of processing any card with generic mana cost
+  - Status: 10 Delve integration tests pass, full suite: 682 passed, 13 xfailed, no regressions
+
+- 2026-07-13: **KW-17 Flashback implementation complete** — Full Flashback cost payment logic implemented and tested
+  - Added `pending_flashback_exile: Optional[dict] = Field(default=None)` to `GameState` model in `models/game.py`
+  - Implemented real `apply()` method in `mtg_engine/ability/keywords/flashback.py`:
+    - Human players: queues `pending_flashback_exile` on GameState with player, card info, flashback_cost
+    - AI players: auto-resolves based on available mana (pays if affordable, skips if not)
+    - Pure transform: returns new GameState via `model_copy(update={...})`, never mutates directly
+    - Mana pool deduction: calculates payment from mana pool slots, updates player in game state
+  - Created 10 Flashback integration tests in `tests/engine/test_keywords_integration.py` (Tests 11-20)
+  - Test coverage: human choice queuing, AI auto-resolution, mana affordability check, pure transform, detection/parsing, plain keyword fallback
+  - Status: 10 Flashback integration tests pass, full suite: 659 passed, 13 xfailed, no regressions
+
+- 2026-07-13: **KW-18 Escape implementation complete** — Full Escape cost payment logic implemented and tested
+  - Added `pending_escape_exile: Optional[dict] = None` to `GameState` model in `models/game.py`
+  - Implemented real `apply()` method in `mtg_engine/ability/keywords/escape.py`:
+    - Human players: queues `pending_escape_exile` on GameState with player, card info, escape_cost, exile_count
+    - AI players: auto-resolves based on available mana (pays if affordable, skips if not)
+    - Pure transform: returns new GameState via `model_copy(update={...})`, never mutates directly
+    - Mana pool deduction: calculates payment from mana pool slots, updates player in game state
+  - Created 11 Escape integration tests in `tests/engine/test_keywords_integration.py` (Tests 21-31)
+  - Test coverage: human choice queuing, AI auto-resolution, mana affordability check, pure transform, detection/parsing, plain keyword fallback, colored mana cost
+  - Status: 11 Escape integration tests pass, full suite: 670 passed, 13 xfailed, no regressions
+
+- 2026-07-13: **KW-16 Kicker implementation complete** — Full kicker cost payment logic implemented and tested
+  - Added `pending_kicker_choice: Optional[dict] = None` to `GameState` model in `models/game.py`
+  - Implemented real `apply()` method in `mtg_engine/ability/keywords/kicker.py`:
+    - Human players: queues `pending_kicker_choice` on GameState with player, card info, kicker_cost
+    - AI players: auto-resolves based on available mana (pays if affordable, skips if not)
+    - Pure transform: returns new GameState via `model_copy(update={...})`, never mutates directly
+    - Mana pool deduction: calculates payment from mana pool slots, updates player in game state
+  - Created integration test suite at `tests/engine/test_keywords_integration.py` (10 tests)
+  - Test coverage: human choice queuing, AI auto-resolution, mana affordability check, pure transform, detection/parsing
+  - Status: 31 keyword integration tests pass (10 Kicker + 10 Flashback + 11 Escape), full suite: 670 passed, 13 xfailed, no regressions
+
+- 2026-07-11: **TRG-20 Trigger bug fixes complete** — Fixed 9 trigger bugs + converted all B1 check functions to pure transforms
+  - Added `_is_you_pattern()` helper in `triggers.py` for controller filtering on "you" patterns (index 0)
+  - Fixes 1-9: Pattern additions, self-referential guards, oracle fallback for mixed abilities
+  - All 12 B1 check functions now return new GameState via `model_copy(update={"pending_triggers": ...})` instead of mutating directly
+  - Fixed conflicting test expectations in `test_triggers_expanded.py` and `test_proliferate_integration.py`
+  - Updated all 25 tests in `test_b1_missing_triggers.py` to capture return values from pure transforms
+  - Status: 624 engine tests pass, 13 xfailed (expected), 0 regressions
+
+- 2026-06-20: **Sprint 2 COMPLETE** (DNG-01, INT-01, COM-01) — All mutability fixes + integration tests pass. Full suite: 2156 passed, 3 skipped, 13 xfailed
+- 2026-06-20: **COM-01 Companion mutability fix complete** — CR 903.5 Companion pure transforms
+  - Fixed `activate_companion()` in `companion.py`: replaced direct mutations (`setattr(player.mana_pool, ...)`, `player.sideboard.remove(...)`, `player.hand.append(...)`, `game_state.companion_used[...] = True`) with `model_copy(update={...})` pattern matching PRO-01/INT-01/MON-01 style
+  - Changed signature from `-> Optional[Card]` to `-> tuple[GameState, Card | None]` for pure transform semantics
+  - ManaPool deduction uses `player.mana_pool.model_copy()` + setattr on the copy (not original)
+  - Updated existing unit tests in `tests/engine/test_companion.py`: all calls now unpack `(gs, card) = activate_companion(...)`, added immutability assertions (`test_immutability_original_unchanged`, `test_immutability_noop_returns_same_object`)
+  - Created integration test suite at `tests/engine/test_companion_integration.py` (23 tests across 8 classes)
+  - Status: All 45 companion tests pass (22 unit + 23 integration), all engine tests pass (591 passed, 13 xfailed), no regressions
+
+- 2026-06-20: **INT-01 Initiative mutability fix complete** — CR 702.148 The Initiative pure transforms
+  - Fixed `set_initiative()` in `initiative.py`: replaced direct mutations (`game_state.initiative = ...`, `game_state.pending_triggers.append(...)`) with `model_copy(update={...})` pattern matching MON-01/DNG-01 style
+  - Added immutability assertions to existing unit tests: `test_immutability_original_unchanged`, `test_immutability_noop_returns_same_object`
+  - Created integration test suite at `tests/engine/test_initiative_integration.py` (15 tests across 4 classes)
+  - Status: All 30 initiative tests pass (15 unit + 15 integration), related combat/dungeon/monarch/proliferate tests all pass, no regressions
+
 - 2026-06-14: **PRO-01 Proliferate implementation complete** — CR 702.39 Proliferate fully implemented and tested
   - Rewrote `proliferate.py`: fixed mutability in `apply_proliferate()`/`setup_pending_proliferate()` (direct dict mutations → model_copy transforms); added `_resolve_proliferate_with_ai()` for AI auto-resolution
   - Fixed `check_proliferated_triggers()` in `triggers.py`: new list + model_copy instead of append mutation
@@ -278,6 +459,8 @@ def test_monarch_draws_at_end_step():
 - `mtg_engine/engine/monarch.py` — CR 702.147 Monarch: `set_monarch`, `handle_end_step_draw`, `check_combat_damage_monarch`, `is_monarch`
 - `mtg_engine/models/game.py` — Pydantic models: GameState, Card, Permanent, PlayerState, StackObject, etc.
 - `mtg_engine/api/routers/game.py` — FastAPI endpoints: game lifecycle, actions, choices, legal actions
+- `mtg_engine/ability/keywords/flashback.py` — KW-17 Flashback: `Flashback.apply()`, `parse_flashback_cost()`, `from_oracle()`, detection helpers
+- `mtg_engine/ability/keywords/kicker.py` — KW-16 Kicker: `Kicker.apply()`, `parse_kicker_cost()`, `from_oracle()`
 
 ### Key Patterns for ETB Choices
 - Detection: `_detect_etb_choice(oracle_text: str) -> ETBChoice | None` uses regex to classify 4 land types
@@ -406,6 +589,410 @@ def test_pure_transform():
     old_id = id(gs)
     gs = venture(gs, "Alice")
     assert id(gs) != old_id
+```
+
+### Keyword Ability Coding Standards (KW-16..30)
+- **Base class hierarchy**: `KeywordAbility(ABC)` with subclasses `TriggeredKeyword`, `CostKeyword`, `PassiveKeyword` in `mtg_engine/ability/keywords/base.py`. All keyword modules inherit from appropriate base.
+- **State transforms must be pure**: All `apply()` methods return new `GameState` via `model_copy(update={...})`. Never mutate game state directly.
+- **Cost keywords** (Kicker KW-16, Flashback KW-17, Escape, Delve): Modify casting cost during spell declaration phase. Wire into mana payment flow in stack.py. For Flashback: queue `pending_flashback_exile` on GameState for human players, auto-resolve (pay + exile) for AI players.
+- **Triggered/Replacement keywords** (Cascade, Storm, Madness, Dredge, Ninjutsu, Dash): Fire at specific game moments. Use pending choice fields for human players, auto-resolve for AI.
+- **Passive keywords** (Hexproof/Shroud, Menace/Reach): Implemented as query helpers returning boolean. Called from targeting validation and blocker assignment logic.
+- **Centralize inline logic**: Move keyword-specific code out of stack.py into dedicated modules. Stack.py should call `keyword_module.apply(gs, ...)` rather than containing keyword logic.
+
+### Key Patterns for Keywords
+- Cost Detection: `_detect_kicker(oracle_text) -> KickerCost | None`, `_detect_flashback(oracle_text) -> FlashbackCost | None`, etc.
+- Apply Method: `apply(game_state, card, player_name, **kwargs) -> GameState` or `(GameState, additional_data)` for cost keywords
+- Pending Choices: Use `pending_<keyword>_choice` fields on GameState for human player decisions (e.g., `pending_cascade`, `pending_dredge_choice`, `pending_flashback_exile`, `pending_escape_exile`)
+- AI Auto-Resolution: `_resolve_<keyword>_with_ai(gs, player_name, **kwargs) -> GameState` mirrors ETB choice pattern
+
+### Key Patterns for Hexproof/Shroud (KW-29/30)
+- **Query helpers return boolean**: `is_hexproof(gs, perm_id_or_player_name) -> bool`, `is_shrouded(gs, perm_id_or_player_name) -> bool`. These do NOT modify game state.
+- **Targeting validation**: `can_target_hexproof(gs, target, source_controller)` returns True only if target lacks hexproof OR source controller equals target controller (CR 702.54). `can_target_shrouded(gs, target)` returns False whenever target has shroud, regardless of controller (CR 702.41).
+- **Resolution**: Both helpers iterate `game_state.battlefield` to find the permanent by ID, then check `perm.card.keywords`. Player-name targets return False for now (player-level keyword tracking not yet implemented on PlayerState).
+
+### Key Patterns for Flashback (KW-17)
+- **State tracking**: `GameState.pending_flashback_exile: Optional[dict]` tracks which card is pending exile for human Flashback choice
+- **State transforms must be pure**: `apply()` returns new `GameState` via `model_copy(update={...})`. Never mutate `game_state` directly.
+- **CR 702.34 Flashback flow**: `Flashback.apply(gs, permanent)` handles the full Flashback logic: parses cost from oracle text, determines human/AI path, queues or auto-resolves
+- **Human Path**: Sets `game_state.pending_flashback_exile` with `player`, `card_id`, `card_name`, `flashback_cost`, `resolved=False`
+- **AI Path**: Checks `can_pay_cost(player.mana_pool, flashback_cost)`; if affordable, deducts mana from pool and sets `resolved=True`; if not, sets `resolved=True` without mana deduction
+- **Mana payment**: Uses `parse_mana_cost()` to parse `{N}{C}{W}` cost strings; pays colored mana first, then generic from remaining pool
+- **Detection**: `Flashback.parse_flashback_cost(oracle_text) -> str | None` uses regex `\bflashback\s*[—\-]?\s*(\{[^}]+\})` to extract cost
+- **Plain keyword fallback**: Cards with just "Flashback" (no cost) are still detected via `Flashback.from_oracle_text()` but `parse_flashback_cost()` returns `None`
+
+### Key Patterns for Escape (KW-18)
+- **State tracking**: `GameState.pending_escape_exile: Optional[dict]` tracks which card is pending exile for human Escape choice
+- **State transforms must be pure**: `apply()` returns new `GameState` via `model_copy(update={...})`. Never mutate `game_state` directly.
+- **CR 702.45 Escape flow**: `Escape.apply(gs, permanent)` handles the full Escape logic: parses cost and exile count from oracle text, determines human/AI path, queues or auto-resolves
+- **Human Path**: Sets `game_state.pending_escape_exile` with `player`, `card_id`, `card_name`, `escape_cost`, `exile_count`, `resolved=False`
+- **AI Path**: Checks `can_pay_cost(player.mana_pool, escape_cost)`; if affordable, deducts mana from pool and sets `resolved=True`; if not, sets `resolved=True` without mana deduction
+- **Mana payment**: Uses `parse_mana_cost()` to parse `{N}{C}{W}` cost strings; pays colored mana first, then generic from remaining pool
+- **Detection**: `Escape.parse_escape_cost(oracle_text) -> str | None` uses regex `\bescape\s*[—\-]?\s*(\{[^}]+\})` to extract cost
+- **Exile count parsing**: `Escape.parse_exile_count(oracle_text) -> int` uses regex `(?:exile|escape)\s+(\d+)\s+other` to extract count
+- **Plain keyword fallback**: Cards with just "Escape" (no cost) are still detected via `Escape.from_oracle_text()` but `parse_escape_cost()` returns `None`
+
+### Sample Backend Code (Escape Engine)
+```python
+from mtg_engine.ability.keywords.escape import Escape
+from mtg_engine.models.game import GameState, PlayerState, Card, Permanent, ManaPool
+
+# Create a minimal game state
+p1 = PlayerState(name="p1", life=20, mana_pool=ManaPool())
+p2 = PlayerState(name="p2", life=20, mana_pool=ManaPool())
+gs = GameState(
+    game_id="test", seed=1, active_player="p1", priority_holder="p1",
+    players=[p1, p2], human_player_name="p1",
+)
+
+# Create a card with Escape keyword
+card = Card(name="Gaddock Teeg", type_line="Creature", oracle_text="Escape {3}{B}\nEscape 3 other cards from your graveyard: Cast Gaddock Teeg from your graveyard. If you cast it this way, it exiles on leaving the battlefield.", mana_cost="{B}", keywords=["escape"])
+
+# Apply Escape — for human player, queues pending_escape_exile
+escape_perm = Permanent(card=card, controller="p1")
+gs = Escape().apply(gs, escape_perm)
+assert gs.pending_escape_exile is not None
+assert gs.pending_escape_exile["escape_cost"] == "{3}{B}"
+assert gs.pending_escape_exile["exile_count"] == 3
+assert gs.pending_escape_exile["resolved"] is False
+assert gs.pending_flashback_exile["card_name"] == "Phantasmal Images"
+assert gs.pending_flashback_exile["flashback_cost"] == "{2}{U}"
+assert gs.pending_flashback_exile["resolved"] is False
+
+# Flashback is a pure transform
+assert id(gs) != id(Flashback().apply(gs, fb_perm))  # New object returned
+```
+
+### Sample Testing Code (Flashback Integration)
+```python
+import pytest
+from mtg_engine.ability.keywords.flashback import Flashback
+from mtg_engine.models.game import GameState, PlayerState, Card, Permanent, ManaPool
+
+def _make_flashback_card():
+    return Card(name="Phantasmal Images", type_line="Sorcery", oracle_text="Flashback {2}{U}\nPhantasmal Images is a 2/2 blue creature with morph.", mana_cost="{U}", keywords=["flashback"])
+
+def test_flashback_queues_pending_choice_for_human():
+    gs = GameState(
+        game_id="test", seed=1, active_player="p1", priority_holder="p1",
+        players=[PlayerState(name="p1"), PlayerState(name="p2")],
+        human_player_name="p1",
+    )
+    fb_perm = Permanent(card=_make_flashback_card(), controller="p1")
+    gs = Flashback().apply(gs, fb_perm)
+    assert gs.pending_flashback_exile is not None
+    assert gs.pending_flashback_exile["player"] == "p1"
+    assert gs.pending_flashback_exile["flashback_cost"] == "{2}{U}"
+    assert gs.pending_flashback_exile["resolved"] is False
+
+def test_ai_resolves_flashback_when_affordable():
+    gs = GameState(
+        game_id="test", seed=1, active_player="p1", priority_holder="p1",
+        players=[PlayerState(name="p1"), PlayerState(name="p2")],
+        human_player_name="p1",
+    )
+    fb_card = _make_flashback_card()
+    gs.players[1].mana_pool = ManaPool(C=2, U=1)
+    fb_perm = Permanent(card=fb_card, controller="p2")
+    gs = Flashback().apply(gs, fb_perm)
+    assert gs.pending_flashback_exile is not None
+    assert gs.pending_flashback_exile["resolved"] is True
+    assert gs.players[1].mana_pool.C == 0  # Paid 2 generic
+    assert gs.players[1].mana_pool.U == 0  # Paid 1 U
+
+def test_flashback_plain_keyword_detection():
+    assert Flashback.from_oracle_text("Flashback\n...") is True
+    assert Flashback.parse_flashback_cost("Flashback") is None
+    assert Flashback.from_oracle_text("Flashback {2}{U}\n...") is True
+    assert Flashback.parse_flashback_cost("Flashback {2}{U}") == "{2}{U}"
+```
+
+### Sample Backend Code (Keyword Engine)
+```python
+from mtg_engine.ability.keywords.cascade import apply_cascade, resolve_cascade_choice
+from mtg_engine.ability.keywords.storm import create_storm_copies
+from mtg_engine.models.game import GameState, PlayerState, Card
+
+# Cascade: trigger on spell resolution, queue choice for human player
+gs = apply_cascade(gs, stack_object, caster="Alice")
+assert gs.pending_cascade is not None  # Human must choose keep/exile
+
+# Resolve cascade choice via API (human path)
+gs = resolve_cascade_choice(gs, "cascade_keep", chosen_card_id="card-123")
+assert gs.pending_cascade is None  # Choice resolved
+
+# Storm: create N copies on stack during resolution
+gs = create_storm_copies(gs, stack_object, spells_cast_count=5)
+# Returns new GameState with 5 storm copies added to stack (LIFO order)
+```
+
+### Sample Testing Code (Keyword Integration)
+```python
+import pytest
+from mtg_engine.ability.keywords.cascade import apply_cascade, resolve_cascade_choice
+from mtg_engine.models.game import GameState, PlayerState, Card
+from mtg_engine.models.actions import StackObject
+
+def test_cascade_queues_pending_choice():
+    """Cascade triggers and queues choice for human player."""
+    gs = GameState(
+        game_id="test", seed=1, active_player="Alice", priority_holder="Alice",
+        players=[PlayerState(name="Alice"), PlayerState(name="Bob")],
+        human_player_name="Alice",
+    )
+    cascade_card = Card(name="Lightning Helix", oracle_text="Cascade, Deal 3 damage to any target.")
+    stack_obj = StackObject(source_card=cascade_card, controller="Alice")
+
+    gs = apply_cascade(gs, stack_obj, "Alice")
+    assert gs.pending_cascade is not None
+    assert gs.pending_cascade["player"] == "Alice"
+
+def test_cascade_choice_resolved():
+    """Resolving cascade choice clears pending state."""
+    # ... setup with pending_cascade ...
+    gs = resolve_cascade_choice(gs, "cascade_keep", "chosen-card-id")
+    assert gs.pending_cascade is None
+
+def test_storm_creates_copies_lifo():
+    """Storm creates N copies, added to stack in LIFO order."""
+    from mtg_engine.ability.keywords.storm import create_storm_copies
+    gs = GameState(
+        game_id="test", seed=1, active_player="Alice", priority_holder="Alice",
+        players=[PlayerState(name="Alice"), PlayerState(name="Bob")],
+        spells_cast_this_turn=3,  # Storm count = 3
+    )
+    storm_card = Card(name="Tidecaller's Blessing", oracle_text="Storm, Draw two cards.")
+    stack_obj = StackObject(source_card=storm_card, controller="Alice")
+
+    gs, copies = create_storm_copies(gs, stack_obj)
+    assert len(copies) == 3  # N copies created
+```
+
+### Format Validation Coding Standards (FMT-01)
+- **Format validation is stateless**: `validate_deck(cards, format_name, commanders)` takes card lists and returns a list of `DeckViolation` objects. It does NOT interact with GameState or game zones.
+- **Banned/restricted lookups are case-insensitive**: All functions in `mtg_engine/engine/formats/banned.py` normalize card names to uppercase before comparison (`is_banned`, `is_restricted`, `get_format_banned_list`).
+- **Legality windows use set codes**: Format validators check `card.set_code` against `LEGAL_SETS[format]` — cards from sets outside the format's legality window are flagged as violations.
+- **Pauper rarity check is lenient**: Cards with `rarity=None` (unknown) are silently skipped; only known non-common rarities (uncommon, rare, mythic) trigger violations.
+- **Vintage restricted enforcement**: Restricted cards may appear at most once in the deck. Violations report each unique card name only once via deduplication set.
+- **Commander/Brawl commander validation**: Commander format requires exactly 1 commander; Brawl requires exactly 1 creature-type commander. Both check banned lists (Brawl checks both "brawl" and "standard" lists).
+- **Card model fields for validation**: `Card.rarity: Optional[str]` and `Card.set_code: Optional[str]` are optional to maintain backward compatibility with existing game logic that doesn't need format metadata.
+
+### Card Search API Coding Standards (APP-01)
+- **Card search is stateless**: `GET /cards/search` queries the local SQLite Scryfall cache only. It does NOT interact with GameState, game zones, or any live game data.
+- **Two-query pagination pattern**: Always issue a COUNT query first to get total results, then a SELECT query with LIMIT/OFFSET for the page. This ensures accurate `total_count` in responses regardless of filters applied.
+- **SQLite json_extract() filtering**: Card data stored as JSON blobs; use `json_extract()` in WHERE clauses for structured field access (type_line, colors, cmc, mana_cost, keywords, rarity, set_code).
+- **Case-insensitive LIKE matching**: Free-text search (`q` parameter) uses `LOWER(column) LIKE '%query%'` across both name and oracle_text columns.
+- **AND logic for combined filters**: All filter parameters combine with AND — a card must match every provided filter to appear in results.
+- **Parameter validation returns HTTP 400**: Invalid numeric ranges (e.g., cmc_min > cmc_max), invalid sort fields, or page_size exceeding max (100) return structured error responses before hitting the database.
+
+### Deck Building AI Coding Standards (APP-02)
+- **Deck building is stateless**: `POST /ai/deck/build` does NOT interact with GameState, game zones, or any live game data. It takes a card pool and returns a constructed deck list.
+- **Pipeline architecture**: `build_deck(card_pool, format_name, strategy, commanders, seed)` orchestrates four stages: `_filter_card_pool()` → `score_cards()` → `_select_deck()` → `_validate_constructed_deck()`. Each stage is independently testable.
+- **Basic land singleton exemption (CR 905.2)**: Basic lands (including snow-covered variants and Wastes) are ALWAYS exempt from the "max 1 copy" rule in ALL stages — filter dedup, greedy selection max_copies, and land balancing. Use `BASIC_LANDS` set for lookups (case-insensitive via `.lower()`).
+- **Strategy weights**: `STRATEGY_WEIGHTS` dict maps strategy → category multipliers. Categories: `creature_low` (CMC 0-2), `creature_mid` (CMC 3-4), `creature_high` (CMC 5+), `removal`, `counterspell`, `draw`, `ramp`. Aggro boosts low-CMC creatures; control boosts removal/counterspells; combo boosts draw/ramp/high-CMC.
+- **CMC curve targeting**: `_cmc_curve_bonus(card_cmc, strategy)` applies a bell-curve bonus centered on the strategy's ideal CMC (aggro=2, midrange=3, control=4, combo=5). Cards within ±1 of target get +0.2 bonus; beyond that, score decreases linearly.
+- **Greedy selection with deterministic tie-breaking**: When multiple cards share the same score, use `random.Random(seed)` to shuffle before sorting, ensuring reproducible results for the same seed.
+- **Land balancing**: Reserve ~24% of deck slots for lands by counting available lands upfront and stopping non-land additions at `greedy_target = deck_size - land_count`. This ensures a playable mana base even when creatures score higher than lands.
+- **Sideboard construction**: For non-singleton formats, sideboard can contain additional copies up to max 4 total (main + side). Commander and Brawl exclude sideboards entirely.
+- **Commander color identity filtering**: When commanders are provided, filter the card pool to only cards whose `color_identity` is a subset of the commander's combined color identity. Use `get_color_identity()` from `mtg_engine/engine/formats/commander.py` as fallback when `color_identity` field is empty (derives from mana cost and oracle text).
+- **Validation integration**: Final stage calls FMT-01 `validate_deck(deck_cards, format_name, commanders)` — if violations exist, return them in the response rather than returning an invalid deck.
+
+### Game Replay Coding Standards (APP-03)
+- **Replay is stateless**: Client passes `from_event_seq` to navigate; no server-side sessions or cursor tracking. Each request is independently resolvable from the export store data.
+- **Two-tier board state reconstruction**: Snapshot anchors (full GameState dumps captured at priority grants via `/legal-actions`) provide exact state at known points. Between snapshots, incremental event replay reconstructs intermediate states by applying transcript events sequentially.
+- **Snapshot anchor selection**: `_find_snapshot_anchor()` picks the latest snapshot with `turn <= target_turn`, not always the last snapshot. This prevents double-application of events already reflected in later snapshots.
+- **Board state includes**: battlefield permanents (power/toughness, tapped status, counters), player life totals, hand sizes, graveyard top cards, stack size.
+- **Data sourced from in-memory export store** — no MongoDB dependency. Replay reads from the same snapshot/transcript data used for training data export.
+- **Timeline grouping**: Events are grouped by turn/phase with event counts for condensed overview; returned via `TimelineResponse(BaseModel)` wrapper.
+- **Pagination**: `PaginatedEventsResponse` includes `has_next`/`has_prev` flags computed in the handler based on page boundaries and total event count.
+
+### WebSocket Spectator Coding Standards (APP-04)
+- **No new dependencies**: FastAPI has native `WebSocket` support. Use `from fastapi import WebSocket` — no external packages needed.
+- **Pub/Sub via TranscriptRecorder listeners**: Each connected WebSocket client registers its own listener callback on the game's `TranscriptRecorder`. When a transcript event fires, all registered listeners are notified and the event is pushed to each client's outgoing queue. No engine code modifications required beyond adding `unregister_listener()` for cleanup.
+- **Per-connection asyncio.Queue**: Each WebSocket connection gets its own `asyncio.Queue[dict]`. The per-connection listener pushes to that specific queue via `queue.put_nowait()`. This isolates slow clients from fast ones and makes cleanup trivial — just close the websocket and drop the queue.
+- **Sync→Async bridging pattern**: Listener callbacks run synchronously (called from `_notify_listeners` which iterates the listeners list). They use `queue.put_nowait()` to push events into an async queue, decoupling the sync engine thread from the async WebSocket send loop. The main event loop drains the queue with `await queue.get()`. Never call `websocket.send_text()` directly from a listener callback — it's async and would deadlock.
+- **Connection registry**: Module-level `_spectators: dict[str, set[SpectatorConnection]]` in the router file manages all active connections. `SpectatorConnection` is a lightweight dataclass holding the WebSocket, its queue, and the listener callback reference (needed for cleanup).
+- **Initial state on connect**: Send `{ type: "initial_state", data: <GameState.model_dump()> }` immediately after accepting the connection. This gives late-joining spectators a complete starting point without needing to replay the entire transcript.
+- **Event message format**: All broadcast events use consistent JSON structure: `{ type: "<event_type>", data: {...}, timestamp: float, seq: int, turn: int, phase: str, step: str }`. The `type` field matches TranscriptEntry event types (`cast`, `resolve`, `trigger`, `sba`, `zone_change`, `damage`, `phase_change`, `priority_grant`).
+- **Game-end detection**: After receiving each event from the queue, check if the game is over by querying `GameManager.get(game_id).is_game_over`. If true, send `{ type: "game_end", data: { winner: str, loser: str }, timestamp: float }` and close with code 1000 (Normal Closure). Also handle `KeyError` from deleted games the same way.
+- **No heartbeat task**: Removed from initial design — competing `ws.receive_json()` calls caused deadlocks in TestClient scenarios. Instead, use `queue.get(timeout=IDLE_INTERVAL)` to detect slow/disconnected clients and close gracefully.
+- **Read-only access**: Spectator WebSocket is read-only — incoming non-pong messages are silently ignored. No game actions can be taken via the spectator endpoint.
+- **Error handling for invalid games**: Reject during WebSocket handshake before `accept()`: close with code 4004 and reason string ("Game not found" or "Game already completed"). This produces an HTTP 404-equivalent at the WebSocket layer.
+- **Graceful disconnect cleanup**: Use `try/finally` pattern to guarantee cleanup regardless of how the connection terminates: unregister listener via `recorder.unregister_listener(conn.listener_fn)`, remove from registry with `_spectators[game_id].discard(conn)`.
+
+### Sample Backend Code (WebSocket Spectator Router)
+```python
+import asyncio
+import json
+import time
+from dataclasses import dataclass, field
+from typing import Callable
+
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from mtg_engine.api.game_manager import get_manager
+from mtg_engine.export.store import get_export_store
+from mtg_engine.export.transcript import TranscriptEntry
+
+router = APIRouter()
+
+@dataclass
+class SpectatorConnection:
+    ws: WebSocket
+    queue: asyncio.Queue[dict]
+    listener_fn: Callable[[TranscriptEntry], None]
+    game_id: str
+
+# Module-level registry: game_id -> set of connections
+_spectators: dict[str, set[SpectatorConnection]] = {}
+
+@router.websocket("/ws/game/{game_id}")
+async def ws_game_spectate(websocket: WebSocket, game_id: str):
+    # Validate game exists and is active
+    try:
+        gs = get_manager().get(game_id)
+    except KeyError:
+        await websocket.close(code=4004, reason="Game not found")
+        return
+
+    if gs.is_game_over:
+        await websocket.close(code=4004, reason="Game already completed")
+        return
+
+    await websocket.accept()
+
+    # Setup per-connection queue and listener
+    store = get_export_store(game_id)
+    recorder = store.transcript
+    queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=256)
+
+    def _listener(entry: TranscriptEntry) -> None:
+        try:
+            queue.put_nowait({
+                "type": entry.event_type,
+                "data": entry.data,
+                "timestamp": time.time(),
+                "seq": entry.seq,
+                "turn": entry.turn,
+                "phase": entry.phase,
+                "step": entry.step,
+            })
+        except asyncio.QueueFull:
+            pass  # Drop events for slow clients
+
+    recorder.register_listener(_listener)
+    conn = SpectatorConnection(ws=websocket, queue=queue, listener_fn=_listener, game_id=game_id)
+    _spectators.setdefault(game_id, set()).add(conn)
+
+    # Send initial state
+    await websocket.send_text(json.dumps({
+        "type": "initial_state",
+        "data": gs.model_dump(),
+    }))
+
+    try:
+        while True:
+            msg = await queue.get(timeout=1.0)  # Idle timeout, no heartbeat needed
+            await websocket.send_text(json.dumps(msg))
+
+            # Check game-over after each event
+            try:
+                current_gs = get_manager().get(game_id)
+                if current_gs.is_game_over:
+                    await websocket.send_text(json.dumps({
+                        "type": "game_end",
+                        "data": {"winner": current_gs.winner},
+                        "timestamp": time.time(),
+                    }))
+                    break
+            except KeyError:
+                # Game deleted — treat as end
+                break
+
+    except WebSocketDisconnect:
+        pass
+    finally:
+        recorder.unregister_listener(conn.listener_fn)
+        _spectators.get(game_id, set()).discard(conn)
+```
+
+### Sample Backend Code (Deck Building AI)
+```python
+from mtg_engine.ai.deck_builder import build_deck
+from mtg_engine.api.routers.deck_build_ai import CardPoolEntry
+
+# Build a 60-card aggro Standard deck from a card pool
+pool = [
+    CardPoolEntry(name="Goblin Warrior", mana_cost="{1}{R}", type_line="Creature — Goblin Warrior", cmc=2.0),
+    CardPoolEntry(name="Lightning Bolt", mana_cost="{R}", type_line="Instant", oracle_text="Deal 3 damage to any target.", cmc=1.0),
+    CardPoolEntry(name="Mountain", mana_cost="", type_line="Land — Mountain", cmc=0.0),
+    # ... more cards
+]
+
+result = build_deck(
+    card_pool=pool,
+    format_name="standard",
+    strategy="midrange",
+    seed=42,
+)
+
+# Result contains main deck and optional sideboard
+assert len(result.main_deck) == 60
+for entry in result.main_deck:
+    print(f"{entry.quantity}x {entry.name}")
+```
+
+### Sample Testing Code (Deck Building AI)
+```python
+import pytest
+from mtg_engine.ai.deck_builder import build_deck, _filter_card_pool, score_cards
+from mtg_engine.api.routers.deck_build_ai import CardPoolEntry
+
+def make_card(name, mana_cost="{1}", type_line="Creature", cmc=1.0, rarity="common", set_code="MOM"):
+    return CardPoolEntry(
+        name=name, mana_cost=mana_cost, type_line=type_line,
+        oracle_text="", cmc=cmc, rarity=rarity, set_code=set_code,
+    )
+
+def test_filter_removes_banned_cards():
+    """Banned cards are excluded from the filtered pool."""
+    pool = [make_card("Legal Card"), make_card("Black Lotus")]  # Black Lotus banned in Standard
+    filtered = _filter_card_pool(pool, "standard", [])
+    names = {c.name for c in filtered}
+    assert "Black Lotus" not in names
+
+def test_score_uses_strategy_weights():
+    """Aggro strategy scores low-CMC creatures higher than high-CMC."""
+    pool = [make_card("Fast Creature", cmc=1.0), make_card("Slow Creature", cmc=5.0)]
+    scored = score_cards(pool, "aggro")
+    fast_score = next(s for s in scored if s.card.name == "Fast Creature").score
+    slow_score = next(s for s in scored if s.card.name == "Slow Creature").score
+    assert fast_score > slow_score
+
+def test_build_deck_returns_valid_standard():
+    """Full pipeline produces a valid 60-card Standard deck."""
+    pool = [make_card(f"Card {i}", cmc=float(i % 5 + 1)) for i in range(80)]
+    result = build_deck(pool, "standard", "midrange", seed=42)
+    assert len(result.main_deck) == 60
+    assert result.violations is None or len(result.violations) == 0
+
+def test_commander_basic_land_exemption():
+    """Commander decks can include multiple copies of basic lands."""
+    pool = [
+        make_card("Goblin Commander", type_line="Legendary Creature — Goblin"),
+        make_card("Mountain", type_line="Basic Land — Mountain") for _ in range(10),
+    ] + [make_card(f"Card {i}") for i in range(55)]
+    result = build_deck(pool, "commander", "aggro", commanders=["Goblin Commander"], seed=42)
+    mountains = sum(e.quantity for e in result.main_deck if e.name == "Mountain")
+    assert mountains >= 2  # Multiple basic lands allowed per CR 905.2
+
+def test_pauper_common_only():
+    """Pauper format only includes common-rarity cards."""
+    pool = [
+        make_card("Common Card", rarity="common"),
+        make_card("Rare Card", rarity="rare"),
+    ] + [make_card(f"Filler {i}", rarity="common") for i in range(60)]
+    result = build_deck(pool, "pauper", "midrange", seed=42)
+    names = {e.name for e in result.main_deck}
+    assert "Rare Card" not in names
 ```
 
 <!-- MANUAL ADDITIONS END -->

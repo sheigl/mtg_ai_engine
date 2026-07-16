@@ -347,6 +347,8 @@ def _check_once(game_state: GameState) -> tuple[GameState, list[SBAEvent]]:
         game_state.is_game_over = True
         winners = [p for p in game_state.players if not p.has_lost]
         game_state.winner = winners[0].name if winners else None
+        loser_names = ", ".join(p.name for p in losers)
+        game_state.game_over_reason = f"player_reduced_to_zero_life: {loser_names}"
 
     return game_state, events
 

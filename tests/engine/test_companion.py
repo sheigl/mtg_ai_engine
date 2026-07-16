@@ -94,11 +94,23 @@ class TestActivateCompanion:
             alice_library_size=30,
             alice_mana={"C": 3},
         )
-        result = activate_companion(gs, "Alice")
-        assert result is not None
-        assert result.name == "Kaito Shizuki"
-        assert companion in gs.players[0].hand
-        assert companion not in gs.players[0].sideboard
+        new_gs, card = activate_companion(gs, "Alice")
+        assert card is not None
+        assert card.name == "Kaito Shizuki"
+        assert companion in new_gs.players[0].hand
+        assert companion not in new_gs.players[0].sideboard
+
+    def test_successful_activation_returns_new_game_state(self):
+        """activate_companion returns a new GameState, not the original."""
+        companion = _companion_card()
+        gs = _make_gs(
+            alice_sideboard=[companion],
+            alice_hand_size=5,
+            alice_library_size=30,
+            alice_mana={"C": 3},
+        )
+        new_gs, card = activate_companion(gs, "Alice")
+        assert new_gs is not gs
 
     def test_once_per_game_restriction(self):
         companion = _companion_card()
@@ -108,9 +120,10 @@ class TestActivateCompanion:
             alice_library_size=30,
             alice_mana={"C": 6},
         )
-        activate_companion(gs, "Alice")
-        result = activate_companion(gs, "Alice")
-        assert result is None
+        new_gs, card = activate_companion(gs, "Alice")
+        assert card is not None
+        _, second_card = activate_companion(new_gs, "Alice")
+        assert second_card is None
 
     def test_not_enough_mana(self):
         companion = _companion_card()
@@ -120,8 +133,8 @@ class TestActivateCompanion:
             alice_library_size=30,
             alice_mana={"C": 2},
         )
-        result = activate_companion(gs, "Alice")
-        assert result is None
+        new_gs, card = activate_companion(gs, "Alice")
+        assert card is None
 
     def test_no_companion_in_sideboard(self):
         gs = _make_gs(
@@ -130,8 +143,8 @@ class TestActivateCompanion:
             alice_library_size=30,
             alice_mana={"C": 3},
         )
-        result = activate_companion(gs, "Alice")
-        assert result is None
+        new_gs, card = activate_companion(gs, "Alice")
+        assert card is None
 
     def test_restriction_not_met(self):
         companion = _companion_card()
@@ -141,8 +154,8 @@ class TestActivateCompanion:
             alice_library_size=30,
             alice_mana={"C": 3},
         )
-        result = activate_companion(gs, "Alice")
-        assert result is None
+        new_gs, card = activate_companion(gs, "Alice")
+        assert card is None
 
     def test_deducts_mana(self):
         companion = _companion_card()
@@ -152,8 +165,8 @@ class TestActivateCompanion:
             alice_library_size=30,
             alice_mana={"C": 5},
         )
-        activate_companion(gs, "Alice")
-        assert gs.players[0].mana_pool.C == 2
+        new_gs, card = activate_companion(gs, "Alice")
+        assert new_gs.players[0].mana_pool.C == 2
 
     def test_deducts_mixed_colors(self):
         companion = _companion_card()
@@ -163,9 +176,44 @@ class TestActivateCompanion:
             alice_library_size=30,
             alice_mana={"W": 1, "U": 2},
         )
-        activate_companion(gs, "Alice")
-        assert gs.players[0].mana_pool.W == 0
-        assert gs.players[0].mana_pool.U == 0
+        new_gs, card = activate_companion(gs, "Alice")
+        assert new_gs.players[0].mana_pool.W == 0
+        assert new_gs.players[0].mana_pool.U == 0
+
+    def test_immutability_original_unchanged(self):
+        """Original GameState is not mutated by activation."""
+        companion = _companion_card()
+        gs = _make_gs(
+            alice_sideboard=[companion],
+            alice_hand_size=5,
+            alice_library_size=30,
+            alice_mana={"C": 5},
+        )
+        original_alice = gs.players[0]
+        original_mana_c = original_alice.mana_pool.C
+        original_hand_len = len(original_alice.hand)
+        original_sideboard_len = len(original_alice.sideboard)
+
+        new_gs, card = activate_companion(gs, "Alice")
+
+        # Original GameState unchanged
+        assert gs.players[0].mana_pool.C == original_mana_c
+        assert len(gs.players[0].hand) == original_hand_len
+        assert len(gs.players[0].sideboard) == original_sideboard_len
+        assert not gs.companion_used.get("Alice")
+
+    def test_immutability_noop_returns_same_object(self):
+        """When activation fails, the same GameState is returned."""
+        companion = _companion_card()
+        gs = _make_gs(
+            alice_sideboard=[companion],
+            alice_hand_size=5,
+            alice_library_size=30,
+            alice_mana={"C": 2},  # Not enough mana
+        )
+        new_gs, card = activate_companion(gs, "Alice")
+        assert card is None
+        assert new_gs is gs
 
 
 class TestGetCompanionFromSideboard:
@@ -201,8 +249,8 @@ class TestCanActivateCompanion:
             alice_library_size=30,
             alice_mana={"C": 6},
         )
-        activate_companion(gs, "Alice")
-        assert can_activate_companion(gs, "Alice") is False
+        new_gs, card = activate_companion(gs, "Alice")
+        assert can_activate_companion(new_gs, "Alice") is False
 
     def test_cannot_activate_not_enough_mana(self):
         companion = _companion_card()

@@ -71,6 +71,9 @@ class Card(BaseModel):
     card_layout: str = "normal" # "normal", "split", "mdfc", "adventure", "aftermath", "transform"
     # US23: Snow supertype for snow mana tracking
     supertypes: list[str] = Field(default_factory=list)
+    # FMT-01: Format validation metadata
+    rarity: Optional[str] = None       # "c", "u", "r", "m", "mythical", "special"
+    set_code: Optional[str] = None     # e.g. "MOM", "ONE", "MH1"
 
 
 class ManaPool(BaseModel):
@@ -304,6 +307,7 @@ class GameState(BaseModel):
     state_hash: str = ""
     is_game_over: bool = False
     winner: Optional[str] = None
+    game_over_reason: Optional[str] = None
     combat: Optional[CombatState] = None
     # Series mode (032-game-series)
     series_id: Optional[str] = None
@@ -400,6 +404,36 @@ class GameState(BaseModel):
     # Format: {"player": str, "dungeon_name": str, "room_index": int,
     #         "choices": list[DungeonRoomChoice]}
     pending_dungeon_room_choice: Optional[dict] = None
+    # KW-16: Kicker choice
+    # Format: {"player": str, "card_id": str, "card_name": str, "kicker_cost": str,
+    #         "base_cost": str, "resolved": bool}
+    pending_kicker_choice: Optional[dict] = None
+    # KW-17: Flashback choice
+    # Format: {"player": str, "card_id": str, "card_name": str, "flashback_cost": str,
+    #         "resolved": bool}
+    pending_flashback_exile: Optional[dict] = None
+    # KW-18: Escape choice
+    pending_escape_exile: Optional[dict] = None
+    # KW-19: Delve choice
+    # Format: {"player": str, "card_id": str, "card_name": str,
+    #         "delve_cost": str, "cards_to_exile": int,
+    #         "card_ids": list[str], "resolved": bool}
+    pending_delve_choice: Optional[dict] = None
+    # KW-22: Madness choice (CR 702.35)
+    # Format: {"player": str, "card_id": str, "card_name": str, "madness_cost": str,
+    #         "resolved": bool}
+    pending_madness_choice: Optional[dict] = None
+    # KW-24: Ninjutsu choice (CR 702.61)
+    # Format: {"player": str, "ninja_card_id": str, "ninja_card_name": str,
+    #         "attacker_perm_id": str, "attacker_name": str,
+    #         "defending_player": str, "resolved": bool}
+    pending_ninjutsu_choice: Optional[dict] = None
+    # KW-25: Dash choice (CR 702.138)
+    # Format: {"player": str, "card_id": str, "card_name": str, "dash_cost": str,
+    #         "resolved": bool}
+    pending_dash_choice: Optional[dict] = None
+    # KW-25: Dashed creatures tracking (perm_id -> owner_player)
+    dashed_creatures: dict[str, str] = Field(default_factory=dict)
     # Transcript for persistence (034-game-persistence)
     transcript_entries: list[dict] = Field(default_factory=list)
     # ZN-01: Exile stacks for grouped exile tracking (CR 402.1)

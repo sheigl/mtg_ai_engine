@@ -125,22 +125,39 @@ def begin_step(game_state: GameState) -> GameState:
     step = game_state.step
 
     if step == Step.UNTAP:
-        # REQ-T03: untap active player's permanents; no priority granted in untap step
+        # REQ-T03: untap active player's permanents (pure transform via model_copy)
+        new_battlefield = []
         for perm in game_state.battlefield:
             if perm.controller == game_state.active_player:
-                perm.tapped = False
-                perm.summoning_sick = False  # remove summoning sickness at start of turn
-                # US17 (T041): Reset loyalty_activated_this_turn flag at start of turn
-                perm.loyalty_activated_this_turn = False
-        # Reset lands played this turn
+                new_perm = perm.model_copy(update={
+                    "tapped": False,
+                    "summoning_sick": False,  # remove summoning sickness at start of turn
+                    "loyalty_activated_this_turn": False,  # US17 (T041)
+                })
+                new_battlefield.append(new_perm)
+            else:
+                new_battlefield.append(perm)
+
+        # Reset lands played this turn for active player (new PlayerState via model_copy)
         active = get_player(game_state, game_state.active_player)
-        active.lands_played_this_turn = 0
+        new_active = active.model_copy(update={"lands_played_this_turn": 0})
+        new_players = [
+            new_active if p.name == game_state.active_player else p
+            for p in game_state.players
+        ]
+
+        gs = game_state.model_copy(update={
+            "battlefield": new_battlefield,
+            "players": new_players,
+        })
+
         # DNG-01: Day/Night transition check (CR 730.2 — second part of untap step)
-        if game_state.is_day is not None:
+        if gs.is_day is not None:
             from mtg_engine.engine.daynight import check_daynight_transition
-            game_state = check_daynight_transition(game_state)
+            gs = check_daynight_transition(gs)
+
         # No priority in untap step; mana pools don't need clearing
-        return game_state
+        return gs
 
     elif step == Step.UPKEEP:
         # CR 702.61c: At the beginning of your upkeep, remove a time counter from each
@@ -504,28 +521,30 @@ def _advance_turn(game_state: GameState) -> GameState:
     """Switch to the next player's turn, consuming extra turns first (CR 500.7)."""
     # CR 500.7: extra turns form a LIFO stack — pop() gives the next extra turn recipient
     if game_state.extra_turns:
-        next_player = game_state.extra_turns.pop()
+        next_player = game_state.extra_turns[-1]
+        new_extra_turns = game_state.extra_turns[:-1]
         logger.info("Extra turn begins for %s (remaining extra turns: %d)",
-                    next_player, len(game_state.extra_turns))
+                    next_player, len(new_extra_turns))
     else:
         next_player = _other_player(game_state)
+        new_extra_turns = game_state.extra_turns
 
     # DNG-01: Snapshot previous active player's spell count for day/night (CR 730.2)
     prev_active = game_state.active_player
-    game_state.spells_cast_last_turn = \
-        game_state.spells_cast_this_turn_by_player.get(prev_active, 0)
-    game_state.spells_cast_this_turn = 0
-    game_state.spells_cast_this_turn_by_player.clear()
-
-    game_state.active_player = next_player
-    game_state.priority_holder = next_player
-    game_state.turn += 1
-    game_state.phase = Phase.BEGINNING
-    game_state.step = Step.UNTAP
-    # Clear phase skip flags at end of turn
-    game_state.phase_skip_flags.clear()
-    logger.info("Turn %d begins; active player: %s", game_state.turn, game_state.active_player)
-    return game_state
+    gs = game_state.model_copy(update={
+        "spells_cast_last_turn": game_state.spells_cast_this_turn_by_player.get(prev_active, 0),
+        "spells_cast_this_turn": 0,
+        "spells_cast_this_turn_by_player": {},
+        "extra_turns": new_extra_turns,
+        "active_player": next_player,
+        "priority_holder": next_player,
+        "turn": game_state.turn + 1,
+        "phase": Phase.BEGINNING,
+        "step": Step.UNTAP,
+        "phase_skip_flags": set(),
+    })
+    logger.info("Turn %d begins; active player: %s", gs.turn, gs.active_player)
+    return gs
 
 
 def process_cleanup_step(game_state: GameState) -> GameState:
