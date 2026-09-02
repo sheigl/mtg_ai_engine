@@ -426,7 +426,7 @@ def _write_to_mongodb(game_id: str, gs: GameState) -> None:
     from mtg_engine.export.outcome import build_outcome
     try:
         import pymongo
-        client = pymongo.MongoClient("mongodb://localhost:27017/", serverSelectionTimeoutMS=1000)
+        client = pymongo.MongoClient("mongodb://server.home:27017/", serverSelectionTimeoutMS=1000)
         db = client["mtg_training_data"]
         store = get_export_store(game_id)
         store.snapshots.flush()
@@ -561,7 +561,8 @@ def play_land(game_id: str, req: PlayLandRequest) -> dict:
         card = next((c for c in player.hand if c.id == req.card_id), None)
         if card is None:
             raise ValueError(f"Card {req.card_id!r} not found in hand")
-        if "land" not in card.type_line.lower():
+        from mtg_engine.ability.keywords.fortify import Fortify
+        if not Fortify.is_land_card(card):
             raise ValueError(f"{card.name} is not a land")
         land_card_name = card.name
 
@@ -726,13 +727,14 @@ def cast(game_id: str, req: CastRequest) -> dict:
             if perm and not perm.tapped:
                 perm.tapped = True
     elif req.alternative_cost == "emerge":
-        # Sacrifice the first target creature before casting
+        # Sacrifice the first target creature before casting.
+        # Route through _sacrifice_permanent (not move_permanent_to_zone) so that
+        # "is sacrificed" triggers fire (CR 701.19) and the zone-change event is
+        # emitted for "dies" / "leaves the battlefield" triggers.
         if req.targets:
             sac_id = req.targets[0]
-            perm_to_sac = next((p for p in gs.battlefield if p.id == sac_id), None)
-            if perm_to_sac:
-                from mtg_engine.engine.zones import move_permanent_to_zone
-                gs = move_permanent_to_zone(gs, perm_to_sac, "graveyard")
+            from mtg_engine.engine.zones import _sacrifice_permanent
+            gs = _sacrifice_permanent(gs, sac_id, sacrificer=caster)
     elif req.alternative_cost == "delve":
         # Exile specified graveyard cards to pay generic mana
         player_for_delve = get_player(gs, gs.priority_holder)
@@ -750,7 +752,35 @@ def cast(game_id: str, req: CastRequest) -> dict:
         # Clear pending choice after resolution
         gs.pending_delve_choice = None
         req = req.model_copy(update={"targets": []})
-    
+
+    elif req.alternative_cost == "evoke":
+        # Evoke: pay evoke cost instead of mana cost, sacrifice on ETB (CR 702.41)
+        from mtg_engine.engine.evoke import parse_evoke_cost as _parse_evoke_cost
+        player_for_evoke = get_player(gs, gs.priority_holder)
+        oracle_text = card_obj.oracle_text or "" if card_obj else ""
+        evoke_cost = _parse_evoke_cost(oracle_text)
+        if evoke_cost:
+            if not can_pay_cost(player_for_evoke.mana_pool, evoke_cost):
+                raise _err(f"Insufficient mana for evoke {card_obj.name}", "INSUFFICIENT_MANA")
+            # Pay evoke cost from mana pool (reuse existing payment logic)
+            from mtg_engine.engine.mana import parse_mana_cost as _pmc_evoke
+            cost_dict = _pmc_evoke(evoke_cost)
+            payment = {}
+            for color, amount in cost_dict.items():
+                current = getattr(player_for_evoke.mana_pool, color, 0) or 0
+                pay = min(amount, current)
+                if pay > 0:
+                    payment[color] = pay
+            # Apply payment using pure transform
+            new_pool = player_for_evoke.mana_pool.model_copy()
+            for color, pay in payment.items():
+                setattr(new_pool, color, getattr(new_pool, color, 0) - pay)
+            players_new = list(gs.players)
+            idx = next(i for i, p in enumerate(players_new) if p.name == player_for_evoke.name)
+            players_new[idx] = players_new[idx].model_copy(update={"mana_pool": new_pool})
+            gs = gs.model_copy(update={"players": players_new})
+        # Set flag to trigger evoke sacrifice on ETB — handled by stack.py resolve_top()
+
     # Find the card in hand OR graveyard (needed for payment calculation)
     _card_for_payment = next((c for c in player_gs.hand if c.id == req.card_id), None)
     if not _card_for_payment:
@@ -814,6 +844,41 @@ def cast(game_id: str, req: CastRequest) -> dict:
     card_name = card_obj.name if card_obj else req.card_id
     card_mana_cost = card_obj.mana_cost or "" if card_obj else ""
 
+    # KW-43: Convoke (CR 702.43) — intercept human cast to queue pending_convoke_choice; AI auto-resolves.
+    convoke_flag = False
+    if (
+        card_obj is not None
+        and req.alternative_cost is None
+        and not req.from_graveyard
+    ):
+        from mtg_engine.ability.keywords.convoke import Convoke
+        from mtg_engine.models.game import Permanent as _ConvokePermanent
+        _conv_transient = _ConvokePermanent(card=card_obj, controller=caster)
+        gs = Convoke().apply(gs, _conv_transient)
+        _conv_pending = gs.pending_convoke_choice
+        if _conv_pending is not None and not _conv_pending.get("resolved"):
+            # Human: defer cast, stash parameters
+            _conv_pending.update({
+                "targets": list(req.targets),
+                "mana_payment": dict(req.mana_payment or {}),
+                "x_value": req.x_value,
+                "modes_chosen": list(req.modes_chosen or []),
+                "kicker_paid": bool(req.kicker_paid),
+            })
+            if not req.dry_run:
+                mgr.update(game_id, gs)
+            return _ok(gs)
+        elif _conv_pending is not None:
+            # AI auto-resolved: creatures already tapped, pending contains tapped ids
+            convoke_flag = True
+            tapped_ids = _conv_pending.get("tapped_creature_ids", [])
+            # Propagate to request for cost reduction
+            req = req.model_copy(update={"convoke_creature_ids": tapped_ids})
+            # Clear pending after use
+            gs = gs.model_copy(update={"pending_convoke_choice": None})
+        else:
+            convoke_flag = False
+
     # US19: Apply keyword cost reductions (Convoke, Delve, Improvise, Affinity, Emerge)
     effective_cost_str = card_mana_cost
     if card_obj and (req.convoke_creature_ids or req.delve_card_ids or req.improvise_artifact_ids or req.emerge_sacrifice_id):
@@ -832,11 +897,130 @@ def cast(game_id: str, req: CastRequest) -> dict:
         gs, mana_payment = _auto_tap_and_build_payment(gs, caster, effective_cost_str)
         player_gs = get_player(gs, caster)
 
+    # Overload (CR 702.95) — alternative cost that replaces base cost and changes "target" to "each".
+    # Intercepts human cast to queue pending_overload_choice; AI auto-resolves.
+    overload_flag = False
+    if (
+        card_obj is not None
+        and req.alternative_cost is None
+        and not req.from_graveyard
+    ):
+        from mtg_engine.ability.keywords.overload import OverloadKeyword
+        from mtg_engine.models.game import Permanent as _OLPermanent
+        _ol_transient = _OLPermanent(card=card_obj, controller=caster)
+        gs = OverloadKeyword().apply(gs, _ol_transient)
+        _ol_pending = gs.pending_overload_choice
+        if _ol_pending is not None and not _ol_pending.get("resolved"):
+            # Human: defer cast, stash parameters
+            _ol_pending.update({
+                "targets": list(req.targets),
+                "mana_payment": dict(mana_payment or {}),
+                "x_value": req.x_value,
+                "modes_chosen": list(req.modes_chosen or []),
+                "kicker_paid": bool(req.kicker_paid),
+            })
+            if not req.dry_run:
+                mgr.update(game_id, gs)
+            return _ok(gs)
+        elif _ol_pending is not None:
+            # AI auto-resolved
+            overload_flag = bool(_ol_pending.get("paid"))
+            gs = gs.model_copy(update={"pending_overload_choice": None})
+        else:
+            overload_flag = False
+
     # T009: Validate targets before casting
-    if req.targets:
+    # Overloaded spells target nothing (CR 702.95b), so skip validation when overload is paid.
+    if req.targets and not overload_flag:
         card_obj = next((c for c in player_gs.hand if c.id == req.card_id), None)
         if card_obj:
             _validate_targets(gs, req.targets, card_obj, caster)
+
+    # KW-27: Buyback (CR 702.27/702.28) — a sorcery with "Buyback {cost}" cast
+    # for its normal cost defers the cast until the buyback decision is made.
+    # BuybackKeyword.apply() queues pending_buyback_choice for a human caster
+    # (resolved=False) or auto-resolves it for an AI caster (resolved=True,
+    # paid=True/False). Only normal hand casts qualify: no alternative cost,
+    # no graveyard cast, no cost-reduction keywords (no buyback card combines
+    # with them).
+    _has_cost_reduction = bool(
+        req.convoke_creature_ids or req.delve_card_ids
+        or req.improvise_artifact_ids or req.emerge_sacrifice_id
+    )
+    buyback_flag = False
+    if (
+        card_obj is not None
+        and req.alternative_cost is None
+        and not req.from_graveyard
+        and not _has_cost_reduction
+    ):
+        from mtg_engine.ability.keywords.buyback import BuybackKeyword
+        from mtg_engine.models.game import Permanent as _BBPermanent
+        _bb_transient = _BBPermanent(card=card_obj, controller=caster)
+        gs = BuybackKeyword().apply(gs, _bb_transient)
+        _bb_pending = gs.pending_buyback_choice
+        if _bb_pending is not None and not _bb_pending.get("resolved"):
+            # Human: defer the cast. Stash the cast parameters on the pending
+            # choice so the buyback_pay / buyback_pass handler can re-drive the
+            # exact same cast through cast_spell.
+            _bb_pending.update({
+                "targets": list(req.targets),
+                "mana_payment": dict(mana_payment or {}),
+                "x_value": req.x_value,
+                "modes_chosen": list(req.modes_chosen or []),
+                "kicker_paid": bool(req.kicker_paid),
+            })
+            if not req.dry_run:
+                mgr.update(game_id, gs)
+            return _ok(gs)
+        elif _bb_pending is not None:
+            # AI auto-resolved: clear the marker and cast with that decision.
+            buyback_flag = bool(_bb_pending.get("paid"))
+            gs = gs.model_copy(update={"pending_buyback_choice": None})
+        else:
+            buyback_flag = False
+
+    # KW-39: Entwine (CR 702.39) — a modal spell with "Entwine {cost}" cast
+    # for its normal cost defers the cast until the entwine decision is made
+    # for a human caster. EntwineKeyword.apply() queues pending_entwine_choice
+    # for a human caster (resolved=False) or auto-resolves it for an AI caster
+    # (resolved=True, paid=True/False). Only normal hand casts qualify: no
+    # alternative cost, no graveyard cast.
+    entwine_flag = False
+    if (
+        card_obj is not None
+        and req.alternative_cost is None
+        and not req.from_graveyard
+    ):
+        from mtg_engine.ability.keywords.entwine import EntwineKeyword
+        from mtg_engine.models.game import Permanent as _ENTPermanent
+        _ent_transient = _ENTPermanent(card=card_obj, controller=caster)
+        gs = EntwineKeyword().apply(gs, _ent_transient)
+        _ent_pending = gs.pending_entwine_choice
+        if _ent_pending is not None and not _ent_pending.get("resolved"):
+            # Human: defer the cast. Stash the cast parameters on the pending
+            # choice so the entwine_pay / entwine_pass handler can re-drive the
+            # exact same cast through cast_spell.
+            _ent_pending.update({
+                "targets": list(req.targets),
+                "mana_payment": dict(mana_payment or {}),
+                "x_value": req.x_value,
+                "modes_chosen": list(req.modes_chosen or []),
+                "kicker_paid": bool(req.kicker_paid),
+            })
+            if not req.dry_run:
+                mgr.update(game_id, gs)
+            return _ok(gs)
+        elif _ent_pending is not None:
+            # AI auto-resolved: clear the marker and cast with that decision.
+            entwine_flag = bool(_ent_pending.get("paid"))
+            # If entwine paid, all modes are chosen; otherwise keep original modes.
+            if entwine_flag:
+                num_modes = _ent_pending.get("num_modes", 0)
+                req = req.model_copy(update={"modes_chosen": list(range(num_modes))})
+            gs = gs.model_copy(update={"pending_entwine_choice": None})
+        else:
+            entwine_flag = False
 
     try:
         gs = cast_spell(
@@ -857,6 +1041,9 @@ def cast(game_id: str, req: CastRequest) -> dict:
             mutate_target_id=req.mutate_target_id,
             mutate_on_top=req.mutate_on_top,
             from_graveyard=req.from_graveyard,
+            overload_paid=overload_flag,
+            buyback_paid=buyback_flag,
+            entwine_paid=entwine_flag,
         )
         gs = _run_sbas(gs)
     except ValueError as e:
@@ -872,31 +1059,12 @@ def cast(game_id: str, req: CastRequest) -> dict:
             player_gs2.foretold_cards.append(_foretold_card)
         raise _err(str(e), "INVALID_ACTION")
 
-    # T051: Ward cost check — if any target has ward, set pending_ward_payment
-    # Ward triggers when a spell targeting a permanent with ward is put on the stack (CR 702.157)
-    import re as _re_ward
-    if req.targets and gs.stack:
-        top_spell = gs.stack[-1]
-        for target_id in req.targets:
-            target_perm = next((p for p in gs.battlefield if p.id == target_id), None)
-            if target_perm:
-                ward_match = _re_ward.search(
-                    r'[Ww]ard[—–-]?(\{[^}]+\}|\d+)',
-                    target_perm.card.oracle_text or ""
-                )
-                if ward_match and target_perm.controller != caster:
-                    ward_cost_raw = ward_match.group(1)
-                    # Normalize numeric ward cost (e.g. "2" → "{2}")
-                    ward_cost = ward_cost_raw if ward_cost_raw.startswith("{") else f"{{{ward_cost_raw}}}"
-                    gs.pending_ward_payment = {
-                        "player": caster,
-                        "ward_cost": ward_cost,
-                        "targeting_spell_id": top_spell.id,
-                        "target_permanent_id": target_id,
-                    }
-                    logger.info("Ward triggered: %s must pay %s or spell is countered",
-                                caster, ward_cost)
-                    break  # only trigger ward once per spell
+    # Ward (CR 702.145) now fires centrally in stack.py's cast_spell
+    # becomes-target flow via apply_ward(), so the previous per-cast T051 block
+    # below was redundant and removed to avoid double-firing pending_ward_payment.
+    # The queue (human caster) / auto-resolve (AI caster) semantics live in
+    # mtg_engine/ability/keywords/ward.py; the pay/counter choice handlers for a
+    # queued human choice remain in this router below.
 
     # Post-resolution: handle graveyard keyword exile rules
     if _graveyard_card is not None:
@@ -954,13 +1122,16 @@ def cycle(game_id: str, req: CastRequest) -> dict:
     if card is None:
         raise _err(f"Card {req.card_id!r} not found in hand", "INVALID_ACTION")
 
-    # Extract cycling cost from oracle text
-    import re as _re_cycle
-    cycling_match = _re_cycle.search(r'[Cc]ycling (\{[^}]+\})', card.oracle_text or "")
-    if not cycling_match:
-        raise _err(f"{card.name} doesn't have cycling", "INVALID_ACTION")
+    # Extract cycling cost from oracle text. Use cycle.py as the SINGLE source of
+    # truth so the live /cycle path honours the same (?<!\w)(?<!type ) guards that
+    # reject "Type cycling {2}" and basic-land-cycling tokens ("Swampcycling {1}").
+    from mtg_engine.ability.keywords.cycle import CyclingKeyword
 
-    cycling_cost = cycling_match.group(1)
+    if not CyclingKeyword.from_oracle_text(card.oracle_text or ""):
+        raise _err(f"{card.name} doesn't have cycling", "INVALID_ACTION")
+    cycling_cost = CyclingKeyword.parse_cost(card.oracle_text or "")
+    if not cycling_cost:
+        raise _err(f"{card.name} has no parsable cycling cost", "INVALID_ACTION")
     from mtg_engine.engine.mana import can_pay_cost
     if not can_pay_cost(player.mana_pool, cycling_cost):
         raise _err(f"Cannot pay cycling cost {cycling_cost}", "INVALID_ACTION")
@@ -968,18 +1139,17 @@ def cycle(game_id: str, req: CastRequest) -> dict:
     card_name = card.name
 
     try:
-        # Pay the cycling cost
-        # Note: The AI client should provide req.mana_payment to pay the cost
-        # For now, we assume the cost is paid (client validates)
+        # Pay the cycling cost — now actually deducts mana from the pool (was a
+        # documented no-op). Done via the pure helpers in cycle.py so `gs` is
+        # built with model_copy and no live player list is mutated in place.
+        from mtg_engine.ability.keywords.cycle import _discard_and_draw, _pay_mana
 
-        # Discard the card
-        player.hand[:] = [c for c in player.hand if c.id != req.card_id]
-        player.graveyard.append(card)
+        gs = _pay_mana(gs, player_name, cycling_cost)
+        gs = _discard_and_draw(gs, player_name, card, draw_count=1)
 
-        # Draw a card
-        if player.library:
-            drawn_card = player.library.pop(0)
-            player.hand.append(drawn_card)
+        # Wire: Discard Trigger (CR 701.18) — the cycled card is discarded.
+        from mtg_engine.engine.triggers import check_discard_triggers as _check_discard
+        gs = _check_discard(gs, player_name)
 
         # Emit cycle triggers (US9, check_cycle_triggers)
         from mtg_engine.engine.triggers import check_cycle_triggers
@@ -993,7 +1163,10 @@ def cycle(game_id: str, req: CastRequest) -> dict:
     if not req.dry_run:
         mgr.update(game_id, gs)
         recorder = _get_recorder_safe(game_id, mgr)
-        if recorder:
+        # TranscriptRecorder has no generic ``record_action`` method (only typed
+        # record_* methods); guard so a missing method degrades to a no-op rather
+        # than raising AttributeError on every real cycle.
+        if recorder and hasattr(recorder, "record_action"):
             recorder.record_action(player_name, f"Cycle {card_name}", cycle_turn, cycle_phase, cycle_step)
 
     return _ok(gs)
@@ -1117,6 +1290,113 @@ def proliferate(game_id: str, req: ProliferateRequest) -> dict:
 
 # ─── Activate ability ─────────────────────────────────────────────────────────
 
+def _apply_activated_ability_effect(
+    gs: GameState, perm: Any, ability: Any, req: ActivateRequest, player: Any
+) -> GameState:
+    """Apply the EFFECT portion of an activated ability (CR 605 mana / T128 regen /
+    Fortify). Extracted verbatim from the /activate endpoint so the identical
+    effect logic can re-run when a deferred Ward (ability) payment resolves via
+    the ``ward_pay`` choice handler.
+
+    The activation cost (tap + mana) is NOT paid here — the caller does that
+    before invoking this helper. Preserves the exact existing behavior of the
+    inline block (including the in-place ``player.mana_pool`` / permanent
+    updates), so non-ward activations are unaffected.
+    """
+    import re
+
+    from mtg_engine.engine.mana import add_mana, is_mana_ability, resolve_mana_ability
+
+    ability_text = ability.raw_text
+
+    # Check if this is a mana ability per CR 605 (T014, T015)
+    # Mana abilities resolve immediately without going on the stack
+    if is_mana_ability(ability_text, is_loyalty=False):
+        # Resolve immediately - bypass stack (CR 605.3b)
+        gs = resolve_mana_ability(gs, req.permanent_id, ability_text)
+    else:
+        # Apply non-mana ability effects
+        mana_add = re.search(r"add\s+(\{[WUBRGC]\})", ability.effect, re.IGNORECASE)
+        if mana_add:
+            sym = mana_add.group(1).strip("{}")
+            player.mana_pool = add_mana(player.mana_pool, sym.upper())
+    # T128: Regeneration ability — add a regen shield to target permanent (CR 701.15a)
+    regen_match = re.search(r"regenerate (target|this|~)", ability.effect, re.IGNORECASE)
+    if regen_match:
+        # Determine target: if "target" use req.targets[0], else use the perm itself
+        if "target" in regen_match.group(1).lower() and req.targets:
+            regen_target_id = req.targets[0]
+        else:
+            regen_target_id = perm.id
+        regen_perm = next((p for p in gs.battlefield if p.id == regen_target_id), None)
+        if regen_perm:
+            regen_perm.regen_shields += 1
+            logger.info("Regen shield added to %s (total: %d)", regen_perm.card.name, regen_perm.regen_shields)
+
+    # Fortify (CR 702.54a): attach this Fortification to target land.
+    # Cost (mana) already paid above via the shared cost machinery; the
+    # timing_restriction check already enforced sorcery speed.
+    fortify_match = re.search(r"attach (?:this fortification )?to target land", ability.effect, re.IGNORECASE)
+    if fortify_match:
+        from mtg_engine.ability.keywords.fortify import Fortify
+        from mtg_engine.engine.stack import _apply_fortify
+        if not req.targets:
+            raise ValueError(f"{perm.card.name}: Fortify requires a target land")
+        fortify_target_id = req.targets[0]
+        target_perm = next((p for p in gs.battlefield if p.id == fortify_target_id), None)
+        if target_perm is None:
+            raise ValueError(f"Fortify target {fortify_target_id!r} not on battlefield")
+        if target_perm.controller != gs.priority_holder:
+            raise ValueError(f"Fortify target {target_perm.card.name} is not controlled by {gs.priority_holder}")
+        if not Fortify.is_land_card(target_perm.card):
+            raise ValueError(f"Fortify target {target_perm.card.name} is not a land")
+        if target_perm.id == perm.id:
+            raise ValueError(f"Fortify target is the source {perm.card.name}")
+        gs = _apply_fortify(gs, perm.id, fortify_target_id)
+
+    return gs
+
+
+def _reapply_deferred_ability(gs: GameState, pending: dict) -> GameState:
+    """Re-apply a deferred activated ability's effect after its Ward payment
+    resolves via ``ward_pay`` (CR 702.145a, ability case).
+
+    The activation cost (tap + mana) was already paid when the ability was
+    activated — only the effect is re-driven here, through the same
+    :func:`_apply_activated_ability_effect` helper the /activate endpoint uses
+    on the proceed path. ``pending`` is the ``pending_ward_payment`` dict
+    (``targeting_type="ability"``) holding the deferred activation:
+    ``permanent_id``, ``ability_index``, ``targets``, ``mana_payment``.
+    """
+    from mtg_engine.card_data.ability_parser import parse_oracle_text, ActivatedAbility
+
+    perm = next((p for p in gs.battlefield if p.id == pending.get("permanent_id", "")), None)
+    if perm is None:
+        logger.warning(
+            "Ward re-apply: source permanent %r not on battlefield; skipping effect",
+            pending.get("permanent_id"),
+        )
+        return gs
+    abilities = parse_oracle_text(perm.card.oracle_text or "", perm.card.type_line)
+    activated = [a for a in abilities if isinstance(a, ActivatedAbility)]
+    ability_index = pending.get("ability_index", 0)
+    if ability_index >= len(activated):
+        logger.warning(
+            "Ward re-apply: ability index %s out of range; skipping effect",
+            ability_index,
+        )
+        return gs
+    ability = activated[ability_index]
+    req = ActivateRequest(
+        permanent_id=perm.id,
+        ability_index=ability_index,
+        targets=list(pending.get("targets") or []),
+        mana_payment=dict(pending.get("mana_payment") or {}),
+    )
+    player = get_player(gs, pending.get("player", gs.priority_holder))
+    return _apply_activated_ability_effect(gs, perm, ability, req, player)
+
+
 @router.post("/{game_id}/activate")
 def activate(game_id: str, req: ActivateRequest) -> dict:
     """POST /game/{game_id}/activate. REQ-A06, REQ-A07"""
@@ -1134,7 +1414,7 @@ def activate(game_id: str, req: ActivateRequest) -> dict:
 
     try:
         from mtg_engine.card_data.ability_parser import parse_oracle_text, ActivatedAbility
-        from mtg_engine.engine.mana import pay_cost, add_mana, is_mana_ability, resolve_mana_ability
+        from mtg_engine.engine.mana import pay_cost, is_mana_ability
 
         perm = next((p for p in gs.battlefield if p.id == req.permanent_id), None)
         if perm is None:
@@ -1193,30 +1473,58 @@ def activate(game_id: str, req: ActivateRequest) -> dict:
         if mana_cost_part:
             player.mana_pool = pay_cost(player.mana_pool, mana_cost_part, req.mana_payment)
 
-        # Check if this is a mana ability per CR 605 (T014, T015)
-        # Mana abilities resolve immediately without going on the stack
-        if is_mana_ability(ability_text_for_log, is_loyalty=False):
-            # Resolve immediately - bypass stack (CR 605.3b)
-            gs = resolve_mana_ability(gs, req.permanent_id, ability_text_for_log)
-        else:
-            # Apply non-mana ability effects
-            import re as _re
-            mana_add = _re.search(r"add\s+(\{[WUBRGC]\})", ability.effect, _re.IGNORECASE)
-            if mana_add:
-                sym = mana_add.group(1).strip("{}")
-                player.mana_pool = add_mana(player.mana_pool, sym.upper())
-        # T128: Regeneration ability — add a regen shield to target permanent (CR 701.15a)
-        regen_match = re.search(r"regenerate (target|this|~)", ability.effect, re.IGNORECASE)
-        if regen_match:
-            # Determine target: if "target" use req.targets[0], else use the perm itself
-            if "target" in regen_match.group(1).lower() and req.targets:
-                regen_target_id = req.targets[0]
-            else:
-                regen_target_id = perm.id
-            regen_perm = next((p for p in gs.battlefield if p.id == regen_target_id), None)
-            if regen_perm:
-                regen_perm.regen_shields += 1
-                logger.info("Regen shield added to %s (total: %d)", regen_perm.card.name, regen_perm.regen_shields)
+        # Ward (CR 702.145a): an activated ability that targets an opponent's
+        # ward permanent triggers Ward — the activator (the ability's
+        # controller/targeter) may pay the ward cost; if they don't, the ability
+        # is countered. The activation cost (tap + mana) was paid above and is
+        # consumed regardless of the outcome. Mana abilities do not target, so
+        # only targeting abilities reach the ward check. Self-targeting never
+        # triggers Ward (CR 702.145b).
+        from mtg_engine.ability.keywords.ward import (
+            Ward as _WardKw,
+            apply_ward_to_ability as _apply_ward_to_ability,
+        )
+        ward_outcome = "proceed"
+        for _ward_target_id in (req.targets or []):
+            _ward_target_perm = next(
+                (p for p in gs.battlefield if p.id == _ward_target_id), None
+            )
+            if _ward_target_perm is None or _ward_target_perm.controller == gs.priority_holder:
+                continue
+            if not _WardKw.has_ward(_ward_target_perm.card.keywords or []):
+                continue
+            gs, _ward_result = _apply_ward_to_ability(
+                gs, _ward_target_perm, caster_name=gs.priority_holder
+            )
+            if _ward_result != "proceed":
+                ward_outcome = _ward_result
+                break
+
+        if ward_outcome == "deferred":
+            # The human targeter must choose ward_pay / ward_counter before the
+            # effect may resolve. Store the deferred activation in the pending
+            # choice so ward_pay can re-drive the exact same effect logic.
+            gs = gs.model_copy(
+                update={
+                    "pending_ward_payment": {
+                        **gs.pending_ward_payment,
+                        "permanent_id": perm.id,
+                        "ability_index": req.ability_index,
+                        "targets": list(req.targets or []),
+                        "mana_payment": dict(req.mana_payment or {}),
+                        "ability_text": ability.effect,
+                    }
+                }
+            )
+        elif ward_outcome == "proceed":
+            # Ward did not fire (or was paid by an AI targeter) — re-fetch the
+            # player in case the ward resolver replaced the player object in
+            # the returned state, then apply the effect handlers.
+            player = get_player(gs, gs.priority_holder)
+            gs = _apply_activated_ability_effect(gs, perm, ability, req, player)
+        # ward_outcome == "countered": Ward countered the ability — the effect
+        # handlers are skipped and the effect does NOT apply, but the
+        # activation cost (tap + mana) is consumed (CR 702.145a).
 
         gs = _run_sbas(gs)
     except ValueError as e:
@@ -1450,7 +1758,18 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
                 scry_player.library = scry_player.library[n:] + cards_to_bottom
             gs.pending_scry_choice = None
         mgr.update(game_id, gs)
-        
+
+    # Regular Scry reorder (CR 701.20) — human reorders the revealed cards in any
+    # order: req.selection is an ordered list of card ids describing the desired
+    # top->bottom arrangement. Pure transform via resolve_scry_choice().
+    elif choice_id == "scry":
+        player_name = gs.pending_scry_choice.get("player") if gs.pending_scry_choice else None
+        if not player_name:
+            raise _err("No scry pending for this player", "INVALID_CHOICE")
+        from mtg_engine.ability.keywords.scry import resolve_scry_choice
+        gs = resolve_scry_choice(gs, player_name, req.selection)
+        mgr.update(game_id, gs)
+
     # Handling reveal-and-choose from library (e.g., Sleight of Hand)
     elif choice_id == "reveal_put_hand":
         # Player puts one of the revealed cards into hand, puts rest on bottom
@@ -1527,7 +1846,16 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
             gs.pending_scry_choice = None
             mgr.update(game_id, gs)
             return _ok(gs)
-    
+
+    # Morph turn face-up (CR 702.35)
+    elif choice_id == "morph_turn_face_up":
+        from mtg_engine.engine.morph import apply_morph_turn_face_up
+        permanent_id = req.selection if isinstance(req.selection, str) else None
+        if not permanent_id:
+            raise _err("No permanent selected for morph turn face-up", "INVALID_CHOICE")
+        gs = apply_morph_turn_face_up(gs, permanent_id, mana_payment=req.mana_payment)
+        mgr.update(game_id, gs)
+
     # Handle Spree mode selection
     elif choice_id == "spree_select":
         if gs.pending_spree_choice:
@@ -1601,34 +1929,85 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
         if gs.pending_ward_payment:
             ward_cost = gs.pending_ward_payment.get("ward_cost", "")
             payer_name = gs.pending_ward_payment.get("player", gs.priority_holder)
-            payer = get_player(gs, payer_name)
+            # NOTE: aliased import — a bare `get_player` name is function-local
+            # to submit_choice (imported conditionally in the scry/surveil
+            # branches), so referencing it here would raise UnboundLocalError.
+            from mtg_engine.engine.zones import get_player as _gp_w
             from mtg_engine.engine.mana import can_pay_cost, pay_cost as _pc_w
-            if ward_cost and can_pay_cost(payer.mana_pool, ward_cost):
-                # Auto-pay from pool
-                from mtg_engine.engine.mana import parse_mana_cost as _pmc_w
-                cost_dict = _pmc_w(ward_cost)
-                mana_payment = {}
-                for color in ("W", "U", "B", "R", "G", "C"):
-                    needed = cost_dict.get(color, 0)
-                    if needed > 0:
-                        mana_payment[color] = needed
-                payer.mana_pool = _pc_w(payer.mana_pool, ward_cost, mana_payment)
+            payer = _gp_w(gs, payer_name)
+            # CR 702.145a: the counter is MANDATORY when the ward cost is not
+            # paid. Reject an unpayable ward_pay and KEEP the pending state so
+            # the player must pick ward_counter instead — otherwise the spell
+            # would continue as if Ward didn't exist.
+            if not (ward_cost and can_pay_cost(payer.mana_pool, ward_cost)):
+                raise _err(f"Cannot pay ward {ward_cost}", "INSUFFICIENT_MANA")
+            # Auto-pay from pool: explicit colored/colorless requirements first,
+            # then cover any generic remainder with leftover pool mana in
+            # canonical order. (pay_cost raises if the payment dict doesn't
+            # fully cover the cost — a generic-only cost like "Ward {2}" must
+            # be covered from the leftover pool, not left empty.)
+            from mtg_engine.engine.mana import parse_mana_cost as _pmc_w
+            cost_dict = _pmc_w(ward_cost)
+            mana_payment = {}
+            pool_avail = {
+                "W": payer.mana_pool.W, "U": payer.mana_pool.U, "B": payer.mana_pool.B,
+                "R": payer.mana_pool.R, "G": payer.mana_pool.G, "C": payer.mana_pool.C,
+            }
+            for color in ("W", "U", "B", "R", "G"):
+                needed = cost_dict.get(color, 0)
+                if needed > 0:
+                    mana_payment[color] = needed
+                    pool_avail[color] -= needed
+            needed_c = cost_dict.get("C", 0)
+            if needed_c > 0:
+                mana_payment["C"] = needed_c
+                pool_avail["C"] -= needed_c
+            generic_needed = cost_dict.get("generic", 0)
+            for color in ("W", "U", "B", "R", "G", "C"):
+                if generic_needed <= 0:
+                    break
+                take = min(pool_avail[color], generic_needed)
+                if take > 0:
+                    mana_payment[color] = mana_payment.get(color, 0) + take
+                    pool_avail[color] -= take
+                    generic_needed -= take
+            payer.mana_pool = _pc_w(payer.mana_pool, ward_cost, mana_payment)
+            # CR 702.145a (ability case): the ward was paid, so the deferred
+            # activated ability now resolves — re-drive the same effect logic
+            # the /activate endpoint uses on the proceed path. The spell path
+            # (no targeting_type / "spell") keeps its existing behavior: the
+            # targeting spell is already on the stack and needs nothing more.
+            if gs.pending_ward_payment.get("targeting_type") == "ability":
+                gs = _reapply_deferred_ability(gs, gs.pending_ward_payment)
             gs.pending_ward_payment = None
             mgr.update(game_id, gs)
 
     elif choice_id == "ward_counter":
-        # T051: Player declines to pay ward — targeting spell is countered (CR 702.157b)
+        # T051: Player declines to pay ward — targeting spell/ability is
+        # countered (CR 702.157b)
         if gs.pending_ward_payment:
-            spell_id = gs.pending_ward_payment.get("targeting_spell_id", "")
-            countered = next((s for s in gs.stack if s.id == spell_id), None)
-            if countered:
-                gs.stack[:] = [s for s in gs.stack if s.id != spell_id]
-                owner = get_player(gs, countered.controller)
-                if not countered.is_copy:
-                    owner.graveyard.append(countered.source_card)
-                logger.info("Ward: %s countered for non-payment", countered.source_card.name)
-            gs.pending_ward_payment = None
-            mgr.update(game_id, gs)
+            # NOTE: aliased import — see ward_pay above for why the bare
+            # function-local `get_player` name cannot be used here.
+            from mtg_engine.engine.zones import get_player as _gp_wc
+            if gs.pending_ward_payment.get("targeting_type") == "ability":
+                # Ability case (CR 702.145a): the activated ability never went
+                # on the stack and its effect was never applied (it was
+                # deferred) — there is nothing to remove, just clear the
+                # pending choice. The activation cost was already consumed at
+                # activation time.
+                gs.pending_ward_payment = None
+                mgr.update(game_id, gs)
+            else:
+                spell_id = gs.pending_ward_payment.get("targeting_spell_id", "")
+                countered = next((s for s in gs.stack if s.id == spell_id), None)
+                if countered:
+                    gs.stack[:] = [s for s in gs.stack if s.id != spell_id]
+                    owner = _gp_wc(gs, countered.controller)
+                    if not countered.is_copy:
+                        owner.graveyard.append(countered.source_card)
+                    logger.info("Ward: %s countered for non-payment", countered.source_card.name)
+                gs.pending_ward_payment = None
+                mgr.update(game_id, gs)
 
     elif choice_id == "echo_pay":
         # US27 (T059): Player pays echo cost — permanent is marked as paid
@@ -1871,6 +2250,39 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
             gs.pending_commander_zone_choice = None
             mgr.update(game_id, gs)
 
+    elif choice_id == "crew_confirm":
+        # CR 702.147: Human resolves a pending Crew choice by tapping untapped
+        # creatures it controls totalling the crew value; the vehicle becomes an
+        # artifact creature until end of turn. req.selection may carry the subset
+        # of creature ids to tap (otherwise all available untapped creatures are).
+        if gs.pending_crew_choice:
+            player_name = gs.pending_crew_choice.get("player", gs.priority_holder)
+            from mtg_engine.ability.keywords.crew import resolve_crew_choice
+            gs = resolve_crew_choice(gs, player_name, req.selection)
+            mgr.update(game_id, gs)
+
+    elif choice_id == "equip_confirm":
+        # CR 702.5: Human resolves a pending Equip choice by attaching the
+        # Equipment to one of the eligible creatures it controls (req.selection is
+        # the chosen creature id; otherwise the choice is declined and cleared).
+        if gs.pending_equip_choice:
+            player_name = gs.pending_equip_choice.get("player", gs.priority_holder)
+            from mtg_engine.ability.keywords.equip import resolve_equip_choice
+            gs = resolve_equip_choice(gs, player_name, req.selection)
+            mgr.update(game_id, gs)
+
+    elif choice_id == "cycling":
+        # CR 702.36 / 702.46: Human resolves a pending Cycling / Type cycling
+        # choice by paying the cost (from mana pool), discarding the card from hand
+        # and drawing N cards (N=1 regular; N=card types for type-cycling). The
+        # shared resolve_cycling_choice helper in cycle.py performs the pure
+        # transform and clears pending_cycling_choice.
+        if gs.pending_cycling_choice:
+            player_name = gs.pending_cycling_choice.get("player", gs.priority_holder)
+            from mtg_engine.ability.keywords.cycle import resolve_cycling_choice
+            gs = resolve_cycling_choice(gs, player_name)
+            mgr.update(game_id, gs)
+
     elif choice_id.startswith("dungeon_room_"):
         # VEN-01: Dungeon room choice — player selects a specific outcome
         if gs.pending_dungeon_room_choice:
@@ -1895,6 +2307,388 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
 
             gs.pending_dungeon_room_choice = None
             mgr.update(game_id, gs)
+
+    elif choice_id in ("buyback_pay", "buyback_pass"):
+        # KW-27: Buyback (CR 702.27/702.28) — human resolves a deferred buyback
+        # choice by paying (buyback_pay) or declining (buyback_pass) the
+        # additional cost. The deferred cast is re-driven through cast_spell
+        # with the buyback flag; cast_spell appends the buyback cost to the
+        # base cost when the flag is set so the single payment flow deducts
+        # both.
+        if gs.pending_buyback_choice:
+            pending = gs.pending_buyback_choice
+            player_name = pending.get("player", gs.priority_holder)
+            if gs.priority_holder != player_name:
+                raise _err("Not your buyback choice", "INVALID_CHOICE")
+
+            buyback_paid = (choice_id == "buyback_pay")
+            base_cost = pending.get("base_cost") or ""
+            bb_cost = pending.get("buyback_cost") or ""
+            total_cost = base_cost + (bb_cost if buyback_paid else "")
+            stored_payment = dict(pending.get("mana_payment") or {})
+
+            # Tap untapped mana sources so the pool can cover the full cost
+            # (base + buyback when paying), then build a payment that covers it.
+            derived_payment: dict[str, int] = {}
+            if total_cost:
+                gs, derived_payment = _auto_tap_and_build_payment(gs, player_name, total_cost)
+
+            # Use the stored (explicit/base) payment if it already covers the
+            # full cost; otherwise fall back to the derived payment (which
+            # covers base + buyback from the now-tapped pool).
+            # NOTE: aliased import — ``get_player`` is also imported locally in
+            # other branches of this function, which would make the bare name
+            # function-local (UnboundLocalError) before those branches run.
+            from mtg_engine.engine.zones import get_player as _bb_get_player
+            from mtg_engine.engine.mana import can_pay_cost as _bb_can_pay
+            _bb_player = _bb_get_player(gs, player_name)
+            if stored_payment and _bb_can_pay(_bb_player.mana_pool, total_cost, stored_payment):
+                payment = stored_payment
+            else:
+                payment = derived_payment
+            if total_cost and not _bb_can_pay(_bb_player.mana_pool, total_cost, payment):
+                raise _err(
+                    f"Insufficient mana to pay the buyback cost {bb_cost}",
+                    "INSUFFICIENT_MANA",
+                )
+
+            # Clear the pending choice, then re-drive the exact same cast.
+            gs = gs.model_copy(update={"pending_buyback_choice": None})
+            try:
+                gs = cast_spell(
+                    gs,
+                    player_name,
+                    pending.get("card_id", ""),
+                    pending.get("targets") or [],
+                    payment,
+                    modes_chosen=pending.get("modes_chosen") or None,
+                    x_value=pending.get("x_value", 0),
+                    kicker_paid=bool(pending.get("kicker_paid", False)),
+                    buyback_paid=buyback_paid,
+                )
+                gs = _run_sbas(gs)
+            except ValueError as e:
+                raise _err(str(e), "INVALID_ACTION")
+
+            if not req.dry_run:
+                mgr.update(game_id, gs)
+                recorder = _get_recorder_safe(game_id, mgr)
+                if recorder:
+                    recorder.record_cast(
+                        player_name,
+                        pending.get("card_name", ""),
+                        pending.get("targets") or [],
+                        gs.turn, gs.phase.value, gs.step.value,
+                        mana_cost=total_cost,
+                    )
+
+    elif choice_id in ("entwine_pay", "entwine_pass"):
+        # KW-39: Entwine (CR 702.39) — human resolves a deferred entwine choice
+        # by paying (entwine_pay) or declining (entwine_pass) the additional cost.
+        # The deferred cast is re-driven through cast_spell with entwine_paid flag;
+        # cast_spell appends the entwine cost to the base cost when the flag is set.
+        if gs.pending_entwine_choice:
+            pending = gs.pending_entwine_choice
+            player_name = pending.get("player", gs.priority_holder)
+            if gs.priority_holder != player_name:
+                raise _err("Not your entwine choice", "INVALID_CHOICE")
+
+            entwine_paid = (choice_id == "entwine_pay")
+            base_cost = pending.get("base_cost") or ""
+            ent_cost = pending.get("entwine_cost") or ""
+            total_cost = base_cost + (ent_cost if entwine_paid else "")
+            stored_payment = dict(pending.get("mana_payment") or {})
+
+            # Tap untapped mana sources so the pool can cover the full cost
+            # (base + entwine when paying), then build a payment that covers it.
+            derived_payment: dict[str, int] = {}
+            if total_cost:
+                gs, derived_payment = _auto_tap_and_build_payment(gs, player_name, total_cost)
+
+            from mtg_engine.engine.zones import get_player as _ent_get_player
+            from mtg_engine.engine.mana import can_pay_cost as _ent_can_pay
+            _ent_player = _ent_get_player(gs, player_name)
+            if stored_payment and _ent_can_pay(_ent_player.mana_pool, total_cost, stored_payment):
+                payment = stored_payment
+            else:
+                payment = derived_payment
+            if total_cost and not _ent_can_pay(_ent_player.mana_pool, total_cost, payment):
+                raise _err(
+                    f"Insufficient mana to pay the entwine cost {ent_cost}",
+                    "INSUFFICIENT_MANA",
+                )
+
+            # Determine modes chosen
+            if entwine_paid:
+                num_modes = pending.get("num_modes", 0)
+                modes_chosen = list(range(num_modes))
+            else:
+                modes_chosen = pending.get("modes_chosen") or None
+
+            # Clear pending choice, then re-drive cast
+            gs = gs.model_copy(update={"pending_entwine_choice": None})
+            try:
+                gs = cast_spell(
+                    gs,
+                    player_name,
+                    pending.get("card_id", ""),
+                    pending.get("targets") or [],
+                    payment,
+                    modes_chosen=modes_chosen,
+                    x_value=pending.get("x_value", 0),
+                    kicker_paid=bool(pending.get("kicker_paid", False)),
+                    entwine_paid=entwine_paid,
+                )
+                gs = _run_sbas(gs)
+            except ValueError as e:
+                raise _err(str(e), "INVALID_ACTION")
+
+            if not req.dry_run:
+                mgr.update(game_id, gs)
+                recorder = _get_recorder_safe(game_id, mgr)
+                if recorder:
+                    recorder.record_cast(
+                        player_name,
+                        pending.get("card_name", ""),
+                        pending.get("targets") or [],
+                        gs.turn, gs.phase.value, gs.step.value,
+                        mana_cost=total_cost,
+                    )
+
+    elif choice_id in ("overload_pay", "overload_pass"):
+        # Overload (CR 702.95) — alternative cost. Human resolves deferred overload choice.
+        if gs.pending_overload_choice:
+            pending = gs.pending_overload_choice
+            player_name = pending.get("player", gs.priority_holder)
+            if gs.priority_holder != player_name:
+                raise _err("Not your overload choice", "INVALID_CHOICE")
+
+            overload_paid = (choice_id == "overload_pay")
+            base_cost = pending.get("base_cost") or ""
+            overload_cost = pending.get("overload_cost") or ""
+            total_cost = overload_cost if overload_paid else base_cost
+            stored_payment = dict(pending.get("mana_payment") or {})
+
+            derived_payment: dict[str, int] = {}
+            if total_cost:
+                gs, derived_payment = _auto_tap_and_build_payment(gs, player_name, total_cost)
+
+            from mtg_engine.engine.zones import get_player as _ol_get_player
+            from mtg_engine.engine.mana import can_pay_cost as _ol_can_pay
+            _ol_player = _ol_get_player(gs, player_name)
+            if stored_payment and _ol_can_pay(_ol_player.mana_pool, total_cost, stored_payment):
+                payment = stored_payment
+            else:
+                payment = derived_payment
+            if total_cost and not _ol_can_pay(_ol_player.mana_pool, total_cost, payment):
+                raise _err(
+                    f"Insufficient mana to pay the overload cost {overload_cost}",
+                    "INSUFFICIENT_MANA",
+                )
+
+            # Clear pending choice, then re-drive cast
+            gs = gs.model_copy(update={"pending_overload_choice": None})
+            try:
+                gs = cast_spell(
+                    gs,
+                    player_name,
+                    pending.get("card_id", ""),
+                    pending.get("targets") or [],
+                    payment,
+                    modes_chosen=pending.get("modes_chosen") or None,
+                    x_value=pending.get("x_value", 0),
+                    kicker_paid=bool(pending.get("kicker_paid", False)),
+                    overload_paid=overload_paid,
+                )
+                gs = _run_sbas(gs)
+            except ValueError as e:
+                raise _err(str(e), "INVALID_ACTION")
+
+            if not req.dry_run:
+                mgr.update(game_id, gs)
+                recorder = _get_recorder_safe(game_id, mgr)
+                if recorder:
+                    recorder.record_cast(
+                        player_name,
+                        pending.get("card_name", ""),
+                        pending.get("targets") or [],
+                        gs.turn, gs.phase.value, gs.step.value,
+                        mana_cost=total_cost,
+                    )
+
+    elif choice_id in ("convoke_pay", "convoke_pass"):
+        # Convoke (CR 702.43) — human resolves deferred convoke choice.
+        # If convoke_pay, tap selected creatures (or all eligible) to reduce cost.
+        # For simplicity, we tap all eligible creatures when paying, otherwise none.
+        if gs.pending_convoke_choice:
+            pending = gs.pending_convoke_choice
+            player_name = pending.get("player", gs.priority_holder)
+            if gs.priority_holder != player_name:
+                raise _err("Not your convoke choice", "INVALID_CHOICE")
+
+            use_convoke = (choice_id == "convoke_pay")
+            card_id = pending.get("card_id", "")
+            card_name = pending.get("card_name", "")
+            base_cost = pending.get("base_cost", "")
+
+            # Determine which creatures to tap
+            tapped_ids = []
+            if use_convoke:
+                # For human, we can tap all eligible creatures (or selection).
+                # Use selection if provided, otherwise all eligible.
+                selection = req.selection if isinstance(req.selection, list) else []
+                eligible = pending.get("eligible_creatures", [])
+                if selection:
+                    tapped_ids = selection
+                else:
+                    tapped_ids = [c["id"] for c in eligible]
+
+                # Tap creatures in game state (pure transform)
+                new_battlefield = []
+                for perm in gs.battlefield:
+                    if perm.id in tapped_ids:
+                        new_perm = perm.model_copy(update={"tapped": True})
+                        new_battlefield.append(new_perm)
+                    else:
+                        new_battlefield.append(perm)
+                gs = gs.model_copy(update={"battlefield": new_battlefield})
+
+            # Compute effective cost after convoke reduction
+            from mtg_engine.engine.mana import parse_mana_cost
+            cost_dict = parse_mana_cost(base_cost)
+            # Apply reduction
+            if use_convoke and tapped_ids:
+                # Simulate reduction: each creature reduces generic or matching color
+                needed = {k: int(v) for k, v in cost_dict.items()}
+                # Build mapping of creature colors
+                creature_colors = {}
+                for perm in gs.battlefield:
+                    if perm.id in tapped_ids:
+                        creature_colors[perm.id] = perm.card.colors or []
+                for cid in tapped_ids:
+                    colors = creature_colors.get(cid, [])
+                    reduced = False
+                    for color in colors:
+                        if needed.get(color, 0) > 0:
+                            needed[color] -= 1
+                            reduced = True
+                            break
+                    if not reduced:
+                        # Reduce generic
+                        if needed.get("generic", 0) > 0:
+                            needed["generic"] -= 1
+                        elif needed.get("C", 0) > 0:
+                            needed["C"] -= 1
+                # Rebuild cost string
+                cost_parts = []
+                for sym, cnt in needed.items():
+                    if cnt <= 0:
+                        continue
+                    if sym == "generic":
+                        cost_parts.extend(["{" + str(cnt) + "}"] if cnt else [])
+                    elif sym == "C":
+                        cost_parts.extend(["{" + str(cnt) + "}"] if cnt else [])
+                    else:
+                        cost_parts.extend([f"{{{sym}}}"] * cnt)
+                effective_cost = "".join(cost_parts)
+            else:
+                effective_cost = base_cost
+
+            # Build mana payment for remaining cost
+            derived_payment = {}
+            if effective_cost:
+                gs, derived_payment = _auto_tap_and_build_payment(gs, player_name, effective_cost)
+
+            # Clear pending choice
+            gs = gs.model_copy(update={"pending_convoke_choice": None})
+
+            # Re-drive cast with reduced cost
+            try:
+                # Pass convoke creature ids via CastRequest? We'll just cast with current game state.
+                # The cost reduction is already reflected in effective_cost via payment.
+                # We need to pass mana_payment that covers effective cost.
+                from mtg_engine.engine.zones import get_player as _cv_get_player
+                from mtg_engine.engine.mana import can_pay_cost as _cv_can_pay
+                _cv_player = _cv_get_player(gs, player_name)
+                if effective_cost and not _cv_can_pay(_cv_player.mana_pool, effective_cost, derived_payment):
+                    raise _err(f"Insufficient mana to pay convoke reduced cost", "INSUFFICIENT_MANA")
+                gs = cast_spell(
+                    gs,
+                    player_name,
+                    card_id,
+                    pending.get("targets") or [],
+                    derived_payment,
+                    modes_chosen=pending.get("modes_chosen") or None,
+                    x_value=pending.get("x_value", 0),
+                    kicker_paid=bool(pending.get("kicker_paid", False)),
+                )
+                gs = _run_sbas(gs)
+            except ValueError as e:
+                raise _err(str(e), "INVALID_ACTION")
+
+            if not req.dry_run:
+                mgr.update(game_id, gs)
+                recorder = _get_recorder_safe(game_id, mgr)
+                if recorder:
+                    recorder.record_cast(
+                        player_name,
+                        card_name,
+                        pending.get("targets") or [],
+                        gs.turn, gs.phase.value, gs.step.value,
+                        mana_cost=effective_cost,
+                    )
+
+    elif choice_id in ("miracle_cast", "miracle_pass"):
+        # Miracle (CR 702.93) — alternative cost triggered on first draw.
+        if gs.pending_miracle_choice:
+            pending = gs.pending_miracle_choice
+            player_name = pending.get("player", gs.priority_holder)
+            if gs.priority_holder != player_name:
+                raise _err("Not your miracle choice", "INVALID_CHOICE")
+
+            miracle_cost = pending.get("miracle_cost", "")
+            card_id = pending.get("card_id", "")
+            card_name = pending.get("card_name", "")
+
+            if choice_id == "miracle_cast":
+                # Cast the card for miracle cost as alternative cost
+                from mtg_engine.engine.zones import get_player as _mi_get_player
+                from mtg_engine.engine.mana import can_pay_cost as _mi_can_pay
+                # Auto-tap and build payment for miracle cost
+                gs, payment = _auto_tap_and_build_payment(gs, player_name, miracle_cost)
+                _mi_player = _mi_get_player(gs, player_name)
+                if miracle_cost and not _mi_can_pay(_mi_player.mana_pool, miracle_cost, payment):
+                    raise _err(f"Insufficient mana to pay miracle cost {miracle_cost}", "INSUFFICIENT_MANA")
+                # Clear pending before casting to avoid re-entrancy
+                gs = gs.model_copy(update={"pending_miracle_choice": None})
+                try:
+                    gs = cast_spell(
+                        gs,
+                        player_name,
+                        card_id,
+                        targets=[],
+                        mana_payment=payment,
+                        alternative_cost=miracle_cost,
+                    )
+                    gs = _run_sbas(gs)
+                except ValueError as e:
+                    raise _err(str(e), "INVALID_ACTION")
+                if not req.dry_run:
+                    mgr.update(game_id, gs)
+                    recorder = _get_recorder_safe(game_id, mgr)
+                    if recorder:
+                        recorder.record_cast(
+                            player_name,
+                            card_name,
+                            [],
+                            gs.turn, gs.phase.value, gs.step.value,
+                            mana_cost=miracle_cost,
+                        )
+            else:
+                # Pass: do not cast, card remains in hand
+                gs = gs.model_copy(update={"pending_miracle_choice": None})
+                if not req.dry_run:
+                    mgr.update(game_id, gs)
 
     return _ok(gs)
 
@@ -2325,6 +3119,204 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
     is_main = gs.step == Step.MAIN
     stack_empty = not gs.stack
 
+    # CR 702.147: Crew choice pending for the priority holder — offer crew_confirm
+    if gs.pending_crew_choice and gs.pending_crew_choice.get("player") == player_name:
+        crew = gs.pending_crew_choice
+        card_name = crew.get("card_name", "that vehicle")
+        actions.append(LegalAction(
+            action_type="choice",
+            card_name="crew_confirm",
+            description=f"Crew {card_name} (tap creatures totalling {crew.get('crew_value', 1)} power)",
+            valid_targets=list(crew.get("available_creatures", [])),
+        ))
+        if not any(a.action_type == "pass" for a in actions):
+            actions.append(LegalAction(action_type="pass", description="Pass priority"))
+        return actions
+
+    # CR 702.5: Equip choice pending for the priority holder — offer equip_confirm,
+    # but only under sorcery timing (CR 702.5: activate any time you could cast a
+    # sorcery). The pending choice itself is only ever queued during sorcery speed
+    # (see Equip.apply), so this guard keeps the gate explicit at the action layer.
+    if (
+        gs.pending_equip_choice
+        and gs.pending_equip_choice.get("player") == player_name
+        and gs.active_player == player_name
+        and gs.step == Step.MAIN
+        and not gs.stack
+    ):
+        equip = gs.pending_equip_choice
+        card_name = equip.get("card_name", "that equipment")
+        actions.append(LegalAction(
+            action_type="choice",
+            card_name="equip_confirm",
+            description=f"Equip {card_name} (attach to a creature you control)",
+            valid_targets=list(equip.get("available_creatures", [])),
+        ))
+        if not any(a.action_type == "pass" for a in actions):
+            actions.append(LegalAction(action_type="pass", description="Pass priority"))
+        return actions
+
+    # CR 702.36 / 702.46: Cycling / Type cycling choice pending for the priority
+    # holder — offer the "cycling" action, gated to sorcery timing (same style as
+    # Equip: activate any time you could cast a sorcery). The pending choice is
+    # only ever queued during that window, so this keeps the gate explicit at the
+    # action layer. Cycling resolves from hand: pay cost, discard, draw N cards.
+    if (
+        gs.pending_cycling_choice
+        and gs.pending_cycling_choice.get("player") == player_name
+        and gs.active_player == player_name
+        and gs.step == Step.MAIN
+        and not gs.stack
+    ):
+        cycle = gs.pending_cycling_choice
+        card_name = cycle.get("card_name", "that card")
+        draw_count = int(cycle.get("draw_count", 1))
+        actions.append(LegalAction(
+            action_type="choice",
+            card_name="cycling",
+            description=f"Cycle {card_name} (pay {cycle.get('cost', '{1}')}, discard, draw {draw_count})",
+        ))
+        if not any(a.action_type == "pass" for a in actions):
+            actions.append(LegalAction(action_type="pass", description="Pass priority"))
+        return actions
+
+    # KW-27: Buyback (CR 702.27/702.28) choice pending for the priority holder —
+    # a sorcery with "Buyback {cost}" is mid-cast. The player must resolve the
+    # buyback decision (pay the additional cost or not) before the cast
+    # completes; there is NO pass, because the cast cannot be left dangling.
+    # Both outcomes complete the cast (with or without the buyback flag), so
+    # only the two choices are offered — mirroring the Ward gate (no pass).
+    if (
+        gs.pending_buyback_choice
+        and gs.pending_buyback_choice.get("player") == player_name
+        and gs.active_player == player_name
+        and gs.step == Step.MAIN
+        and not gs.stack
+    ):
+        bb = gs.pending_buyback_choice
+        card_name = bb.get("card_name", "that spell")
+        bb_cost = bb.get("buyback_cost", "")
+        actions.append(LegalAction(
+            action_type="choice",
+            card_name="buyback_pay",
+            description=f"Pay buyback {bb_cost} ({card_name} returns to your hand)",
+            valid_targets=[bb.get("card_id", "")],
+        ))
+        actions.append(LegalAction(
+            action_type="choice",
+            card_name="buyback_pass",
+            description=f"Don't pay buyback {bb_cost} ({card_name} goes to the graveyard)",
+            valid_targets=[bb.get("card_id", "")],
+        ))
+        return actions
+
+    # KW-39: Entwine (CR 702.39) choice pending for the priority holder —
+    # a modal spell with "Entwine {cost}" is mid-cast. The player must resolve
+    # the entwine decision (pay to choose all modes or not) before the cast
+    # completes; there is NO pass.
+    if (
+        gs.pending_entwine_choice
+        and gs.pending_entwine_choice.get("player") == player_name
+        and gs.active_player == player_name
+        and gs.step == Step.MAIN
+        and not gs.stack
+    ):
+        ent = gs.pending_entwine_choice
+        card_name = ent.get("card_name", "that spell")
+        ent_cost = ent.get("entwine_cost", "")
+        actions.append(LegalAction(
+            action_type="choice",
+            card_name="entwine_pay",
+            description=f"Pay entwine {ent_cost} ({card_name} — choose all modes)",
+            valid_targets=[ent.get("card_id", "")],
+        ))
+        actions.append(LegalAction(
+            action_type="choice",
+            card_name="entwine_pass",
+            description=f"Don't pay entwine {ent_cost} ({card_name} — choose one mode)",
+            valid_targets=[ent.get("card_id", "")],
+        ))
+        return actions
+
+    # Overload (CR 702.95) choice pending for the priority holder —
+    # a spell with "Overload {cost}" is mid-cast. The player must resolve
+    # the overload decision (pay alternative cost or not) before the cast
+    # completes; there is NO pass.
+    if (
+        gs.pending_overload_choice
+        and gs.pending_overload_choice.get("player") == player_name
+        and gs.active_player == player_name
+        and gs.step == Step.MAIN
+        and not gs.stack
+    ):
+        ol = gs.pending_overload_choice
+        card_name = ol.get("card_name", "that spell")
+        ol_cost = ol.get("overload_cost", "")
+        actions.append(LegalAction(
+            action_type="choice",
+            card_name="overload_pay",
+            description=f"Pay overload {ol_cost} ({card_name} — target becomes each)",
+            valid_targets=[ol.get("card_id", "")],
+        ))
+        actions.append(LegalAction(
+            action_type="choice",
+            card_name="overload_pass",
+            description=f"Don't pay overload {ol_cost} ({card_name} — pay base cost)",
+            valid_targets=[ol.get("card_id", "")],
+        ))
+        return actions
+
+    # Convoke (CR 702.43) choice pending for the priority holder —
+    # a spell with Convoke is mid-cast. The player must resolve convoke
+    # decision (use convoke to reduce cost or not) before the cast completes;
+    # there is NO pass.
+    if (
+        gs.pending_convoke_choice
+        and gs.pending_convoke_choice.get("player") == player_name
+        and gs.active_player == player_name
+        and gs.step == Step.MAIN
+        and not gs.stack
+    ):
+        conv = gs.pending_convoke_choice
+        card_name = conv.get("card_name", "that spell")
+        actions.append(LegalAction(
+            action_type="choice",
+            card_name="convoke_pay",
+            description=f"Use Convoke to reduce cost of {card_name}",
+            valid_targets=[conv.get("card_id", "")],
+        ))
+        actions.append(LegalAction(
+            action_type="choice",
+            card_name="convoke_pass",
+            description=f"Don't use Convoke for {card_name}",
+            valid_targets=[conv.get("card_id", "")],
+        ))
+        return actions
+
+    # Miracle (CR 702.93) choice pending for the priority holder —
+    # the card was drawn as first card this turn and has Miracle.
+    # Player may cast for miracle cost or pass (card remains in hand).
+    if (
+        gs.pending_miracle_choice
+        and gs.pending_miracle_choice.get("player") == player_name
+    ):
+        mi = gs.pending_miracle_choice
+        card_name = mi.get("card_name", "that card")
+        mi_cost = mi.get("miracle_cost", "")
+        actions.append(LegalAction(
+            action_type="choice",
+            card_name="miracle_cast",
+            description=f"Cast {card_name} for miracle cost {mi_cost}",
+            valid_targets=[mi.get("card_id", "")],
+        ))
+        actions.append(LegalAction(
+            action_type="choice",
+            card_name="miracle_pass",
+            description=f"Don't cast {card_name} for miracle (keep in hand)",
+            valid_targets=[mi.get("card_id", "")],
+        ))
+        return actions
+
     # Early-exit: ETB choice pending (034-etb-choices)
     if gs.pending_etb_choice and gs.pending_etb_choice.get("player") == player_name:
         etb = gs.pending_etb_choice
@@ -2415,10 +3407,24 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
     if gs.pending_scry_choice and gs.pending_scry_choice.get("player") == player_name:
         scry_cards = gs.pending_scry_choice.get("cards", [])
         card_ids = [c.get("id", c.get("name", "?")) if isinstance(c, dict) else c for c in scry_cards]
-        
+
         # Check if this is a reveal-and-choose effect (e.g., Sleight of Hand)
         effect_type = gs.pending_scry_choice.get("effect_type", "")
-        
+
+        # Regular Scry reorder (CR 701.20) — the player reorders the revealed cards
+        # in any order; the single legal action offers ``scry`` and the client sends
+        # the desired top->bottom ordering as req.selection (a list of card ids).
+        if effect_type == "scry":
+            actions.append(LegalAction(
+                action_type="choice",
+                description=f"Scry {len(scry_cards)}: reorder library (send top->bottom order)",
+                valid_targets=card_ids,
+                card_name="scry",
+            ))
+            if not any(a.action_type == "pass" for a in actions):
+                actions.append(LegalAction(action_type="pass", description="Pass priority"))
+            return actions
+
         if effect_type == "reveal_and_choose":
             # Player chooses one card to put into hand, rest go to bottom
             actions.append(LegalAction(
@@ -2527,21 +3533,29 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
         return actions
 
     if gs.pending_ward_payment and gs.pending_ward_payment.get("player") == player_name:
+        # Ward is MANDATORY (CR 702.145a): the ward controller must either pay
+        # or let the targeting spell be countered — "do nothing" (pass) is NOT
+        # a legal outcome, unlike optional ETB/crew choices. Offering pass here
+        # would let the spell resolve uncountered with pending_ward_payment
+        # still dangling, bypassing Ward for free.
         ward_cost = gs.pending_ward_payment.get("ward_cost", "")
         targeting_spell_id = gs.pending_ward_payment.get("targeting_spell_id", "")
+        # "ability" tag (CR 702.145a activated-ability case) vs the spell path.
+        ward_target_kind = (
+            "ability"
+            if gs.pending_ward_payment.get("targeting_type") == "ability"
+            else "spell"
+        )
         actions.append(LegalAction(
             action_type="choice",
             card_name="ward_pay",
-            description=f"Pay ward {ward_cost} (spell targeting your permanent continues)",
+            description=f"Pay ward {ward_cost} ({ward_target_kind} targeting your permanent continues)",
             valid_targets=[targeting_spell_id],
         ))
-        if not any(a.action_type == "pass" for a in actions):
-            actions.append(LegalAction(action_type="pass", description="Pass priority"))
-        return actions
         actions.append(LegalAction(
             action_type="choice",
             card_name="ward_counter",
-            description=f"Don't pay ward {ward_cost} (targeting spell is countered)",
+            description=f"Don't pay ward {ward_cost} (targeting {ward_target_kind} is countered)",
             valid_targets=[targeting_spell_id],
         ))
         return actions
@@ -2631,10 +3645,12 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
         description="Pass priority",
     ))
 
-    # Play land: active player, main phase, stack empty, one land per turn
+    # Play land: active player, main phase, stack empty, one land per turn.
+    # Fortifications are lands (CR 301.7) even when "land" isn't in the type line.
+    from mtg_engine.ability.keywords.fortify import Fortify
     if is_active and is_main and stack_empty and player.lands_played_this_turn < 1:
         for card in player.hand:
-            if "land" in card.type_line.lower():
+            if Fortify.is_land_card(card):
                 actions.append(LegalAction(
                     action_type="play_land",
                     card_id=card.id,
@@ -2895,6 +3911,21 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                         description=f"Cast {card.name} (delve)",
                     ))
 
+            # Evoke alternative cost (CR 702.41) — pay evoke cost instead of mana cost, sacrifice on ETB
+            from mtg_engine.engine.evoke import parse_evoke_cost as _parse_evoke_cost, has_evoke as _has_evoke
+            if "creature" in card.type_line.lower():
+                if _has_evoke(card.oracle_text) or "evoke" in oracle_lower:
+                    evoke_cost = _parse_evoke_cost(card.oracle_text or "")
+                    if evoke_cost and (can_pay_cost(player.mana_pool, evoke_cost) or can_pay_cost(_total_available_pool(), evoke_cost)):
+                        actions.append(LegalAction(
+                            action_type="cast",
+                            card_id=card.id,
+                            card_name=card.name,
+                            alternative_cost="evoke",
+                            mana_options=[{"mana_cost": evoke_cost}],
+                            description=f"Cast {card.name} (evoke {evoke_cost})",
+                        ))
+
             # Emerge: sacrifice a creature to reduce cost by sacrificed creature's CMC
             if "emerge" in kws_lower or "emerge" in oracle_lower:
                 for sac_creature in _untapped_creatures:
@@ -2996,6 +4027,30 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                     new_action_type="cast_foretold",
                     mana_options=[{"mana_cost": foretell_alt_cost}],
                     description=f"Cast {card.name} (foretold, {foretell_alt_cost})",
+                ))
+
+    # Morph turn face-up (CR 702.35) — instant-speed special action
+    from mtg_engine.engine.morph import parse_morph_cost as _parse_morph_cost, has_morph as _has_morph
+    for perm in gs.battlefield:
+        if perm.controller != player_name:
+            continue
+        if not getattr(perm.card, 'is_face_down', False):
+            continue
+        # The face-down permanent stores the real card data — check for morph
+        real_oracle = perm.card.oracle_text or ""
+        if _has_morph(real_oracle) or "morph" in real_oracle.lower():
+            morph_cost = _parse_morph_cost(real_oracle)
+            if not morph_cost:
+                # Fallback: standard morph cost is {3} for face-down creatures
+                morph_cost = "{3}"
+            if can_pay_cost(player.mana_pool, morph_cost):
+                actions.append(LegalAction(
+                    action_type="special",
+                    card_id=perm.id,
+                    card_name=perm.card.name or "Face-down creature",
+                    new_action_type="turn_face_up",
+                    mana_options=[{"mana_cost": morph_cost}],
+                    description=f"Turn {perm.card.name} face up (pay {morph_cost})",
                 ))
 
     # Mutate (US30) — creatures with mutate targeting non-Human creatures controlled by caster
@@ -3176,6 +4231,27 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                     description=f"Activate {perm.card.name}: {ab.raw_text}",
                 ))
             else:
+                # Fortify (CR 702.54a): only offer when there is a valid target
+                # land the player controls (excluding the source itself).
+                from mtg_engine.ability.keywords.fortify import Fortify
+                if _re.search(r"attach (?:this fortification )?to target land", ab.effect, _re.IGNORECASE):
+                    fortify_targets = [
+                        p.id for p in gs.battlefield
+                        if p.controller == player_name
+                        and p.id != perm.id
+                        and Fortify.is_land_card(p.card)
+                    ]
+                    if not fortify_targets:
+                        continue
+                    actions.append(LegalAction(
+                        action_type="activate",
+                        permanent_id=perm.id,
+                        card_name=perm.card.name,
+                        ability_index=idx,
+                        valid_targets=fortify_targets,
+                        description=f"Fortify {perm.card.name} onto target land ({ab.cost})",
+                    ))
+                    continue
                 actions.append(LegalAction(
                     action_type="activate",
                     permanent_id=perm.id,

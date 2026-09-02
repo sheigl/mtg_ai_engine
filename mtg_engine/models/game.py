@@ -74,6 +74,11 @@ class Card(BaseModel):
     # FMT-01: Format validation metadata
     rarity: Optional[str] = None       # "c", "u", "r", "m", "mythical", "special"
     set_code: Optional[str] = None     # e.g. "MOM", "ONE", "MH1"
+    # KW-Morph: face-down creature tracking (CR 702.36)
+    is_face_down: bool = False
+    face_down_power: Optional[str] = None      # Original power stored when cast face down
+    face_down_toughness: Optional[str] = None   # Original toughness stored when cast face down
+    face_down_type_line: Optional[str] = None   # Original type line stored when cast face down
 
 
 class ManaPool(BaseModel):
@@ -164,6 +169,9 @@ class StackObject(BaseModel):
     mutate_on_top: bool = True
     # SPL-02: Overload (CR 702.76)
     overload_paid: bool = False
+    # Triggered ability metadata for keyword resolution dispatch
+    trigger_type: Optional[str] = None   # "afterlife", "undying", "persist", etc.
+    trigger_data: dict = Field(default_factory=dict)  # Keyword-specific data (e.g. token count, P/T)
 
 
 class ExileStack(BaseModel):
@@ -234,6 +242,7 @@ class PendingTrigger(BaseModel):
     effect_description: str
     source_card_name: str
     is_optional: bool = False  # CR 603.3: "you may" triggers offer a choice
+    trigger_data: dict = Field(default_factory=dict)  # Keyword-specific data (e.g. count, power, toughness)
 
 
 class DamagePreventionEffect(BaseModel):
@@ -361,6 +370,10 @@ class GameState(BaseModel):
     spells_cast_this_turn: int = 0    # Reset each turn (Storm: total this turn by all players)
     spells_cast_this_turn_by_player: dict[str, int] = Field(default_factory=dict)  # per-player, for day/night
     spells_cast_last_turn: int = 0    # Snapshot of previous active player's spell count
+    # Miracle tracking (CR 702.93)
+    cards_drawn_this_turn: dict[str, int] = Field(default_factory=dict)
+    # Bloodthirst tracking (CR 702.22)
+    damage_dealt_this_turn: dict[str, int] = Field(default_factory=dict)
     # DNG-01: Day/Night cycle (CR 730)
     is_day: Optional[bool] = None  # None=neither, True=day, False=night
     # Extra turns queue (CR 500.7): LIFO — pop() gives next extra turn recipient
@@ -408,6 +421,36 @@ class GameState(BaseModel):
     # Format: {"player": str, "card_id": str, "card_name": str, "kicker_cost": str,
     #         "base_cost": str, "resolved": bool}
     pending_kicker_choice: Optional[dict] = None
+    # KW-27: Buyback choice (CR 702.27/702.28) — sorcery spells with "Buyback
+    # {cost}". Queued by BuybackKeyword.apply() when a HUMAN declares the cast
+    # (resolved=False, "paid" absent/False): the cast is deferred until the
+    # buyback_pay / buyback_pass choice handler re-drives it. For AI casters
+    # apply() auto-resolves (resolved=True, paid=True/False) and the cast
+    # proceeds immediately with that decision.
+    # Format: {"player": str, "card_id": str, "card_name": str,
+    #         "buyback_cost": str, "base_cost": str,
+    #         "targets": list[str], "mana_payment": dict[str, int],
+    #         "x_value": int, "modes_chosen": list[int],
+    #         "resolved": bool, "paid": bool}
+    pending_buyback_choice: Optional[dict] = None
+    # KW-39: Entwine choice (CR 702.39) — modal spell additional cost. Queued by
+    # EntwineKeyword.apply() when a HUMAN declares the cast (resolved=False):
+    # the cast is deferred until the entwine_pay / entwine_pass choice handler
+    # re-drives it. For AI casters apply() auto-resolves (resolved=True,
+    # paid=True/False) and the cast proceeds immediately with that decision.
+    # Format: {"player": str, "card_id": str, "card_name": str,
+    #         "entwine_cost": str, "base_cost": str, "num_modes": int,
+    #         "resolved": bool, "paid": bool}
+    pending_entwine_choice: Optional[dict] = None
+    # KW-... Overload choice (CR 702.95) — alternative cost. Queued by OverloadKeyword.apply() when a HUMAN declares the cast (resolved=False): the cast is deferred until the overload_pay / overload_pass choice handler re-drives it. For AI casters apply() auto-resolves (resolved=True, paid=True/False) and the cast proceeds immediately with that decision.
+    # Format: {"player": str, "card_id": str, "card_name": str,
+    #         "overload_cost": str, "base_cost": str,
+    #         "resolved": bool, "paid": bool}
+    pending_overload_choice: Optional[dict] = None
+    # KW-93: Miracle choice (CR 702.93)
+    # Format: {"player": str, "card_id": str, "card_name": str, "miracle_cost": str,
+    #         "resolved": bool}
+    pending_miracle_choice: Optional[dict] = None
     # KW-17: Flashback choice
     # Format: {"player": str, "card_id": str, "card_name": str, "flashback_cost": str,
     #         "resolved": bool}
@@ -434,6 +477,38 @@ class GameState(BaseModel):
     pending_dash_choice: Optional[dict] = None
     # KW-25: Dashed creatures tracking (perm_id -> owner_player)
     dashed_creatures: dict[str, str] = Field(default_factory=dict)
+    # CR 702.147: Crew pending choice for human players
+    # Format: {"player": str, "card_id": str, "permanent_id": str,
+    #         "card_name": str, "crew_value": int, "available_creatures": list[str],
+    #         "resolved": bool}
+    pending_crew_choice: Optional[dict] = None
+    # CR 702.147: Crewed vehicles tracking (perm_id -> crew value) so end-of-turn
+    # cleanup can revert them to non-vehicle artifacts (mirrors dashed_creatures).
+    crewed_vehicles: dict[str, int] = Field(default_factory=dict)
+    # CR 702.5: Equip pending choice for human players. Queued by Equip.apply()
+    # WITHOUT attaching; the human later picks which creature to equip via the
+    # "equip_confirm" choice handler (mirrors pending_crew_choice / crew pattern).
+    # Format: {"player": str, "card_id": str, "permanent_id": str,
+    #         "card_name": str, "equipment_cost": str,
+    #         "available_creatures": list[str], "resolved": bool}
+    pending_equip_choice: Optional[dict] = None
+    # KW-Cycle: Cycling / Type cycling (CR 702.36, CR 702.46) pending choice for
+    # human players. Queued by CyclingKeyword.apply() / TypeCyclingKeyword.apply()
+    # WITHOUT discarding/drawing; the human later resolves it via the "cycling"
+    # choice handler (mirrors pending_crew_choice / equip pattern). Resolves from
+    # the HAND: pay cost, discard this card, draw N cards (N=1 regular, N=card
+    # types for type-cycling).
+    # Format: {"player": str, "card_id": str, "card_name": str, "cost": str,
+    #         "draw_count": int, "resolved": bool}
+    pending_cycling_choice: Optional[dict] = None
+    # KW-43: Convoke choice (CR 702.43)
+    # Format: {"player": str, "card_id": str, "card_name": str, "base_cost": str,
+    #         "eligible_creatures": list[dict], "tapped_creature_ids": list[str],
+    #         "resolved": bool}
+    pending_convoke_choice: Optional[dict] = None
+    # KW-Evoke: Evoke sacrifice pending choice (CR 702.41)
+    # Format: {"player": str, "permanent_id": str, "card_name": str}
+    pending_evoke_sacrifice: Optional[dict] = None
     # Transcript for persistence (034-game-persistence)
     transcript_entries: list[dict] = Field(default_factory=list)
     # ZN-01: Exile stacks for grouped exile tracking (CR 402.1)

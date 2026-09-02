@@ -134,6 +134,114 @@ class SuspendKeyword(TriggeredKeyword):
         """Apply suspend (no-op without hand/exile context)."""
         return game_state
 
+    def remove_time_counter(self, game_state: "GameState", player_name: str) -> "GameState":
+        """Remove one time counter from all suspended cards of a player.
+
+        Called at the beginning of upkeep for each player. When a card's last
+        time counter is removed, it becomes available to cast (via from_suspended=True).
+
+        Pure transform: returns new GameState via model_copy.
+
+        Args:
+            game_state: Current game state.
+            player_name: Player whose suspended cards should have counters removed.
+
+        Returns:
+            New GameState with updated time counters and ready-to-cast flags.
+        """
+        # Find the target player first; if they have no suspended cards, return unchanged (no-op)
+        target_player = next((p for p in game_state.players if p.name == player_name), None)
+        if target_player is None or len(target_player.suspended_cards) == 0:
+            logger.info("Suspend: %s has no suspended cards to process", player_name)
+            return game_state
+
+        players = list(game_state.players)
+
+        for i, player in enumerate(players):
+            if player.name != player_name:
+                continue
+
+            new_suspended = []
+            cards_ready_to_cast = []
+
+            for card in player.suspended_cards:
+                # Parse time counter count from parse_status field
+                status = card.parse_status or ""
+                if status.startswith("suspended:"):
+                    try:
+                        remaining = int(status.split(":")[1])
+                        new_count = remaining - 1
+                        if new_count <= 0:
+                            # Last counter removed — card is ready to cast
+                            ready_card = card.model_copy(update={"parse_status": "suspend_ready"})
+                            cards_ready_to_cast.append(ready_card)
+                            logger.info("Suspend: %s has no time counters left, ready to cast", card.name)
+                        else:
+                            # Still has counters — keep suspended with updated count
+                            new_card = card.model_copy(update={"parse_status": f"suspended:{new_count}"})
+                            new_suspended.append(new_card)
+                            logger.info("Suspend: %s now has %d time counter(s)", card.name, new_count)
+                    except (ValueError, IndexError):
+                        # Malformed status — keep as is
+                        new_suspended.append(card)
+                else:
+                    # Check if it's a ready-to-cast card from previous turn
+                    if status == "suspend_ready":
+                        cards_ready_to_cast.append(card)
+                    else:
+                        new_suspended.append(card)
+
+            # Update player state with changes
+            update_fields = {"suspended_cards": new_suspended}
+            if cards_ready_to_cast:
+                marked_cards = []
+                for c in cards_ready_to_cast:
+                    marked_cards.append(c.model_copy(update={"parse_status": "suspend_ready"}))
+                update_fields["hand"] = list(player.hand) + marked_cards
+
+            players[i] = player.model_copy(update=update_fields)
+
+        return game_state.model_copy(update={"players": players})
+
+    def get_ready_cards(self, game_state: "GameState", player_name: str) -> list[dict]:
+        """Get cards that are ready to be cast via suspend (no time counters left).
+
+        Returns list of dicts with card info for legal actions display.
+        """
+        player = next((p for p in game_state.players if p.name == player_name), None)
+        if not player:
+            return []
+
+        ready = []
+        for card in player.hand:
+            if (card.parse_status or "") == "suspend_ready":
+                ready.append({
+                    "id": card.id,
+                    "name": card.name,
+                    "mana_cost": "",  # Cast without paying mana cost per CR 702.61d
+                    "original_mana_cost": card.mana_cost or "",
+                })
+
+        return ready
+
     def get_trigger_description(self) -> str:
         cost_str = self.cost or ""
         return f"Suspend {self.count}{cost_str}: Exile with {self.count} time counters, cast when last counter removed"
+
+
+# --- Module-level convenience functions ---
+
+def remove_time_counter(game_state: "GameState", player_name: str) -> "GameState":
+    """Remove one time counter from all suspended cards of a player.
+
+    Convenience wrapper around SuspendKeyword.remove_time_counter().
+    """
+    return SuspendKeyword().remove_time_counter(game_state, player_name)
+
+
+def get_ready_cards(game_state: "GameState", player_name: str) -> list[dict]:
+    """Get cards that are ready to be cast via suspend (no time counters left).
+
+    Convenience wrapper around SuspendKeyword.get_ready_cards().
+    """
+    return SuspendKeyword().get_ready_cards(game_state, player_name)

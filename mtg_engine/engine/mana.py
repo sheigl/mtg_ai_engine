@@ -514,11 +514,25 @@ def resolve_land_mana_ability(
     is_snow = any("snow" in s.lower() for s in (permanent.card.supertypes or []))
     sym_upper = produce_symbol.upper()
     if sym_upper in ("W", "U", "B", "R", "G", "C"):
-        player.mana_pool = add_mana(player.mana_pool, sym_upper, 1, is_snow=is_snow)
+        new_mana_pool = add_mana(player.mana_pool, sym_upper, 1, is_snow=is_snow)
+
+        # Pure transform: update player's mana pool
+        players = []
+        for p in game_state.players:
+            if p.name == controller_name:
+                players.append(p.model_copy(update={"mana_pool": new_mana_pool}))
+            else:
+                players.append(p)
+        game_state = game_state.model_copy(update={"players": players})
+
         logger.debug(
             "Land mana: %s added {%s} to %s's pool",
             permanent.card.name, sym_upper, controller_name,
         )
+
+        # Wire: Mana Production Trigger (CR 502.4)
+        from mtg_engine.engine.triggers import check_mana_production_triggers as _check_mana_prod
+        game_state = _check_mana_prod(game_state, permanent.id, controller_name, [sym_upper])
 
     return game_state
 
@@ -548,9 +562,23 @@ def apply_keyword_cost_reductions(
     cost = parse_mana_cost(base_cost)
     generic_reduction = 0
     
-    # CR 702.50: Convoke — tap creatures to reduce cost by {1} per creature tapped
+    # CR 702.43: Convoke — tap creatures to reduce cost by {1} or one mana of that creature's color
     if cast_request.convoke_creature_ids:
-        generic_reduction += len(cast_request.convoke_creature_ids)
+        for cid in cast_request.convoke_creature_ids:
+            perm = next((p for p in game_state.battlefield if p.id == cid), None)
+            if perm is None:
+                continue
+            colors = perm.card.colors or []
+            # Try to reduce a colored cost matching creature color
+            reduced = False
+            for color in colors:
+                if cost.get(color, 0) > 0:
+                    cost[color] -= 1
+                    reduced = True
+                    break
+            if not reduced:
+                # Reduce generic
+                generic_reduction += 1
     
     # CR 702.65: Delve — exile cards from graveyard to reduce generic cost by {1} per card
     if cast_request.delve_card_ids:

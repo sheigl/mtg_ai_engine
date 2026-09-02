@@ -17,7 +17,7 @@ docker run -d -p 27017:27017 --name mtg-mongo mongo:7
 
 Set the environment variable before starting the engine:
 ```bash
-export MONGODB_URL=mongodb://localhost:27017/mtg_training
+export MONGODB_URL=mongodb://server.home:27017/mtg_training
 ```
 
 ## Key Files to Create
@@ -65,7 +65,7 @@ mtg_engine/api/routers/
 
 ```bash
 # Start engine with MongoDB configured
-export MONGODB_URL=mongodb://localhost:27017/mtg_training
+export MONGODB_URL=mongodb://server.home:27017/mtg_training
 cd src && uvicorn mtg_engine.api.main:app --reload
 
 # Verify MongoDB connectivity
@@ -103,7 +103,7 @@ Direct MongoDB query (Python):
 ```python
 from motor.motor_asyncio import AsyncIOMotorClient
 
-client = AsyncIOMotorClient("mongodb://localhost:27017/mtg_training")
+client = AsyncIOMotorClient("mongodb://server.home:27017/mtg_training")
 db = client.mtg_training
 
 # Fetch all completed human-vs-AI games from today

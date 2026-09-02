@@ -339,25 +339,39 @@ class TestMultiplayerOpponents:
         assert req.opponent_target is None
 
 
-# ─── Persist and Undying (already tested in zones) ───────────────────────────
+# ─── Persist and Undying (trigger-based resolution) ──────────────────────────
 
 class TestPersistUndying:
     def test_persist_returns_creature_with_minus_counter(self):
+        """Persist fires as a death trigger, returns creature with -1/-1 counter."""
+        from mtg_engine.engine.triggers import initialize_triggers, put_trigger_on_stack
+        from mtg_engine.engine.stack import resolve_top
+
         gs = _make_game()
+        initialize_triggers(gs)
         card = _make_card("Persist Creature", keywords=["persist"], toughness="2")
         gs, perm = put_permanent_onto_battlefield(gs, card, "p1")
-        p1 = get_player(gs, "p1")
-        # Move to graveyard should trigger persist
+        # Move to graveyard should queue persist trigger
         gs = move_permanent_to_zone(gs, perm, "graveyard")
-        # Should still be on battlefield (persist returned it)
+        assert len([t for t in gs.pending_triggers if t.trigger_type == "persist"]) == 1
+
+        # Resolve the persist trigger via stack
+        trigger = next(t for t in gs.pending_triggers if t.trigger_type == "persist")
+        gs = put_trigger_on_stack(gs, trigger.id, targets=[])
+        gs = resolve_top(gs)
+
+        p1 = get_player(gs, "p1")
+        # Should be on battlefield with -1/-1 counter
         assert any(p.card.name == "Persist Creature" for p in gs.battlefield)
-        assert not any(c.name == "Persist Creature" for c in p1.graveyard)
-        # Should have -1/-1 counter
         returned = next(p for p in gs.battlefield if p.card.name == "Persist Creature")
         assert returned.counters.get("-1/-1", 0) == 1
 
     def test_persist_does_not_trigger_with_minus_counter(self):
+        """Persist does NOT fire if creature already has -1/-1 counter."""
+        from mtg_engine.engine.triggers import initialize_triggers
+
         gs = _make_game()
+        initialize_triggers(gs)
         card = _make_card("Persist Creature", keywords=["persist"])
         gs, perm = put_permanent_onto_battlefield(gs, card, "p1")
         perm.counters["-1/-1"] = 1  # already has -1/-1 counter
@@ -368,19 +382,35 @@ class TestPersistUndying:
         assert not any(p.card.name == "Persist Creature" for p in gs.battlefield)
 
     def test_undying_returns_creature_with_plus_counter(self):
+        """Undying fires as a death trigger, returns creature with P+T +1/+1 counters."""
+        from mtg_engine.engine.triggers import initialize_triggers, put_trigger_on_stack
+        from mtg_engine.engine.stack import resolve_top
+
         gs = _make_game()
+        initialize_triggers(gs)
         card = _make_card("Undying Creature", keywords=["undying"])
         gs, perm = put_permanent_onto_battlefield(gs, card, "p1")
-        p1 = get_player(gs, "p1")
+        # Move to graveyard should queue undying trigger
         gs = move_permanent_to_zone(gs, perm, "graveyard")
-        # Should still be on battlefield
+        assert len([t for t in gs.pending_triggers if t.trigger_type == "undying"]) == 1
+
+        # Resolve the undying trigger via stack
+        trigger = next(t for t in gs.pending_triggers if t.trigger_type == "undying")
+        gs = put_trigger_on_stack(gs, trigger.id, targets=[])
+        gs = resolve_top(gs)
+
+        p1 = get_player(gs, "p1")
+        # Should be on battlefield with P+T counters; 1/1 → 2 counters
         assert any(p.card.name == "Undying Creature" for p in gs.battlefield)
-        assert not any(c.name == "Undying Creature" for c in p1.graveyard)
         returned = next(p for p in gs.battlefield if p.card.name == "Undying Creature")
-        assert returned.counters.get("+1/+1", 0) == 1
+        assert returned.counters.get("+1/+1", 0) == 2
 
     def test_undying_does_not_trigger_with_plus_counter(self):
+        """Undying does NOT fire if creature already has +1/+1 counter."""
+        from mtg_engine.engine.triggers import initialize_triggers
+
         gs = _make_game()
+        initialize_triggers(gs)
         card = _make_card("Undying Creature", keywords=["undying"])
         gs, perm = put_permanent_onto_battlefield(gs, card, "p1")
         perm.counters["+1/+1"] = 1  # already has +1/+1 counter

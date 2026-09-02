@@ -1,8 +1,7 @@
 """
 DNG-01: Day/Night Cycle tests.
 """
-import pytest
-from mtg_engine.models.game import GameState, PlayerState, Card, PendingTrigger
+from mtg_engine.models.game import GameState, PlayerState, Card
 from mtg_engine.engine.daynight import (
     check_daynight_transition,
     set_day,
@@ -73,15 +72,21 @@ class TestDayNightTransitions:
         assert is_daytime(gs) is None
         assert len(gs.pending_triggers) == triggers_before
 
-    def test_day_to_night_adds_trigger(self):
+    def test_day_to_night_no_system_trigger(self):
+        """Day→night transition no longer adds a system-level trigger to pending_triggers."""
         gs = _gs(is_day=True, prev_casts=0)
-        gs = check_daynight_transition(gs)
-        assert any("day_to_night" in t.trigger_type for t in gs.pending_triggers)
-
-    def test_night_to_day_adds_trigger(self):
-        gs = _gs(is_day=False, prev_casts=2)
+        triggers_before = len(gs.pending_triggers)
         new_gs = check_daynight_transition(gs)
-        assert any("night_to_day" in t.trigger_type for t in new_gs.pending_triggers)
+        assert is_daytime(new_gs) is False  # Transition happened
+        assert len(new_gs.pending_triggers) == triggers_before  # No trigger added
+
+    def test_night_to_day_no_system_trigger(self):
+        """Night→day transition no longer adds a system-level trigger to pending_triggers."""
+        gs = _gs(is_day=False, prev_casts=2)
+        triggers_before = len(gs.pending_triggers)
+        new_gs = check_daynight_transition(gs)
+        assert is_daytime(new_gs) is True  # Transition happened
+        assert len(new_gs.pending_triggers) == triggers_before  # No trigger added
 
     def test_no_transition_returns_same_object(self):
         """When no transition occurs, the same GameState object is returned."""
@@ -96,20 +101,10 @@ class TestSetExplicit:
         new_gs = set_day(gs)
         assert is_daytime(new_gs) is True
 
-    def test_set_day_adds_trigger(self):
-        gs = _gs(is_day=None)
-        new_gs = set_day(gs)
-        assert any("set_to_day" in t.trigger_type for t in new_gs.pending_triggers)
-
     def test_set_night(self):
         gs = _gs(is_day=None)
         new_gs = set_night(gs)
         assert is_daytime(new_gs) is False
-
-    def test_set_night_adds_trigger(self):
-        gs = _gs(is_day=None)
-        new_gs = set_night(gs)
-        assert any("set_to_night" in t.trigger_type for t in new_gs.pending_triggers)
 
     def test_set_day_does_not_mutate_original(self):
         """set_day returns a new GameState, original unchanged."""

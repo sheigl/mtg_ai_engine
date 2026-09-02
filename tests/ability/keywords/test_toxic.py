@@ -84,14 +84,31 @@ def test_get_toxic_value_default():
     assert kw.get_toxic_value(perm) == 3
 
 
+def _player(gs: GameState, name: str) -> PlayerState:
+    return next(p for p in gs.players if p.name == name)
+
+
+def _with_poison(gs: GameState, name: str, count: int) -> GameState:
+    """Set a player's poison counters via a pure transform (new state)."""
+    return gs.model_copy(update={
+        "players": [
+            p.model_copy(update={"poison_counters": count}) if p.name == name else p
+            for p in gs.players
+        ]
+    })
+
+
 def test_apply_toxic_gives_poison_counters():
-    """Toxic gives poison counters to damaged player."""
+    """Toxic gives poison counters to damaged player (pure transform: read the returned state)."""
     gs, perm, p2 = _make_game_with_toxic(toxic_value=3)
     kw = ToxicKeyword(value=3)
 
     assert p2.poison_counters == 0
-    gs = kw.apply_toxic(gs, perm, "p2")
-    assert p2.poison_counters == 3
+    new_gs = kw.apply_toxic(gs, perm, "p2")
+    assert new_gs is not gs
+    assert _player(new_gs, "p2").poison_counters == 3
+    # Original player object must be unmutated (Q4 pure transform)
+    assert p2.poison_counters == 0
 
 
 def test_apply_toxic_independent_of_damage_amount():
@@ -99,28 +116,30 @@ def test_apply_toxic_independent_of_damage_amount():
     gs, perm, p2 = _make_game_with_toxic(toxic_value=2)
     kw = ToxicKeyword(value=2)
 
-    gs = kw.apply_toxic(gs, perm, "p2")
-    assert p2.poison_counters == 2  # Not based on damage, just toxic value
+    new_gs = kw.apply_toxic(gs, perm, "p2")
+    assert _player(new_gs, "p2").poison_counters == 2  # Not based on damage, just toxic value
+    assert p2.poison_counters == 0
 
 
 def test_apply_toxic_accumulates():
     """Toxic poison counters accumulate."""
-    gs, perm, p2 = _make_game_with_toxic(toxic_value=4)
-    p2.poison_counters = 3
+    gs, perm, _ = _make_game_with_toxic(toxic_value=4)
+    gs = _with_poison(gs, "p2", 3)
     kw = ToxicKeyword(value=4)
 
-    gs = kw.apply_toxic(gs, perm, "p2")
-    assert p2.poison_counters == 7
+    new_gs = kw.apply_toxic(gs, perm, "p2")
+    assert _player(new_gs, "p2").poison_counters == 7
 
 
 def test_apply_toxic_lethal_poison():
-    """Toxic tracks lethal poison threshold (10+)."""
-    gs, perm, p2 = _make_game_with_toxic(toxic_value=1)
-    p2.poison_counters = 9
+    """Toxic raises counters to the lethal threshold (10+) — the SBA (CR 704.5c)
+    handles the actual game loss, not apply_toxic."""
+    gs, perm, _ = _make_game_with_toxic(toxic_value=1)
+    gs = _with_poison(gs, "p2", 9)
     kw = ToxicKeyword(value=1)
 
-    gs = kw.apply_toxic(gs, perm, "p2")
-    assert p2.poison_counters == 10
+    new_gs = kw.apply_toxic(gs, perm, "p2")
+    assert _player(new_gs, "p2").poison_counters == 10
 
 
 def test_from_oracle():

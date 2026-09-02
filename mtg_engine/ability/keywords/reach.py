@@ -1,4 +1,4 @@
-"""Reach keyword (CR 702.165).
+"""Reach keyword (CR 702.17).
 
 Reach is a static ability that modifies blocking rules:
 - A creature with reach can block creatures with flying.
@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 
 
 class Reach(PassiveKeyword):
-    """Reach keyword ability (CR 702.165).
+    """Reach keyword ability (CR 702.17).
 
-    CR 702.165b: Creatures with flying or reach can block creatures with flying,
+    CR 702.17b: Creatures with flying or reach can block creatures with flying,
     ignoring the normal restriction that only flying creatures can block flying creatures.
     """
 
@@ -43,7 +43,7 @@ class Reach(PassiveKeyword):
         """Check if a blocker can block a flying creature.
 
         A creature can block flying if it has flying or reach.
-        CR 702.9b, CR 702.165b.
+        CR 702.9b, CR 702.17b.
 
         Args:
             blocker_keywords: Keywords of the blocking creature.
@@ -58,7 +58,7 @@ class Reach(PassiveKeyword):
 def has_reach(game_state: GameState, perm_id: str) -> bool:
     """Check if a permanent on the battlefield has reach.
 
-    Query helper for combat blocker assignment (CR 702.165). A creature with
+    Query helper for combat blocker assignment (CR 702.17). A creature with
     reach can block creatures with flying, ignoring the normal restriction
     that only flying creatures can block flying creatures.
 
@@ -81,7 +81,7 @@ def has_reach(game_state: GameState, perm_id: str) -> bool:
 def can_block_flying(game_state: GameState, blocker_perm_id: str) -> bool:
     """Check if a permanent can block flying creatures.
 
-    CR 702.9b / CR 702.165b: A creature can block flying only if it has
+    CR 702.9b / CR 702.17b: A creature can block flying only if it has
     flying or reach. This helper checks the battlefield for the blocker and
     returns whether it satisfies that requirement.
 

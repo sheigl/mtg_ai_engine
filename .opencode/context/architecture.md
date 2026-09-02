@@ -1,274 +1,269 @@
-# Architecture Notes
+# mtg_ai_engine Architecture Details
 
-## Deck Building AI (APP-02)
+## Core Engine Modules
+- `mtg_engine/engine/zones.py` — Zone management, `put_permanent_onto_battlefield`, `_detect_etb_choice`, `_resolve_etb_choice_with_ai`, `draw_card()` (pure transform), `_sacrifice_permanent()` (centralized helper with trigger wiring)
+- `mtg_engine/engine/stack.py` — Spell resolution, effect application, trigger dispatch (`resolve_top()`), pure transform helpers (`_update_player_life`, `_update_battlefield`, etc.), `_apply_equip()`, `_draw_cards()` (pure transform)
+- `mtg_engine/engine/triggers.py` — Trigger queuing system, zone-change listeners, `_queue_death_triggers()` for afterlife/undying/persist
+- `mtg_engine/engine/turn_manager.py` — Phase/step advancement, upkeep/end-step hooks (suspend time counters, evoke sacrifice)
+- `mtg_engine/engine/combat/core.py` — Combat declaration and damage assignment
+- `mtg_engine/models/game.py` — Pydantic models: GameState, Card, Permanent, PlayerState, StackObject, PendingTrigger, etc.
+- `mtg_engine/api/routers/game.py` — FastAPI endpoints: game lifecycle, actions, choices, legal actions
 
-### Pipeline Architecture
-The deck builder is a **stateless, pure-function pipeline** that takes a card pool and produces an optimized deck. No game state or database interaction — all logic is deterministic given the same inputs.
+## Pure Transform Rules (Enforced 2026-07-24)
 
-**Four-stage pipeline:**
-1. **Filter**: Remove banned cards (format-specific), deduplicate for singleton formats, enforce Commander color identity constraints
-2. **Score**: Composite score = `baseline_quality × strategy_multiplier × cmc_curve_bonus` using existing `estimate_card_quality()` from `card_eval.py`
-3. **Select**: Sort by score descending, greedily pick top N respecting format constraints (deck size minimums, max copies per card), fill sideboard to 15 for non-Commander formats
-4. **Validate**: Run FMT-01's `validate_deck()` on constructed deck entries
+### Critical: All engine functions MUST return new GameState via model_copy
+- **NEVER mutate** `player.library`, `player.hand`, `player.graveyard`, `game_state.battlefield` directly
+- Use slice-based extraction for list operations: `card = player.library[0]; new_lib = list(player.library[1:])`
+- **ALWAYS capture return values**: `gs = draw_card(gs, player)` — ignoring returns discards all changes
+- Functions that call other pure transforms must propagate the returned GameState up the chain
 
-### Strategy System
-Strategy weights table maps strategy → category → multiplier:
-- **Aggro**: favors low-CMC creatures (1.5x), ramp (1.2x)
-- **Control**: favors removal/counterspells (1.5x each), board wipes (1.4x), draw (1.3x)
-- **Midrange**: balanced across categories, slight preference for mid-CMC creatures and draw
-- **Combo**: favors high-CMC creatures (1.4x), draw (1.5x), ramp (1.3x)
+### Common Anti-Patterns (Fixed)
+1. `player.library.pop(0)` → mutates original list; use slice instead
+2. `_execute_loyalty_effect(gs, ...)` returning `None` → discards all nested changes; must return `GameState`
+3. Stale player references in tests: `alice = gs.players[0]; gs = foo(gs); assert alice.hand` → check `gs.players[0].hand` instead
 
-CMC curve bonuses provide additional multipliers based on card CMC ranges per strategy.
+## Keyword Module Architecture (Sprint 7 P0)
 
-### Determinism
-Tie-breaking uses `random.Random(seed)` where seed is derived from SHA-256 hash of `(format + strategy + sorted card pool names)` or a user-provided seed. This ensures reproducible results for the same inputs.
-
-### Format Handling
-- **Singleton formats** (Legacy/Vintage/Commander/Brawl): max 1 copy per card name in both filter and selection stages; basic lands exempt from dedup (CR 905.2)
-- **Non-singleton formats**: allow up to 4 copies, duplicates kept through filter stage for scoring
-- **Pauper**: only common-rarity cards pass the filter stage (CR 109.5)
-- **Commander**: color identity filtering during filter stage via `get_color_identity()` (derives from mana cost/oracle text); commanders locked into deck first during select stage; no sideboard
-- **Brawl**: uses 60-card minimum (not 100), singleton rules apply, no sideboard
-
-### Land Balancing
-The selection phase reserves ~24% of deck slots for lands: it counts available land copies in the pool before greedy selection, then stops adding non-land cards once `greedy_target = deck_min - land_reserve` is reached. A post-greedy pass fills remaining slots with highest-scoring lands to ensure a playable mana base.
-
-### API Layer
-The router converts request Pydantic models (`CardPoolEntry`) to `Card` model objects, calls the engine pipeline, then converts results back to response models. The endpoint is mounted at `/ai/deck/build`.
-
-## Card Search (APP-01)
-
-### Query Strategy
-The card search uses SQLite's built-in JSON functions to filter on the `data_json` blob column without requiring schema migrations. This keeps the cache format simple while enabling rich filtering.
-
-**Two-query pagination pattern:**
-1. `SELECT COUNT(*) FROM cards WHERE <filters>` — for accurate total count
-2. `SELECT data_json FROM cards WHERE <filters> ORDER BY ... LIMIT ? OFFSET ?` — for page results
-
-### Filter Implementation
-All filters combine with AND logic using parameterized queries:
-- Free-text (`q`): `LOWER(name) LIKE '%' || LOWER(?) || '%' OR LOWER(COALESCE(json_extract(data_json, '$.oracle_text'), '')) LIKE '%' || LOWER(?) || '%'`
-- Type: `json_extract(data_json, '$.type_line') LIKE '%?%'`
-- Colors (AND): For each color, `json_extract(data_json, '$.colors') LIKE '%"W"%'` — card must contain ALL specified colors
-- CMC range: `CAST(json_extract(data_json, '$.cmc') AS REAL) >= ?` / `<= ?`
-- Mana cost: exact match on `json_extract(data_json, '$.mana_cost') = ?`
-- Keyword: case-insensitive quoted keyword in JSON array `LOWER(json_extract(data_json, '$.keywords')) LIKE '%"keyword"%'`
-- Rarity: case-insensitive equality
-- Set code: exact match
-
-### API Layer
-The router uses a singleton ScryfallClient (lazy-initialized) to share the SQLite connection across requests. The `_bad()` helper returns structured error responses with `error_code` for client-side handling.
-
-FastAPI's built-in query parameter validation handles page/per_page bounds (`ge=1`, `le=100`). Invalid sort_by/sort_order values are caught by the engine layer and returned as HTTP 400.
-
-## Game Replay (APP-03)
-
-### Stateless Design
-The replay system is entirely stateless — no server-side session tracking. Clients pass `from_event_seq` to indicate their current position, and the engine reconstructs board state from scratch for each request. This avoids session management complexity and scales trivially.
-
-### Two-Tier Board State Reconstruction
-Board state at any event position uses a hybrid approach:
-
-1. **Snapshot anchors**: The existing `SnapshotRecorder` captures full serialized `GameState` objects at every priority grant. These are stored in the `GameExportStore.snapshots`. When reconstructing board state at seq N, find the nearest snapshot at or before seq N and deserialize it as the starting point.
-2. **Incremental replay**: Apply transcript events between the snapshot anchor and target seq to update the reconstructed state. Only certain event types affect board state: `zone_change`, `life_change`, `damage`, `draw`, `cast`/`resolve`.
-
-If no snapshot exists before the target (very early game), start from minimal initial state (20 life each, empty battlefield) and replay all events from seq 1.
-
-### Data Flow
+### Directory Structure
 ```
-Client request → API router → get_export_store(game_id) → replay_engine functions → structured dict response
+mtg_engine/ability/keywords/
+├── base.py              # KeywordAbility ABC + PassiveKeyword, TriggeredKeyword, CostKeyword subclasses
+├── afterlife.py         # AfterlifeKeyword — death trigger resolution
+├── undying.py           # UndyingKeyword — death trigger resolution  
+├── persist.py           # PersistKeyword — death trigger resolution
+├── evoke.py             # EvokeKeyword — ETB sacrifice queue/resolve
+├── morph.py             # MorphKeyword — face-up turn logic
+├── suspend.py           # SuspendKeyword — time counter management
+├── fortify.py           # Fortify(CostKeyword) — CR 702.54a Fortification attach
+└── ... (other keywords)
 ```
 
-The engine module (`mtg_engine/export/replay_engine.py`) operates on `GameExportStore` objects (transcript + snapshots). It has no FastAPI dependencies — pure functions returning dicts. The API router wraps these with HTTP semantics, Pydantic models, and error handling.
+### Keyword Module Patterns
 
-### Endpoint Structure
-- `GET /replay/{game_id}/info` — Metadata: total_events, turns, winner, loser, format
-- `GET /replay/{game_id}/events?page=&per_page=` — Paginated transcript entries with has_next/has_prev
-- `POST /replay/{game_id}/step` — Step forward/backward one event; returns event + reconstructed board state
-- `GET /replay/{game_id}/timeline` — Condensed timeline grouped by turn/phase with event counts
+#### Triggered Keywords (Afterlife, Undying, Persist)
+- **Queuing**: Handled by `triggers.py:_queue_death_triggers()` via zone-change listeners. Creates `PendingTrigger` objects using keyword module's `create_trigger()` method.
+- **Stack dispatch**: `stack.py:resolve_top()` checks `stack_obj.trigger_type` and delegates to keyword module's `resolve_trigger(gs, stack_obj)` function.
+- **Resolution**: Keyword module's `resolve_trigger()` performs the effect (token creation, graveyard→battlefield return). Pure transform via `model_copy`.
 
-### seq=0 Convention
-Event sequence 0 means "before game starts." Forward from 0 yields event seq 1. Backward from 0 returns HTTP 400 (can't go before the beginning). Board state at seq 0 shows initial conditions (20 life, starting hands if snapshots exist).
-
-### Lossy Reconstruction Limitations
-Transcript events don't capture full state — they record what happened but not everything about the board. Hand card identities are unknown (only hand sizes are tracked), and stack contents are approximate. The API documents this limitation; snapshot anchors provide accurate states at priority grants, while incremental replay between snapshots provides reasonable approximations for intermediate steps.
-
-## WebSocket Spectator (APP-04)
-
-### Pub/Sub Architecture
-The spectator system is a pure API-layer concern — no engine code modifications required beyond adding `unregister_listener()` to `TranscriptRecorder`. It uses the existing listener pattern from `TranscriptRecorder`, `SnapshotRecorder`, and `DebugLogRecorder` to tap into game events in real-time.
-
-**Per-connection isolation**: Each WebSocket client gets its own `asyncio.Queue[dict]` (maxsize=256) and dedicated listener callback registered on the game's `TranscriptRecorder`. This isolates slow clients from fast ones — a backlogged queue for one spectator doesn't block event delivery to others.
-
-### Data Flow
-```
-Game Event (cast, damage, phase_change, etc.)
-    │
-    ▼
-TranscriptRecorder._entry(event_type, ...)
-    │
-    ▼
-TranscriptRecorder._notify_listeners(entry)  ← iterates all registered listeners
-    │
-    ├──► Listener A → queue_A.put_nowait(event_dict) ─┐
-    ├──► Listener B → queue_B.put_nowait(event_dict) ─┼─ Fan-out to all spectators
-    └──► Listener C → queue_C.put_nowait(event_dict) ─┘
-                            │
-                            ▼
-                  WebSocket send loop (per connection):
-                    await asyncio.wait_for(queue.get(), timeout=1.0)
-                    ws.send_json(msg)
-```
-
-### Sync→Async Bridging
-Listener callbacks run synchronously (called from `_notify_listeners` which iterates the listeners list). They use `queue.put_nowait()` to push events into an async queue, decoupling the sync engine thread from the async WebSocket send loop. The main event loop drains the queue with `await asyncio.wait_for(queue.get(), timeout=1.0)`. Never call `websocket.send_json()` directly from a listener callback — it's async and would deadlock or require `asyncio.run_coroutine_threadsafe()`.
-
-### Connection Lifecycle
-1. **Validate**: Check game exists and is active via `GameManager.get(game_id)`. Reject with code 4004 if not found or completed (close before accept).
-2. **Setup**: Create per-connection queue, register listener on TranscriptRecorder, add to `_spectators` registry as `(ws, queue, listener)` tuple.
-3. **Initial state**: Send `{ type: "initial_state", data: <GameState.model_dump(mode="json")>, timestamp }` immediately after accept.
-4. **Event loop**: Drain queue (1s timeout) → send JSON → check game-over via GameManager → repeat. On idle timeout, also check for game deletion or completion.
-5. **Cleanup** (finally block): Unregister listener, remove from registry by queue identity, delete empty game entries.
-
-### Registry Structure
-Module-level `_spectators: dict[str, list[tuple[WebSocket, asyncio.Queue, Any]]]` in `mtg_engine/api/routers/spectate.py`. Uses list (not set) because dataclass instances aren't hashable. Cleanup uses identity-based matching (`s[1] is not queue`) to find and remove the correct tuple.
-
-### Game-Over Detection
-After each event and on idle timeout, the loop checks `GameManager.get(game_id).is_game_over`. If true, sends `{ type: "game_end", data: {winner, loser, reason}, timestamp }` and closes with code 1000. If game was deleted (KeyError), sends similar message with `reason: "game_deleted"`.
-
-### No Heartbeat Task
-Initial design included a background heartbeat task sending periodic ping/pong JSON messages. This was removed because `_heartbeat()` called `ws.receive_json()` competing with the main event loop for incoming messages, causing deadlocks in TestClient scenarios. The simplified single-receive-path approach is more reliable and sufficient for current use cases.
-
-### Code Review Fixes
-- **Game-over detection** (`_check_game_over_and_notify`): replaced dead function with real implementation — checks `is_game_over`, sends game_end notification, closes connection. Prevents orphaned connections after game ends.
-- **Exception handling**: added `(WebSocketDisconnect, OSError, RuntimeError)` around send operations to prevent orphaned listeners on broken pipes.
-- **Typed listeners**: replaced `Any` with `ListenerType = Callable[[TranscriptEntry], None]`.
-- **Logging**: added `logger.info("Spectator connected/disconnected: game=%s")` lifecycle logging.
-- **Constants**: defined `_SPECTATOR_QUEUE_MAX = 256` and `_IDLE_CHECK_INTERVAL_S = 1.0`.
-
-### Endpoint
-- `WebSocket /ws/game/{game_id}` — Real-time spectator feed. Read-only; no game actions accepted via this endpoint. Mounted in `main.py` alongside existing REST routers.
-
-## Test Results
-- All 16 spectate tests pass, all 2553 regression tests pass (3 skipped, 13 xfailed), 0 regressions
-
-## Draft / Sealed Simulation (APP-05)
-
-### Session Architecture
-The draft system uses an in-memory session store (`_draft_sessions: dict[str, DraftSession]`) that mirrors the `GameManager` singleton pattern but is scoped to draft operations only. Each session tracks player state, pack distribution, pick order, and results independently of any live game state.
-
-**Session lifecycle:**
-1. **PICKING**: Active picks in progress. Human players submit picks via API; bot players auto-pick using scoring logic.
-2. **BUILDING**: All picks complete. APP-02's `build_deck()` is called for each player's drafted pool.
-3. **COMPLETE**: Results ready. Clients can retrieve final decklists, sideboards, and draft statistics.
-
-### Pack Generation Algorithm
-Packs are generated from Scryfall set data via the SQLite cache:
-
-1. Fetch all cards with matching `set_code` using `ScryfallClient.search_cards(set_code=..., per_page=100)`
-2. If fewer than 50 cards found (set not loaded), fall back to randomized format-legal pool from entire cache
-3. Apply rarity-weighted sampling: common ~80%, uncommon ~15%, rare ~4.5%, mythic ~0.5%
-4. Deduplicate by name within each pack (standard limited rules)
-5. Return exactly 15 cards per pack
-
-### Draft Pick Mechanics
-**Standard Limited passing:**
-- Odd rounds (1, 3, 5...): Pass left — pick order is `[0, 1, 2, ..., N-1]`
-- Even rounds (2, 4, 6...): Pass right — pick order is `[N-1, N-2, ..., 1, 0]`
-
-Each round, every player picks exactly 1 card from the pack currently in front of them. After all players pick, packs rotate according to passing direction for the next round.
-
-**Human-in-the-loop:** If `human_player_name` is provided during session creation, that player's turns wait for an API call (`POST /ai/draft/{id}/pick`). Bot players auto-pick immediately when their turn arrives.
-
-### Bot Auto-Pick Scoring
-Bots score each available card using a composite of:
-1. **Base quality**: `estimate_card_quality()` from `card_eval.py` (0-10 range)
-2. **Strategy multiplier**: From `STRATEGY_WEIGHTS` in `deck_builder.py`, applied based on player's strategy preference
-3. **Color synergy bonus**: +1.0 per matching color in already-drafted cards' color identity
-4. **CMC curve fit**: Bonus if card's CMC fills a gap in the drafted pool's curve (e.g., early game needs low-CMC, late game needs high-CMC)
-
-Bot selects the highest-scoring card from the available pack. Tie-breaking uses `random.Random(seed)` for determinism.
-
-### Sealed Mode
-Sealed mode is simpler — no pick orchestration needed:
-1. Generate one 15-card pack per player (same algorithm as draft packs)
-2. Immediately call APP-02's `build_deck()` for each player's pool
-3. Return results with pools, decks, and sideboards
-
-### Data Flow
-```
-Client request → API router → DraftSession engine functions → structured dict response
-```
-
-The engine module (`mtg_engine/ai/draft.py`) operates on `DraftSession` objects (dataclasses). It has no FastAPI dependencies — pure functions returning session state. The API router wraps these with HTTP semantics, Pydantic models, and error handling.
-
-### Endpoint Structure
-- `POST /ai/draft/start` — Create draft session; returns session_id and initial state
-- `GET /ai/draft/{id}/state` — Current round, pick order, available cards, player draft states
-- `POST /ai/draft/{id}/pick` — Human-in-the-loop pick; validates card is in available pack
-- `GET /ai/draft/{id}/results` — Final results after all picks done (decks, sideboards, stats)
-- `POST /ai/sealed/start` — Create sealed session; returns immediate pools + decks
-
-### Memory Management
-Sessions are stored in a module-level dict with no TTL-based cleanup for MVP. Process restart clears all sessions. Future enhancement: add `_cleanup_expired_sessions()` helper that discards sessions older than 1 hour, called periodically or on new session creation.
-
-### Integration Points
-- **APP-02 Deck Builder**: Post-draft deck construction delegates to `build_deck(card_pool, format_name, strategy, seed)` — no duplication of Filter→Score→Select→Validate pipeline
-- **Scryfall Client**: Pack generation uses `search_cards(set_code=...)` from SQLite cache; falls back to format-legal pool if set not loaded
-- **Card Evaluation**: Bot auto-pick reuses `estimate_card_quality()` and `STRATEGY_WEIGHTS` from existing modules
-
-## Player Stats / ELO (APP-06)
-
-### Persistence Architecture
-Player stats are stored in MongoDB collection `player_stats` with two indexes: unique on `player_name` and descending on `elo`. This is the first feature to require MongoDB — all other features work without it.
-
-**Data model:**
-```json
-{
-  "player_name": "Alice",
-  "elo": 1250,
-  "wins": 6,
-  "losses": 4,
-  "formats": {
-    "standard": {"wins": 3, "losses": 2},
-    "commander": {"wins": 3, "losses": 2}
-  },
-  "matchups": {
-    "Bob": {"opponent": "Bob", "wins": 4, "losses": 1},
-    "Charlie": {"opponent": "Charlie", "wins": 2, "losses": 3}
-  },
-  "updated_at": "2026-07-15T..."
-}
-```
-
-### ELO Calculation
-Standard ELO formula with K=32:
 ```python
-expected = 1 / (1 + 10 ** ((opponent_elo - current_elo) / 400))
-new_elo = current_elo + K * (actual_score - expected)
-# actual_score: 1.0 for win, 0.0 for loss
+# Pattern: Triggered keyword resolution in stack.py
+trigger_type = getattr(stack_obj, "trigger_type", None)
+if trigger_type == "afterlife":
+    from mtg_engine.ability.keywords.afterlife import resolve_trigger as _resolve_afterlife
+    return _resolve_afterlife(game_state, stack_obj)
+
+# Pattern: Module-level convenience function in afterlife.py
+def resolve_trigger(game_state: GameState, stack_obj: StackObject) -> GameState:
+    trigger_data = getattr(stack_obj, "trigger_data", {}) or {}
+    count = trigger_data.get("count", 1)
+    kw = AfterlifeKeyword(count=count)
+    return kw.resolve_trigger(game_state, stack_obj.controller, count)
 ```
 
-### Game Completion Hook
-Stats are updated automatically when a game is deleted via `DELETE /game/{game_id}`. The flow:
+#### Queue/Resolve Keywords (Evoke)
+- **Queue**: Called from `stack.py` after ETB placement when spell was cast via alternative cost. Sets `GameState.pending_<keyword>_sacrifice`.
+- **Resolve**: Called from `turn_manager.py` at end step. Executes the effect and clears pending state.
+- **Module-level wrappers** in both keyword module AND engine wrapper file for backward compatibility.
 
-1. **Sync handler** (`delete_game()` in `game.py`): Removes game from GameManager, extracts winner/loser/format from final GameState
-2. **Async bridge**: Calls `asyncio.run_coroutine_threadsafe(update_stats_for_game_completion(...), loop)` to run MongoDB operations on the event loop
-3. **Stats update** (`update_stats_for_game_completion()` in `player_stats.py`): Fetches both players' stats, calls pure `update_player_stats()`, writes back via MongoDB upserts
+```python
+# Pattern: Evoke queue/resolve in keyword module
+def apply(self, game_state, permanent=None, mode="queue", **kwargs) -> GameState:
+    if mode == "queue":
+        return self._queue_sacrifice(game_state, permanent, kwargs)
+    elif mode == "resolve":
+        return self._resolve_sacrifice(game_state)
 
-If MongoDB is not configured, stats updates are silently skipped (logged at debug level). If either player has no existing profile, an auto-created profile with elo=1200 is used.
+# Pattern: Engine wrapper file (engine/evoke.py) — thin delegate
+def queue_evoke_sacrifice(gs, perm_id, player_name, card_name) -> GameState:
+    from mtg_engine.ability.keywords.evoke import queue_sacrifice as _qs
+    return _qs(gs, perm_id, player_name, card_name)
+```
 
-### API Endpoints
-- **`GET /stats/player/{player_name}`** — Returns full player stats including win_rate and total_games computed fields
-- **`POST /stats/player/{player_name}`** — Idempotent profile creation; returns existing stats if already present, creates with elo=1200 if not
-- **`GET /stats/player/{player_name}/matchups`** — Per-opponent breakdown sorted by most games played
-- **`GET /stats/leaderboard?format=&limit=10`** — Top players by ELO descending; optional format filter uses aggregation pipeline to project per-format records
+#### Player Action Keywords (Morph)
+- **Action**: Called from API router when player chooses to turn face-down creature face up.
+- **No stack involvement**: Doesn't use the stack; instant speed action.
+- **Mana payment**: Deducts from controller's mana pool as part of the action.
 
-### Error Handling
-- MongoDB not configured → HTTP 503 with `{ "error": "MongoDB not configured", "error_code": "MONGODB_NOT_CONFIGURED" }`
-- Player not found (GET) → HTTP 404
-- All other errors → HTTP 500 with error message
+```python
+# Pattern: Morph face-up in keyword module
+def turn_face_up(self, game_state, permanent_id, mana_payment=None) -> GameState:
+    perm = find_permanent(game_state, permanent_id)
+    if not perm.is_face_down: return game_state  # No-op
+    cost = parse_morph_cost(perm.card.oracle_text or "")
+    player = get_player(game_state, perm.controller)
+    new_pool = pay_cost(player.mana_pool, cost, payment)
+    new_perm = perm.model_copy(update={"is_face_down": False})
+    battlefield = [p if p.id != permanent_id else new_perm for p in gs.battlefield]
+    return game_state.model_copy(update={...})
+```
 
-### Pure Transform Pattern
-`update_player_stats()` in `engine/stats.py` follows the project convention of pure transforms: it takes a `PlayerStats` object and returns a new one via `model_copy(update={...})`. The original is never mutated. This allows safe testing and potential future use in non-MongoDB contexts (e.g., in-memory stats for local play).
+#### Cost Keywords (Fortify, CR 702.54a)
+- **Parser**: `ability_parser.py` `_FORTIFY_RE` matches `Fortify {cost} (...)` segments → `ActivatedAbility(cost=..., effect="Attach this Fortification to target land you control", timing_restriction="(Fortify only as a sorcery...)")`. **Regex pitfall**: the brace group must be `((?:\{[^{}]*\}\s*)+)` — putting the opening `\{` outside the repeated group captures only the first `{X}` chunk (multi-symbol costs like `{2}{G}` would truncate). `_FORTIFY_RE` lives at `ability_parser.py:144` (branch at :516, before the keyword fall-through); `_TIMING_RE` was extended with `fortify` at :136 so "(Fortify only as a sorcery.)" is stripped and the clause parses as an ActivatedAbility rather than a bogus KeywordAbility.
+- **Attach**: `stack.py:_apply_fortify(gs, fortification_id, land_id)` — pure transform; sets `attached_to` on the Fortification, appends to host's `attachments`, fires `check_attach_triggers` (exactly-once per attach).
+- **SBA**: `sba.py` `check_and_apply_sbas` — a Fortification whose `attached_to` target is missing or no longer a land detaches (stays on battlefield, CR 301.7); clears stale `attachments`; emits `fortification_detach` event. Complements `zones.py` cleanup (which handles the attached permanent leaving, not the host). QA added a TEST-ONLY coverage file `tests/engine/test_fortify_sba_host_becomes_nonland.py` exercising the branch where the host survives but becomes non-land (`sba.py:309-315`); production untouched.
+- **API**: `/activate` Fortify branch (after regen block, non-mana path) — client passes explicit `mana_payment` dict (e.g. `{"C": 3}` or `{"G": 1, "C": 2}`); endpoint's shared cost machinery pays it BEFORE the branch. Target validation (land type, controller, not-self) lives in the branch. `_compute_legal_actions` offers `activate` with `valid_targets=[land perm ids]`.
+- **Land rule**: Fortifications are lands — `Fortify.is_land_card(card)` (type_line check) is used in `play_land` and land-play legal actions, so one-land-per-turn applies.
+- **AI**: `resolve_fortify_with_ai(gs, perm_id)` auto-attaches to first valid land if cost affordable.
 
+#### Upkeep Keywords (Suspend)
+- **Time counter removal**: Called from `turn_manager.py` at beginning of upkeep. Decrements counters, marks ready cards.
+- **Auto-cast**: Stays in turn_manager.py — calls `cast_spell()` for ready cards. This is a general engine operation.
+
+```python
+# Pattern: Suspend time counter management in keyword module
+def remove_time_counter(self, game_state, player_name) -> GameState:
+    player = get_player(game_state, player_name)
+    new_suspended = []
+    ready_cards = []
+    for card in player.suspended_cards:
+        status = card.parse_status or ""
+        if status.startswith("suspended:"):
+            remaining = int(status.split(":")[1]) - 1
+            if remaining <= 0:
+                ready_cards.append(card.model_copy(update={"parse_status": "suspend_ready"}))
+            else:
+                new_suspended.append(card.model_copy(update={"parse_status": f"suspended:{remaining}"}))
+    # Update player state...
+    return game_state.model_copy(update={...})
+
+# Pattern: Turn manager upkeep — calls keyword module + handles auto-cast
+gs = suspend.remove_time_counter(gs, active_player)
+for card in get_ready_cards(gs, active_player):
+    gs = cast_spell(gs, active_player, card.id, from_suspended=True)
+```
+
+## Key Patterns for ETB Choices
+- Detection: `_detect_etb_choice(oracle_text: str) -> ETBChoice | None` uses regex to classify 4 land types
+- AI Resolution: `_resolve_etb_choice_with_ai(gs, player, choice, perm_id, name) -> (gs, should_be_tapped)`
+- Human Path: `put_permanent_onto_battlefield` sets `game_state.pending_etb_choice` and `tapped=True`
+- API Resolution: `choice_id="etb_pay"` subtracts life and sets `perm.tapped=False`; `choice_id="etb_tapped"` clears pending choice
+
+## Key Patterns for Commander Zone Replacement (CMD-01)
+- Detection: `move_card_to_zone` checks `_is_commander(card.name, player)` before applying CR 903.9
+- Human Path: Sets `game_state.pending_commander_zone_choice`; AI auto-redirects to command zone
+- API Resolution: `choice_id="commander_zone_replace"` or `choice_id="commander_zone_stay"`
+
+## Key Patterns for Monarch (MON-01)
+- Game Initialization: `game_manager.py` sets `monarch=active_player` for commander/conspiracy formats
+- Combat Hook: `combat/core.py` calls `check_combat_damage_monarch(gs, target_player, attacker_controller)`
+- End Step Hook: `turn_manager.py` calls `handle_end_step_draw(gs)` at end step
+
+## Key Patterns for Toxic (KW-06)
+- Combat Hook: `combat/core.py assign_combat_damage()` "Target is a player" branch calls module-level `apply_toxic(gs, source, player.name)` gated on `_has_keyword(source, "toxic") and assign.damage > 0` (fires once per damage assignment, regardless of amount — CR 702.134a)
+- Pure transform: `ToxicKeyword.apply_toxic()` (and the module-level `apply_toxic()` in `ability/keywords/toxic.py`) rebuild the players list via `player.model_copy(update={"poison_counters": ...})`; no-op paths (unknown player, value <= 0) return the SAME object
+- Loss at 10+ poison counters (CR 704.5c) is NOT in toxic.py — it is the EXISTING SBA check in `engine/sba.py _check_once()` (`p.poison_counters >= 10 → has_lost = True`)
+- Non-combat damage (stack.py `_deal_damage`) does NOT call apply_toxic — only the combat damage flow does
+- `ToxicKeyword.apply()` remains a thin no-op (real logic lives in `apply_toxic`, driven by combat)
+
+## Key Patterns for Ward (CR 702.145a)
+- **Two firing paths**: (1) SPELL path — `stack.py cast_spell` becomes-target loop calls `apply_ward(gs, target_perm, target=stack_obj, caster_name)` (stack exists; the AI-counter path removes the StackObject + graves the source card); (2) ABILITY path — `api/routers/game.py /activate` calls `apply_ward_to_ability(gs, target_perm, caster_name=priority_holder)` after tap+mana cost payment (activated abilities resolve inline with NO StackObject, so the resolver cannot touch the stack).
+- **Ability-path outcome contract**: `apply_ward_to_ability` returns `tuple[GameState, str]` with `"proceed"` / `"countered"` / `"deferred"`; the ROUTER decides (skip effect / defer effect / apply effect) — no-op guards return the SAME state object (Q4).
+- **Deferred activation**: for a human targeter the pending dict is tagged `targeting_type="ability"` + `targeting_spell_id=""` + deferred keys (`permanent_id`, `ability_index`, `targets`, `mana_payment`, `ability_text`); `ward_pay` re-drives the effect through the shared `_apply_activated_ability_effect()` helper (reconstructed `ActivateRequest`); `ward_counter` just clears the pending choice (nothing was ever on the stack). Spell-path pending dicts have no `targeting_type` key (or `"spell"`) and keep the old behavior.
+- **Shared effect helper**: `_apply_activated_ability_effect(gs, perm, ability, req, player)` in `game.py` holds the CR 605 mana / T128 regen / Fortify handler block used by both the `/activate` proceed path and `ward_pay` — single source of truth for what an activated ability does once Ward is satisfied.
+- **Activation cost is consumed regardless**: tap + mana are paid BEFORE Ward fires ("as an additional cost to activate"); a countered ability still costs.
+- **Detection**: `Ward.has_ward(keyword_list)` on the target permanent (keyword list, not oracle text — no "award"/"reward" false positives); cost from `Ward.parse_ward_cost(oracle_text)`.
+- **Payment**: the TARGETER (ability controller) pays from their own pool (CR 702.145a), same as the spell path; self-targeting never triggers Ward (CR 702.145b); no `pass` is ever offered as a legal action for a pending ward.
+- **No model change**: `pending_ward_payment: Optional[dict]` (models/game.py:363) is extended in place with the ability keys.
+
+## Key Patterns for Venture/Dungeon (VEN-01)
+- Engine: `engine/dungeon.py` — `venture()`, `start_dungeon()`, `_apply_room_effect()`
+- Stack Integration: "venture into the dungeon" regex in effect resolution patterns
+- Initiative Hook: `engine/initiative.py` calls `venture(gs, player_name, dungeon_name="Undercity")`
+
+## Trigger System Architecture
+
+### Trigger Queuing Flow
+1. **Event occurs** in engine code (e.g., permanent dies, player gains life)
+2. **Check function called**: `check_<type>_triggers(gs, ...)` iterates battlefield permanents looking for matching trigger abilities
+3. **Regex pattern match**: Each check function uses regex to find relevant oracle text patterns
+4. **Controller filtering**: Guards ensure "you" patterns only fire for the correct player
+5. **Self-referential guards**: "Whenever this creature..." only fires for the specific permanent
+6. **PendingTrigger created**: For each matching ability, a `PendingTrigger` is appended to `game_state.pending_triggers`
+7. **Pure transform returned**: New GameState via `model_copy(update={"pending_triggers": [...]})`
+
+### Trigger Check Functions (triggers.py:500-2082 — 25 total)
+The 15 listed below were the 7-2 wiring backlog (13) plus the 7-3 additions (countered, investigated); all are now wired into the engine event flow. All 25 check functions are pure transforms (line ranges re-verified 2026-08-20 post-7-3):
+
+| Function | Line Range | Regex Pattern | Controller Filter | Self-Ref Guard |
+|---|---|---|---|---|
+| `check_sacrifice_triggers` | ~706-823 | "whenever.*sacrificed" / "whenever you sacrifice" | Yes (index 0) | Yes ("this creature") |
+| `check_life_gain_lost_triggers` | ~824-875 | "whenever you gain/lose life" / "whenever [player] gains/loses life" | Yes (index 0) | Gain/Loss filter by amount sign |
+| `check_fight_triggers` | ~876-914 | "whenever.*fights" / "whenever this creature fights" | Yes | Yes ("this creature") |
+| `check_transformed_triggers` | ~953-991 | "whenever.*transforms" / "whenever this transforms" | Yes | Yes ("this") |
+| `check_tutor_triggers` | ~992-1029 | "whenever you search" / "whenever [player] searches" | Yes | N/A |
+| `check_becomes_target_triggers` | ~1030-1091 | "whenever.*becomes the target" / "whenever this becomes" | Yes (target_perm_id filter) | Yes ("this"/"~"), controller check for broad patterns |
+| `check_attach_triggers` | ~1092-1186 | "whenever.*becomes attached" / "whenever this becomes attached"; also fires on `attach_event="unattach"` (see 7-17) | Yes (attach self-guard; unattach "you control") | Yes ("this") |
+| `check_mana_spent_triggers` | ~1259-1298 | "whenever you spend mana" / "whenever [player] spends" | Yes | N/A |
+| `check_draw_triggers` | ~1299-1336 | "whenever you draw a card" / "whenever [player] draws" | Yes | N/A |
+| `check_discard_triggers` | ~1337-1374 | "whenever you discard" / "whenever [player] discards" | Yes | N/A |
+| `check_token_triggers` | ~1375-1412 | "whenever a token enters" / "whenever you create a token" | Yes | N/A |
+| `check_counter_triggers` | ~1413-1477 | "whenever.*counter is placed on" / "whenever a counter is placed on this" | Yes | Yes ("this") |
+| `check_countered_triggers` | ~1478-1547 | "whenever this is countered" / "a spell you control is countered" / "a spell is countered" | Yes (idx1 explicit you-control) | Yes (idx0 name-guard: countered spell name == perm card name) |
+| `check_investigated_triggers` | ~1548-1611 | "whenever you investigate" / "a player investigate(s)" (action-based only; token-ETB phrasings are owned by `check_token_triggers`) | Yes (index 0) | N/A (action-based) |
+| `check_mana_production_triggers` | ~1657-1736 | "whenever [land] produces mana" / "whenever you produce {X}" | N/A (source-based) | N/A |
+
+> Note: the `check_countered_triggers` "you control" variant sits at pattern index 1 (not 0), so it is filtered explicitly (`perm.controller != countered.controller`) rather than via `_is_you_pattern` (which is index-0 keyed).
+
+### Trigger Wiring Map (post-7-2/7-3; all lines verified 2026-08-20)
+Call sites use function-local aliased imports (`from mtg_engine.engine.triggers import check_X_triggers as _check_X`), so grep the **import line** to locate a wiring site.
+
+#### stack.py — Primary Hub (18 import sites: 16 wired in 7-2 + 2 in 7-3)
+- `cast_spell()` (def 114): mana_spent (import 227, after `pay_cost()` with `if mana_payment:` guard) + becomes_target (import 341, after target validation)
+- `resolve_top()` (def 578): attach (import 689, after aura attaches)
+- `_draw_cards()` (def 1196): draw (import 1234)
+- `_create_tokens()` (def 1312): token (import 1341)
+- `_investigate()` (def 1346): investigated (import 1385) — see 7-3 section below
+- `_gain_life()` (def 1391) / `_lose_life()` (def 1406): life_gain_lost (imports 1401 / 1416)
+- `_discard_cards()` (def 1421): discard (import 1440)
+- `_tutor()` (def 1445) / `_tutor_to_top()` (def 1473): tutor (imports 1468 / 1492)
+- `_apply_fight()` (def 1514): fight (import 1560)
+- `_apply_equip()` (def 1565): attach (import 1599)
+- `_add_counters()` (def 1615) / `_place_counter_on_permanent()` (def 1639): counter placed (imports 1634 / 1662)
+- `_counter_spell()` (def 1800): countered (import 1815, 7-3)
+- `_create_token_with_keywords()` (def 2074): token (import 2097)
+- `_create_token_with_pt_and_keywords()` (def 2102): token (import 2133)
+
+#### Other engine files
+- zones.py: `draw_card()` (def 774) draw (import 821); `_sacrifice_permanent()` (def 826) sacrifice (import 908, CR 704.5d token guard); unattach call site in `move_permanent_to_zone` — fires `check_attach_triggers(..., attach_event="unattach", attached_controller=controller)` BEFORE the aura is removed when an attached permanent leaves the battlefield; controller captured pre-removal (`zones.py:225`) so "you control" trigger fires for the aura's ORIGINAL controller
+- mana.py: `resolve_land_mana_ability()` (def 457) mana_production (import 534); `resolve_mana_ability()` (def 749) NOT wired (known limitation)
+- daynight.py: transformed on both day/night transition paths (imports 38 / 51); `_transform_daybound_permanents()` def 58
+- turn_manager.py: day_night_change (import 161, call 162); counter removed on Fading (import 224); sacrifice on Fading (import 230)
+- combat/core.py: damage (import 608, call 609); events.py: phase (import 482, call 483) + damage (import 491, call 503) legacy path
+- ability/effects/base.py (import 288) + ability/loyalty.py (import 235): token (2 of the 5 token sites)
+- api/routers/game.py: discard on cycling route (import 1010), cycle (import 1020, call 1021), proliferated (import 1121, call 1143), sacrifice on API sacrifice action (imports 735, call 736)
+- ability/keywords/evoke.py: sacrifice via centralized helper (import 184)
+
+#### Sprint 7 P0 (7-3) — Countered + Investigated
+- **Countered (CR 701.5)**: `stack.py:_counter_spell()` (~line 1800) — fires `check_countered_triggers` AFTER the `uncounterable` guard and BEFORE the spell is removed from the stack (so self-referential triggers can read the source card). A counter does NOT emit a zone-change event, so the trigger cannot double-fire.
+- **Investigated (CR 701.32) + investigate action**: `stack.py:_investigate()` (1346-1388) — performs the investigate action (inspect top of library: land→reveal & move to hand; non-land→bottom of library), creates a 1/1 red Goblin "investigate" token, then fires `check_investigated_triggers` (1385-1386). Invoked via the `\binvestigate\b` pattern in BOTH `_apply_single_effect_text()` (pattern 966-967, triggered-ability effects) and `_apply_spell_effect()` (pattern 1144-1145, main spell resolution; parenthetical reminder text is stripped first at 1005-1013 per CR 201.8 so reminder text cannot shadow the match).
+- **Token color identity**: `_create_token_with_pt_and_keywords()` gained an optional `colors` param (backward compatible) so the investigate token carries `["R"]`.
+
+### Sacrifice Paths (post-7-2; centralized helper `zones._sacrifice_permanent`, def 826)
+1. **Evoke**: `ability/keywords/evoke.py` routes through the helper (import 184)
+2. **Fading upkeep**: `turn_manager.py` (import 230; block ~207-232; counter-removed trigger fires first at import 224)
+3. **API sacrifice action (Emerge)**: `api/routers/game.py` (import 735, call 736)
+4. **SBA legend rule — NOT routed** (`sba.py:237-249`): own event + removal, no sacrifice trigger fires (known limitation)
+5. **Saga final chapter — DEAD scheduled trigger** (`turn_manager.py:272-282`): schedules a `sacrifice_saga:{id}` delayed trigger (line 279) but no consumer performs the sacrifice — deferred, see pipeline `status.md` Known Gaps
+
+> **Commander on sacrifice (CR 903.9)**: When the sacrificed permanent is a commander (via CMD-01 helpers), the human path queues `pending_commander_zone_choice` (`intended_destination="graveyard"`) and does NOT complete the move until the player chooses replace/redirect-to-command-zone; the AI path auto-redirs to the command zone via `_cmd_move_to_command_zone`. This mirrors the CMD-01 commander-zone replacement pattern. For a human commander, `check_sacrifice_triggers` is deferred until the choice resolves (the CR 903.9 replacement isn't final yet). Only a handful of MTG cards pair sacrifice-with-graveyard with a commander.
+
+### Token Creation Functions in stack.py
+Only 3 of ~24 token functions actually create tokens (the rest are stubs that log "TODO" or return early):
+- `_create_tokens()` (def 1312) — Basic token creation
+- `_create_token_with_keywords()` (def 2074) — Token with keyword abilities
+- `_create_token_with_pt_and_keywords()` (def 2102) — Token with P/T and keywords (+ optional `colors` param added in 7-3)
+
+All 5 token-creation sites fire `check_token_triggers` (wired 7-2; per-token firing for CR 110.6 added in story 7-17): the 3 in stack.py above + `ability/effects/base.py` (import 288) + `ability/loyalty.py` (import 235). In the loop-based sites (`_create_tokens`, `CreateTokenEffect.resolve`) the trigger is fired INSIDE the token loop, so a "whenever you create a token" ability emits exactly one trigger PER token created.
+
+### Mana Spent Trigger Scoping
+**Wired (7-2)**: `stack.py:227` — `cast_spell()` main path after `pay_cost()` (guarded by `if mana_payment:`; 0-cost casts suppressed).
+**NOT fired for non-cast payments** (known limitation, deferred): morph face-up (`morph.py` `turn_face_up`, def 109 method / 204 module-level) and kicker/buyback/replicate/activated-cost payments.
+
+**API router call sites that must NOT fire triggers**:
+- All `can_pay_cost()` calls in legal actions computation (checking affordability, not actual spending)
+- These are read-only queries with no GameState mutation
+
+## Known Gaps (Documented in Code)
+- `_compute_legal_actions` only fully implements shockland ETB choices. Checkland/fetchland/snow_dual have TODO comments.
+- Snow dual AI heuristic subtracts life instead of snow mana (placeholder).
+- Fetchland AI heuristic does not actually exile land from graveyard.

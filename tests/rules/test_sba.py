@@ -201,3 +201,69 @@ def test_draw_with_cards_does_not_lose():
     assert not gs.players[0].has_lost
     gs, events = check_and_apply_sbas(gs)
     assert not gs.is_game_over
+
+
+# ── Fortification SBA (CR 301.7) ─────────────────────────────────────────────
+
+def test_fortification_attached_to_nonland_detaches():
+    """A Fortification attached to a non-land becomes unattached and stays
+    on the battlefield."""
+    gs = _make_game()
+    garrison = Card(name="Darksteel Garrison", type_line="Artifact Creature — Fortification")
+    bear = Card(name="Bear", type_line="Creature — Beast", power="2", toughness="2")
+    gs, garrison_perm = put_permanent_onto_battlefield(gs, garrison, "p1")
+    gs, bear_perm = put_permanent_onto_battlefield(gs, bear, "p1")
+    garrison_perm.attached_to = bear_perm.id
+    bear_perm.attachments.append(garrison_perm.id)
+    gs, events = check_and_apply_sbas(gs)
+    garrison_now = next(p for p in gs.battlefield if p.id == garrison_perm.id)
+    bear_now = next(p for p in gs.battlefield if p.id == bear_perm.id)
+    assert garrison_now.attached_to is None
+    assert garrison_perm.id not in bear_now.attachments
+    assert len(gs.battlefield) == 2  # garrison stays on the battlefield
+    assert any(e.sba_type == "fortification_detach" for e in events)
+
+
+def test_fortification_detaches_when_host_leaves():
+    """If the attached land leaves the battlefield, the Fortification detaches
+    but remains on the battlefield (CR 301.7)."""
+    gs = _make_game()
+    garrison = Card(name="Darksteel Garrison", type_line="Artifact Creature — Fortification")
+    forest = Card(name="Forest", type_line="Basic Land — Forest")
+    gs, garrison_perm = put_permanent_onto_battlefield(gs, garrison, "p1")
+    gs, forest_perm = put_permanent_onto_battlefield(gs, forest, "p1")
+    garrison_perm.attached_to = forest_perm.id
+    forest_perm.attachments.append(garrison_perm.id)
+    # Host leaves the battlefield (e.g. destroyed)
+    gs.battlefield = [p for p in gs.battlefield if p.id != forest_perm.id]
+    gs, events = check_and_apply_sbas(gs)
+    garrison_now = next(p for p in gs.battlefield if p.id == garrison_perm.id)
+    assert garrison_now.attached_to is None
+    assert any(e.sba_type == "fortification_detach" for e in events)
+    assert len(gs.battlefield) == 1  # only the garrison remains
+
+
+def test_fortification_attached_to_land_stays_attached():
+    """A Fortification legally attached to a land is left alone by SBA."""
+    gs = _make_game()
+    garrison = Card(name="Darksteel Garrison", type_line="Artifact Creature — Fortification")
+    forest = Card(name="Forest", type_line="Basic Land — Forest")
+    gs, garrison_perm = put_permanent_onto_battlefield(gs, garrison, "p1")
+    gs, forest_perm = put_permanent_onto_battlefield(gs, forest, "p1")
+    garrison_perm.attached_to = forest_perm.id
+    forest_perm.attachments.append(garrison_perm.id)
+    gs, events = check_and_apply_sbas(gs)
+    garrison_now = next(p for p in gs.battlefield if p.id == garrison_perm.id)
+    assert garrison_now.attached_to == forest_perm.id
+    assert not any(e.sba_type == "fortification_detach" for e in events)
+
+
+def test_unattached_fortification_untouched():
+    """A Fortification with no attachment is not affected by the SBA."""
+    gs = _make_game()
+    garrison = Card(name="Darksteel Garrison", type_line="Artifact Creature — Fortification")
+    gs, garrison_perm = put_permanent_onto_battlefield(gs, garrison, "p1")
+    gs, events = check_and_apply_sbas(gs)
+    garrison_now = next(p for p in gs.battlefield if p.id == garrison_perm.id)
+    assert garrison_now.attached_to is None
+    assert not any(e.sba_type == "fortification_detach" for e in events)

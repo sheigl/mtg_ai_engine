@@ -28,6 +28,7 @@ from mtg_engine.ability.keywords.ninjutsu import Ninjutsu
 from mtg_engine.ability.keywords.dash import Dash
 from mtg_engine.ability.keywords.madness import Madness
 from mtg_engine.ability.keywords.escape import Escape
+from mtg_engine.ability.keywords.fortify import Fortify
 # Sprint 6 keywords (KW-31..42)
 from mtg_engine.ability.keywords.morph import MorphKeyword
 from mtg_engine.ability.keywords.suspend import SuspendKeyword
@@ -74,6 +75,7 @@ __all__ = [
     "Dash",
     "Madness",
     "Escape",
+    "Fortify",
     # Sprint 6 keywords (KW-31..42)
     "MorphKeyword",
     "SuspendKeyword",

@@ -191,29 +191,30 @@ class TestSetExplicitImmutability:
 
 
 class TestTriggerFiring:
-    """Test that day/night triggers are properly added to pending_triggers."""
+    """Test that day/night transitions occur correctly without dead system triggers."""
 
-    def test_transition_adds_trigger_to_new_list(self):
+    def test_transition_changes_is_day_not_pending_triggers(self):
+        """check_daynight_transition changes is_day but does not add system-level triggers."""
         gs = _make_game(is_day=True, spells_last=0)
         original_triggers = list(gs.pending_triggers)  # Copy
 
         new_gs = check_daynight_transition(gs)
 
+        # Transition happened
+        assert is_daytime(new_gs) is False
         # Original triggers list unchanged
         assert len(gs.pending_triggers) == len(original_triggers)
-        # New state has the trigger appended
-        assert any("day_to_night" in t.trigger_type for t in new_gs.pending_triggers)
+        # No system-level trigger added (card ability triggers handled by turn_manager wiring)
+        assert len(new_gs.pending_triggers) == len(original_triggers)
 
-    def test_untap_chain_adds_trigger(self):
-        """Full untap flow (begin_step) also adds transition triggers."""
+    def test_untap_chain_performs_transition(self):
+        """Full untap flow (begin_step) performs the day/night transition."""
         gs = _make_game(is_day=True, spells_last=0)
-        original_count = len(gs.pending_triggers)
 
         new_gs = begin_step(gs)
 
-        # New state has one more trigger than the original
-        assert len(new_gs.pending_triggers) == original_count + 1
-        assert any("day_to_night" in t.trigger_type for t in new_gs.pending_triggers)
+        # Transition happened via is_day change
+        assert is_daytime(new_gs) is False
 
 
 class TestUntapImmutability:

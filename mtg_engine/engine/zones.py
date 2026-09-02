@@ -233,6 +233,12 @@ def move_permanent_to_zone(
         "player": controller,
         "is_token": is_token,
         "permanent_id": permanent.id,
+        # Enriched data for death-trigger detection (afterlife, undying, persist)
+        "permanent_keywords": card.keywords or [],
+        "permanent_counters": dict(permanent.counters) if permanent.counters else {},
+        "permanent_power": permanent.card.power or "",
+        "permanent_toughness": permanent.card.toughness or "",
+        "oracle_text": card.oracle_text or "",
     }
     _emit_zone_change(event, game_state)
 
@@ -289,26 +295,23 @@ def move_permanent_to_zone(
                             update={"keywords": [k for k in host.card.keywords if k != kw]}
                         )
 
-    # Persist/Undying replacement: before sending creature to graveyard, check keywords (CR 702.76, CR 702.93)
-    if to_zone == "graveyard" and "creature" in (card.type_line or "").lower():
-        # Persist: return with -1/-1 counter if no -1/-1 counter currently
-        if "persist" in (card.keywords or []) and permanent.counters.get("-1/-1", 0) == 0:
-            game_state.battlefield.append(permanent)
-            permanent.counters["-1/-1"] = permanent.counters.get("-1/-1", 0) + 1
-            logger.debug("Persist: %s returned to battlefield with -1/-1 counter", card.name)
-            return game_state
-        # Undying: return with +1/+1 counter if no +1/+1 counter currently
-        if "undying" in (card.keywords or []) and permanent.counters.get("+1/+1", 0) == 0:
-            game_state.battlefield.append(permanent)
-            permanent.counters["+1/+1"] = permanent.counters.get("+1/+1", 0) + 1
-            logger.debug("Undying: %s returned to battlefield with +1/+1 counter", card.name)
-            return game_state
-
     # Move card to destination zone (REQ-G08: preserve library order)
     if to_zone == "battlefield":
         # Re-entering the battlefield (replacement effect scenario) — put back on battlefield
         game_state.battlefield.append(permanent)
         return game_state
+
+    # Wire: Unattach Trigger (CR 702.5). The aura has just left the battlefield
+    # permanently, so fire "whenever an aura you control becomes unattached" /
+    # "whenever this enchantment is unattached". check_attach_triggers can no
+    # longer find the aura on the battlefield (it was removed at the top of this
+    # function), so pass the controller captured BEFORE removal — otherwise the
+    # "you control" filter could never match. Only fires when it was attached.
+    if permanent.attached_to:
+        from mtg_engine.engine.triggers import check_attach_triggers as _check_attach_unattach
+        game_state = _check_attach_unattach(
+            game_state, permanent.id, attach_event="unattach", attached_controller=controller
+        )
 
     if to_zone in ("hand", "library", "graveyard", "exile", "sideboard"):
         player = get_player(game_state, controller)
@@ -751,6 +754,26 @@ def put_permanent_onto_battlefield(
         perm.counters["fade"] = fade_count
         logger.debug("Fading: %s entered with %d fade counter(s)", card.name, fade_count)
 
+    # KW-04 Sunburst (CR 702.103): Apply counters when permanent enters from being cast
+    if from_zone == "stack" and not is_token:
+        _kws = [kw.lower() for kw in (card.keywords or [])]
+        if "sunburst" in _kws:
+            from mtg_engine.ability.keywords.sunburst import SunburstKeyword as _Sunburst
+            game_state = _Sunburst.apply_sunburst_counters(
+                game_state, perm.id, card.mana_cost
+            )
+            logger.debug("Sunburst: %s entered with counters applied", card.name)
+
+    # KW-22 Bloodthirst (CR 702.22): ETB counters if opponent was dealt damage this turn
+    from mtg_engine.ability.keywords.bloodthirst import BloodthirstKeyword as _Bloodthirst
+    if _Bloodthirst.from_oracle(card.oracle_text or ""):
+        kw = _Bloodthirst.from_oracle(card.oracle_text or "")
+        if kw:
+            game_state = kw.apply(game_state, perm)
+            logger.debug("Bloodthirst applied to %s", card.name)
+            # Update perm reference to the possibly updated version in game_state
+            perm = next((p for p in game_state.battlefield if p.id == perm.id), perm)
+
     return game_state, perm
 
 
@@ -772,7 +795,7 @@ def _get_saga_chapter_text(card: Card, chapter: int) -> str:
 
 def draw_card(game_state: GameState, player_name: str) -> tuple[GameState, Card | None]:
     """
-    Draw the top card from the player's library. REQ-G08.
+    Draw the top card from the player's library. REQ-G08. Pure transform.
     Returns None if the library is empty (SBA 704.5b will catch this).
     Emits a zone-change event with is_draw=True so the verbose logger can record
     the draw without revealing the card identity.
@@ -780,11 +803,30 @@ def draw_card(game_state: GameState, player_name: str) -> tuple[GameState, Card 
     player = get_player(game_state, player_name)
     if not player.library:
         # CR 704.5b: player who cannot draw loses the game
-        player.has_lost = True
+        new_players = []
+        for p in game_state.players:
+            if p.name == player_name:
+                new_players.append(p.model_copy(update={"has_lost": True}))
+            else:
+                new_players.append(p)
+        game_state = game_state.model_copy(update={"players": new_players})
         logger.warning("[SBA 704.5b] %s attempted to draw from empty library — player loses", player_name)
         return game_state, None
-    card = player.library.pop(0)
-    player.hand.append(card)
+
+    # Pure transform: extract card without mutating original lists
+    card = player.library[0]
+    new_library = list(player.library[1:])
+    new_hand = list(player.hand) + [card]
+
+    # Update player's library and hand via model_copy
+    new_players = []
+    for p in game_state.players:
+        if p.name == player_name:
+            new_players.append(p.model_copy(update={"library": new_library, "hand": new_hand}))
+        else:
+            new_players.append(p)
+    game_state = game_state.model_copy(update={"players": new_players})
+
     # Emit draw event (card_name intentionally omitted — private information)
     event: ZoneChangeEvent = {
         "card_id": card.id,
@@ -796,7 +838,189 @@ def draw_card(game_state: GameState, player_name: str) -> tuple[GameState, Card 
         "is_draw": True,
     }
     _emit_zone_change(event, game_state)
+
+    # Track cards drawn this turn for Miracle (CR 702.93)
+    cards_drawn = dict(game_state.cards_drawn_this_turn)
+    current_count = cards_drawn.get(player_name, 0)
+    is_first_draw = current_count == 0
+    cards_drawn[player_name] = current_count + 1
+    game_state = game_state.model_copy(update={"cards_drawn_this_turn": cards_drawn})
+
+    # Wire: Draw Trigger (CR 701.16)
+    from mtg_engine.engine.triggers import check_draw_triggers as _check_draw
+    game_state = _check_draw(game_state, player_name)
+
+    # Miracle keyword handling (CR 702.93)
+    from mtg_engine.ability.keywords.miracle import MiracleKeyword
+    from mtg_engine.engine.mana import can_pay_cost
+    if is_first_draw and MiracleKeyword.from_oracle_text(card.oracle_text or ""):
+        miracle_cost = MiracleKeyword.parse_miracle_cost(card.oracle_text or "")
+        if miracle_cost:
+            is_human = bool(game_state.human_player_name and game_state.human_player_name == player_name)
+            if is_human:
+                pending = {
+                    "player": player_name,
+                    "card_id": card.id,
+                    "card_name": card.name,
+                    "miracle_cost": miracle_cost,
+                    "resolved": False,
+                }
+                game_state = game_state.model_copy(update={"pending_miracle_choice": pending})
+                logger.info("Miracle: queued choice for %s drawing %s (cost %s)", player_name, card.name, miracle_cost)
+            else:
+                # AI auto-resolve: cast if affordable
+                player_obj = get_player(game_state, player_name)
+                if can_pay_cost(player_obj.mana_pool, miracle_cost):
+                    try:
+                        from mtg_engine.engine.stack import cast_spell
+                        # Cast from hand using miracle cost as alternative cost
+                        game_state = cast_spell(
+                            game_state,
+                            player_name,
+                            card.id,
+                            targets=[],
+                            mana_payment={},
+                            alternative_cost=miracle_cost,
+                        )
+                        logger.info("Miracle: AI auto-cast %s for %s", card.name, miracle_cost)
+                    except Exception as e:
+                        logger.debug("Miracle AI auto-cast failed for %s: %s", card.name, e)
+                else:
+                    logger.info("Miracle: AI cannot afford %s for %s", miracle_cost, card.name)
     return game_state, card
+
+
+def _sacrifice_permanent(
+    game_state: GameState,
+    perm_id: str,
+    sacrificer: str | None = None,
+) -> GameState:
+    """Sacrifice a permanent by ID. Pure transform.
+
+    Finds the permanent on battlefield by perm_id, removes it, emits a
+    zone-change event, moves its card to graveyard (non-tokens only), and
+    fires sacrifice triggers.
+
+    Args:
+        game_state: Current game state.
+        perm_id: ID of the permanent to sacrifice.
+        sacrificer: The player who performed the sacrifice (the "you" for
+            "whenever you sacrifice ..." patterns). Defaults to the permanent's
+            controller (the common case where a player sacrifices their own
+            permanent).
+
+    Returns:
+        New GameState with the permanent sacrificed and triggers queued.
+
+    Zone-change / death triggers (CR 704.5d, "dies", "leaves the battlefield"):
+        A zone-change event is emitted AFTER the permanent is removed from the
+        battlefield (so self-referential "dies"/"leaves" triggers on the
+        sacrificed permanent itself do not double-fire). The event carries the
+        full metadata and is_token flag, and the zone listener's CR 704.5d
+        guard suppresses "dies" triggers for tokens. "is sacrificed" triggers
+        fire via check_sacrifice_triggers() (they DO fire for tokens,
+        CR 701.19).
+    """
+    perm = next((p for p in game_state.battlefield if p.id == perm_id), None)
+    if perm is None:
+        logger.warning("Sacrifice: %s not found on battlefield", perm_id)
+        return game_state
+
+    controller_name = perm.controller
+    effective_sacrificer = sacrificer if sacrificer is not None else controller_name
+    is_token = perm.is_token
+
+    # Remove from battlefield (pure transform)
+    new_battlefield = [p for p in game_state.battlefield if p.id != perm_id]
+    game_state = game_state.model_copy(update={"battlefield": new_battlefield})
+
+    # CR 903.9 Commander replacement: a commander that would be sacrificed to the
+    # graveyard may instead go to its owner's command zone. This mirrors the
+    # redirect in move_permanent_to_zone / move_card_to_zone so direct sacrifice,
+    # Evoke and Fading all route the commander consistently (previously this helper
+    # moved straight to the graveyard, silently bypassing the replacement — an
+    # evoked or fading Commander would be lost instead of returning to command zone).
+    is_commander = (
+        game_state.format == "commander"
+        and not is_token
+        and _is_commander(perm.card.name, get_player(game_state, controller_name))
+    )
+
+    if is_commander:
+        # Emit the same zone-change event as the non-redirect path so death /
+        # leaves-battlefield triggers observe the sacrifice consistently.
+        event: ZoneChangeEvent = {
+            "card_id": perm.id,
+            "card_name": perm.card.name,
+            "from_zone": "battlefield",
+            "to_zone": "graveyard",
+            "player": controller_name,
+            "is_token": is_token,
+            "permanent_id": perm.id,
+            "permanent_keywords": perm.card.keywords or [],
+            "permanent_counters": dict(perm.counters) if perm.counters else {},
+            "permanent_power": perm.card.power or "",
+            "permanent_toughness": perm.card.toughness or "",
+            "oracle_text": perm.card.oracle_text or "",
+        }
+        _emit_zone_change(event, game_state)
+
+        # Human player: queue the commander-zone choice (CR 903.9).
+        if game_state.human_player_name == controller_name:
+            return game_state.model_copy(update={
+                "pending_commander_zone_choice": {
+                    "player": controller_name,
+                    "card": perm.card,
+                    "permanent_id": perm.id,
+                    "intended_destination": "graveyard",
+                    "from_zone": "battlefield",
+                }
+            })
+
+        # AI player: auto-redirect to the command zone.
+        game_state = _cmd_move_to_command_zone(game_state, perm.card, controller_name)
+    else:
+        # Emit zone-change event AFTER removal so self-referential "dies" /
+        # "leaves the battlefield" triggers on the sacrificed permanent do not
+        # double-fire. to_zone="graveyard" is the intended destination; is_token
+        # drives the CR 704.5d suppression in the zone listener.
+        event: ZoneChangeEvent = {
+            "card_id": perm.id,
+            "card_name": perm.card.name,
+            "from_zone": "battlefield",
+            "to_zone": "graveyard",
+            "player": controller_name,
+            "is_token": is_token,
+            "permanent_id": perm.id,
+            # Enriched data for death-trigger detection (afterlife, undying, persist)
+            "permanent_keywords": perm.card.keywords or [],
+            "permanent_counters": dict(perm.counters) if perm.counters else {},
+            "permanent_power": perm.card.power or "",
+            "permanent_toughness": perm.card.toughness or "",
+            "oracle_text": perm.card.oracle_text or "",
+        }
+        _emit_zone_change(event, game_state)
+
+        # Tokens cease to exist when leaving the battlefield — do NOT put in graveyard (CR 704.5d)
+        if not is_token:
+            # Move card to graveyard (pure transform)
+            player = get_player(game_state, controller_name)
+            new_graveyard = list(player.graveyard) + [perm.card]
+            players = []
+            for p in game_state.players:
+                if p.name == controller_name:
+                    players.append(p.model_copy(update={"graveyard": new_graveyard}))
+                else:
+                    players.append(p)
+            game_state = game_state.model_copy(update={"players": players})
+
+    logger.info("Sacrifice: %s (%s) by %s", perm.card.name, perm_id, effective_sacrificer)
+
+    # Wire: Sacrifice Trigger (CR 701.19). Pass the captured Permanent object(s)
+    # (with type_line / controller / is_token) plus the sacrificer.
+    from mtg_engine.engine.triggers import check_sacrifice_triggers as _check_sacrifice
+    game_state = _check_sacrifice(game_state, [perm], effective_sacrificer)
+    return game_state
 
 
 # ---------------------------------------------------------------------------

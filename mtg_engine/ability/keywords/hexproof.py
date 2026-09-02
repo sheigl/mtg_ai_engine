@@ -1,4 +1,4 @@
-"""Hexproof keyword (CR 702.54).
+"""Hexproof keyword (CR 702.11).
 
 Hexproof is a static ability that prevents targeting:
 - A permanent or player with hexproof can't be the target of spells or abilities
@@ -19,9 +19,9 @@ logger = logging.getLogger(__name__)
 
 
 class Hexproof(PassiveKeyword):
-    """Hexproof keyword ability (CR 702.54).
+    """Hexproof keyword ability (CR 702.11).
 
-    CR 702.54b: A permanent or player with hexproof can't be the target of spells
+    CR 702.11b: A permanent or player with hexproof can't be the target of spells
     or abilities that players other than its controller control.
     """
 
@@ -48,7 +48,7 @@ class Hexproof(PassiveKeyword):
         """Check if the permanent can be targeted.
 
         A hexproof permanent can only be targeted by its own controller.
-        CR 702.54b.
+        CR 702.11b.
 
         Args:
             target_keywords: Keywords of the target permanent.
@@ -69,7 +69,7 @@ def is_hexproof(
 ) -> bool:
     """Check if a permanent or player has hexproof.
 
-    Query helper for targeting validation (CR 702.54). A permanent or player
+    Query helper for targeting validation (CR 702.11). A permanent or player
     with hexproof can't be the target of spells or abilities controlled by
     opponents. The controller may still target their own hexproof permanents.
 
@@ -107,7 +107,7 @@ def can_target_hexproof(
 ) -> bool:
     """Check if a hexproof-protected target can be targeted by the given controller.
 
-    CR 702.54b: A permanent or player with hexproof can't be the target of spells
+    CR 702.11b: A permanent or player with hexproof can't be the target of spells
     or abilities that players other than its controller control.
 
     Args:

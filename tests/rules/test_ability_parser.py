@@ -83,3 +83,63 @@ def test_no_unparsed_in_test_cards():
         abilities = parse_oracle_text(text, type_line)
         unparsed = [a for a in abilities if isinstance(a, UnparsedAbility)]
         assert not unparsed, f"UnparsedAbility found for {text!r}: {unparsed}"
+
+
+# ── Fortify (CR 702.54a) ────────────────────────────────────────────────────
+
+GARRISON_ORACLE = (
+    "Fortify {3} ({3}: Attach to target land you control. "
+    "Fortify only as a sorcery. This card enters unattached and stays on the "
+    "battlefield if the land leaves.)"
+)
+CAMP_ORACLE = (
+    "Fortify {2}{G} ({2}{G}: Attach to target land you control. "
+    "Fortify only as a sorcery. C.A.M.P. can't be attacked. As long as C.A.M.P. "
+    "is attached, it doesn't have base abilities or rules text.)"
+)
+
+
+def test_fortify_garrison_parses_as_activated_ability():
+    """Darksteel Garrison's Fortify line is an activated ability, not a keyword."""
+    abilities = parse_oracle_text(GARRISON_ORACLE, "Artifact Creature — Fortification")
+    assert len(abilities) == 1
+    assert isinstance(abilities[0], ActivatedAbility)
+    ab = abilities[0]
+    assert ab.cost == "{3}"
+    assert "attach this fortification to target land you control" in ab.effect.lower()
+    assert ab.timing_restriction == "(Fortify only as a sorcery.)"
+
+
+def test_fortify_camp_multi_symbol_cost():
+    """C.A.M.P.'s multi-symbol Fortify cost parses completely ({2}{G}, not {2})."""
+    abilities = parse_oracle_text(CAMP_ORACLE, "Artifact Creature — Fortification")
+    assert len(abilities) == 1
+    assert isinstance(abilities[0], ActivatedAbility)
+    assert abilities[0].cost == "{2}{G}"
+
+
+def test_fortify_not_misparsed_as_keyword():
+    """Fortify is in KEYWORDS — the Fortify branch must prevent the keyword
+    fall-through from producing KeywordAbility(name='fortify {3}')."""
+    abilities = parse_oracle_text(GARRISON_ORACLE, "Artifact Creature — Fortification")
+    keywords = [a for a in abilities if isinstance(a, KeywordAbility)]
+    assert not keywords, f"Fortify mis-parsed as keyword: {keywords}"
+
+
+def test_fortify_no_cost_not_matched():
+    """'Fortify only as a sorcery' (no cost) is not an activated ability."""
+    abilities = parse_oracle_text("Fortify only as a sorcery.", "Artifact Creature — Fortification")
+    assert not any(isinstance(a, ActivatedAbility) for a in abilities)
+
+
+def test_regular_keywords_still_parse():
+    """The Fortify branch must not shadow normal keyword lines."""
+    abilities = parse_oracle_text("Flying\nVigilance", "Creature — Angel")
+    assert all(isinstance(a, KeywordAbility) for a in abilities)
+
+
+def test_regular_activated_ability_still_parses():
+    """A normal activated ability is unaffected by the Fortify branch."""
+    abilities = parse_oracle_text("{T}: Add {G}.", "Creature — Elf Druid")
+    assert isinstance(abilities[0], ActivatedAbility)
+    assert "{T}" in abilities[0].cost

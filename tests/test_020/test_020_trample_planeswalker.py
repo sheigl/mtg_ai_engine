@@ -45,6 +45,44 @@ def _combat_gs() -> GameState:
     )
 
 
+def _find_perm(gs, perm_or_card, perm_id=None):
+    """Find a permanent/card by name — checks battlefield first, then all player graveyards.
+
+    When SBA destroys a permanent and moves it to graveyard, the Permanent object
+    (with its own UUID) is replaced by the underlying Card (different UUID).
+    We match by card name which persists across zones.
+
+    Args:
+        gs: GameState
+        perm_or_card: A Permanent or Card — we use its .card.name for matching
+        perm_id: Optional permanent ID to also check on battlefield
+    """
+    # Resolve the name from whatever was passed in
+    if hasattr(perm_or_card, 'card') and hasattr(perm_or_card.card, 'name'):
+        target_name = perm_or_card.card.name
+    elif hasattr(perm_or_card, 'name'):
+        target_name = perm_or_card.name
+    else:
+        return None
+
+    # Check battlefield first (Permanent objects)
+    for p in gs.battlefield:
+        if hasattr(p, 'card') and p.card.name == target_name:
+            return p
+
+    # Check all player graveyards (Card objects after SBA destruction)
+    for player in gs.players:
+        for card in player.graveyard:
+            if hasattr(card, 'name') and card.name == target_name:
+                return card
+    return None
+
+
+def _is_on_battlefield(gs, perm_id):
+    """Check if permanent is still on battlefield."""
+    return any(p.id == perm_id for p in gs.battlefield)
+
+
 class TestTrampleToPlaneswalker:
     """US24: Trample excess damage routes to planeswalker, not player."""
 
@@ -62,9 +100,11 @@ class TestTrampleToPlaneswalker:
         gs.step = Step.COMBAT_DAMAGE
         gs = assign_combat_damage(gs)
 
-        # All 5 damage to planeswalker, loyalty reduced to 0
-        assert pw.loyalty == 0
-        # Player life unchanged
+        # All 5 damage to planeswalker, loyalty reduced to 0, destroyed by SBA
+        pw_in_gs = _find_perm(gs, pw)
+        assert pw_in_gs is not None  # Found in graveyard
+        assert not _is_on_battlefield(gs, pw.id)  # Destroyed by SBA
+        # Player life unchanged (damage went to PW, not player)
         assert gs.players[1].life == 20
 
     def test_blocked_trample_excess_to_planeswalker(self):
@@ -82,9 +122,12 @@ class TestTrampleToPlaneswalker:
         gs.step = Step.COMBAT_DAMAGE
         gs = assign_combat_damage(gs)
 
-        # 1 damage to blocker, 2 trample to planeswalker
-        assert blk.damage_marked == 1
-        assert pw.loyalty == 2  # 4 - 2 = 2
+        # 1 damage to blocker (lethal), 2 trample to planeswalker
+        blk_in_gs = _find_perm(gs, blk)
+        assert blk_in_gs is not None
+        assert not _is_on_battlefield(gs, blk.id)  # Destroyed by SBA
+        pw_in_gs = next(p for p in gs.battlefield if p.id == pw.id)
+        assert pw_in_gs.loyalty == 2  # 4 - 2 = 2
         # Player life unchanged (trample goes to PW, not player)
         assert gs.players[1].life == 20
 
@@ -104,8 +147,10 @@ class TestTrampleToPlaneswalker:
         gs = assign_combat_damage(gs)
 
         # 3 damage to blocker (not lethal, toughness 4), 0 trample to PW
-        assert blk.damage_marked == 3
-        assert pw.loyalty == 4  # unchanged
+        blk_in_gs = next(p for p in gs.battlefield if p.id == blk.id)
+        pw_in_gs = next(p for p in gs.battlefield if p.id == pw.id)
+        assert blk_in_gs.damage_marked == 3
+        assert pw_in_gs.loyalty == 4  # unchanged
         assert gs.players[1].life == 20
 
     def test_deathtouch_trample_to_planeswalker(self):
@@ -126,8 +171,11 @@ class TestTrampleToPlaneswalker:
         gs = assign_combat_damage(gs)
 
         # With deathtouch, 1 damage is lethal to blocker. 3 trample to PW.
-        assert blk.damage_marked == 1
-        assert pw.loyalty == 2  # 5 - 3 = 2
+        blk_in_gs = _find_perm(gs, blk)
+        assert blk_in_gs is not None
+        assert not _is_on_battlefield(gs, blk.id)  # Destroyed by deathtouch SBA
+        pw_in_gs = next(p for p in gs.battlefield if p.id == pw.id)
+        assert pw_in_gs.loyalty == 2  # 5 - 3 = 2
         assert gs.players[1].life == 20
 
     def test_multiple_blockers_trample_to_planeswalker(self):
@@ -149,10 +197,14 @@ class TestTrampleToPlaneswalker:
         gs.step = Step.COMBAT_DAMAGE
         gs = assign_combat_damage(gs)
 
-        # 2 damage to blockers (1 each), 1 trample to PW
-        assert blk1.damage_marked == 1
-        assert blk2.damage_marked == 1
-        assert pw.loyalty == 3  # 4 - 1 = 3
+        # 2 damage to blockers (1 each, both lethal), 1 trample to PW
+        blk1_in_gs = _find_perm(gs, blk1)
+        blk2_in_gs = _find_perm(gs, blk2)
+        assert blk1_in_gs is not None and blk2_in_gs is not None
+        assert not _is_on_battlefield(gs, blk1.id)  # Destroyed by SBA
+        assert not _is_on_battlefield(gs, blk2.id)  # Destroyed by SBA
+        pw_in_gs = next(p for p in gs.battlefield if p.id == pw.id)
+        assert pw_in_gs.loyalty == 3  # 4 - 1 = 3
         assert gs.players[1].life == 20
 
     def test_trample_exceeds_loyalty(self):
@@ -170,9 +222,11 @@ class TestTrampleToPlaneswalker:
         gs.step = Step.COMBAT_DAMAGE
         gs = assign_combat_damage(gs)
 
-        # 1 to blocker, 2 to PW (loyalty to 0), 2 excess to player
-        assert blk.damage_marked == 1
-        assert pw.loyalty == 0
+        # 1 to blocker (lethal), remaining trample to PW, PW destroyed by SBA
+        blk_in_gs = _find_perm(gs, blk)
+        assert blk_in_gs is not None and not _is_on_battlefield(gs, blk.id)  # Destroyed
+        pw_in_gs = _find_perm(gs, pw)
+        assert pw_in_gs is not None and not _is_on_battlefield(gs, pw.id)  # PW destroyed too (loyalty to 0)
         # The excess 2 damage beyond the PW's loyalty goes to player
         # (trample assigns all remaining after lethal to the target, but PW can only
         # take damage equal to its remaining loyalty)
@@ -205,6 +259,7 @@ class TestTrampleToPlaneswalker:
         gs.step = Step.COMBAT_DAMAGE
         gs = assign_combat_damage(gs)
 
-        # 1 to blocker, 2 to player (normal trample)
-        assert blk.damage_marked == 1
+        # 1 to blocker (lethal), 2 to player (normal trample)
+        blk_in_gs = _find_perm(gs, blk)
+        assert blk_in_gs is not None and not _is_on_battlefield(gs, blk.id)  # Destroyed
         assert gs.players[1].life == 18  # 20 - 2 = 18

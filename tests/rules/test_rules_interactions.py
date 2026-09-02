@@ -393,17 +393,22 @@ def test_double_blocker_damage_split():
     att.summoning_sick = False
     gs, blk1 = put_permanent_onto_battlefield(gs, _creature("Blocker1", 1, 2), "p2")
     gs, blk2 = put_permanent_onto_battlefield(gs, _creature("Blocker2", 1, 2), "p2")
-    gs = declare_attackers(gs, [AttackDeclaration(attacker_id=att.id, defending_id="p2")])
+    att_id = att.id
+    blk1_id = blk1.id
+    blk2_id = blk2.id
+    gs = declare_attackers(gs, [AttackDeclaration(attacker_id=att_id, defending_id="p2")])
     gs.step = Step.DECLARE_BLOCKERS
+    # declare_blockers internally calls begin_step which runs combat damage + SBA.
+    # With pure transforms, original perm objects are stale — look up from battlefield.
     gs = declare_blockers(gs, [
-        BlockDeclaration(blocker_id=blk1.id, attacker_id=att.id),
-        BlockDeclaration(blocker_id=blk2.id, attacker_id=att.id),
+        BlockDeclaration(blocker_id=blk1_id, attacker_id=att_id),
+        BlockDeclaration(blocker_id=blk2_id, attacker_id=att_id),
     ])
-    gs.step = Step.COMBAT_DAMAGE
-    gs = assign_combat_damage(gs)
-    # Both blockers take some damage (auto-assign tries to kill them)
-    total_blocker_damage = blk1.damage_marked + blk2.damage_marked
-    assert total_blocker_damage <= 4
+    # Combat damage already resolved inside declare_blockers; read from battlefield
+    b1 = next((p for p in gs.battlefield if p.id == blk1_id), None)
+    b2 = next((p for p in gs.battlefield if p.id == blk2_id), None)
+    total = (b1.damage_marked if b1 else 0) + (b2.damage_marked if b2 else 0)
+    assert total <= 4
 
 
 def test_blocker_deals_damage_back():
@@ -412,16 +417,20 @@ def test_blocker_deals_damage_back():
     gs, att = put_permanent_onto_battlefield(gs, _creature("Attacker", 2, 2), "p1")
     att.summoning_sick = False
     gs, blk = put_permanent_onto_battlefield(gs, _creature("BigBlock", 3, 3), "p2")
-    gs = declare_attackers(gs, [AttackDeclaration(attacker_id=att.id, defending_id="p2")])
+    att_id = att.id
+    blk_id = blk.id
+    gs = declare_attackers(gs, [AttackDeclaration(attacker_id=att_id, defending_id="p2")])
     gs.step = Step.DECLARE_BLOCKERS
-    gs = declare_blockers(gs, [BlockDeclaration(blocker_id=blk.id, attacker_id=att.id)])
-    gs.step = Step.COMBAT_DAMAGE
-    gs = assign_combat_damage(gs)
-    # Attacker takes 3, blocker takes 2
-    assert att.damage_marked == 3
-    assert blk.damage_marked == 2
-    gs, events = check_and_apply_sbas(gs)
-    assert not any(p.id == att.id for p in gs.battlefield)  # attacker dies
+    # declare_blockers internally calls begin_step which runs combat damage + SBA.
+    # Attacker (2/2) takes 3 from blocker → dies via SBA inside declare_blockers.
+    # Blocker (3/3) takes 2 from attacker → survives with 2 damage marked.
+    gs = declare_blockers(gs, [BlockDeclaration(blocker_id=blk_id, attacker_id=att_id)])
+    # Attacker should be dead (removed by SBA inside declare_blockers)
+    assert not any(p.id == att_id for p in gs.battlefield), "Attacker should have died from 3 damage"
+    # Blocker survives with 2 damage marked (look up from battlefield — pure transform)
+    updated_blk = next((p for p in gs.battlefield if p.id == blk_id), None)
+    assert updated_blk is not None, "Blocker should still be on battlefield"
+    assert updated_blk.damage_marked == 2
 
 
 # ─── Layer System Tests (36–41) ───────────────────────────────────────────────

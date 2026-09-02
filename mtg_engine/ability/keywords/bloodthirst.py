@@ -121,8 +121,62 @@ class BloodthirstKeyword(TriggeredKeyword):
         permanent: "Permanent",
         target: "Permanent | None" = None,
     ) -> "GameState":
-        """Apply bloodthirst (no-op without combat damage tracking)."""
-        return game_state
+        """Apply bloodthirst ETB trigger.
+
+        If an opponent of the controller was dealt damage this turn, the permanent
+        enters with N +1/+1 counters. Pure transform.
+        """
+        # Guard: permanent must have bloodthirst
+        if not self.applies(game_state, permanent):
+            return game_state
+
+        # Determine amount
+        amount = self.amount
+        if amount <= 0:
+            amount = self.parse_bloodthirst_amount(permanent.card.oracle_text or "")
+            if not amount:
+                return game_state
+
+        controller = permanent.controller
+        opponents = [p.name for p in game_state.players if p.name != controller]
+        damage_dict = game_state.damage_dealt_this_turn or {}
+
+        # Condition: any opponent was dealt damage this turn
+        if not any(damage_dict.get(opp, 0) > 0 for opp in opponents):
+            return game_state
+
+        # Add +1/+1 counters
+        current_counters = dict(permanent.counters)
+        current_counters["+1/+1"] = current_counters.get("+1/+1", 0) + amount
+        new_perm = permanent.model_copy(update={"counters": current_counters})
+
+        # Update battlefield
+        new_battlefield = []
+        found = False
+        for p in game_state.battlefield:
+            if p.id == permanent.id:
+                new_battlefield.append(new_perm)
+                found = True
+            else:
+                new_battlefield.append(p)
+        if not found:
+            # Permanent not yet on battlefield; append it
+            new_battlefield = list(game_state.battlefield) + [new_perm]
+
+        new_game_state = game_state.model_copy(update={"battlefield": new_battlefield})
+
+        # Emit counter placed event for transcript
+        try:
+            from mtg_engine.engine.stack import _emit_counter_placed
+            _emit_counter_placed(new_game_state, permanent.id, "+1/+1", amount)
+        except Exception:
+            pass
+
+        logger.debug(
+            "Bloodthirst %d: %s enters with %d +1/+1 counters (controller %s)",
+            amount, permanent.card.name, amount, controller
+        )
+        return new_game_state
 
     def get_trigger_description(self) -> str:
         return f"Bloodthirst {self.amount}: If opponent took combat damage this turn, enter with {self.amount} +1/+1 counters"

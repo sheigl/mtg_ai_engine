@@ -16,7 +16,7 @@ from mtg_engine.ability.keywords.base import TriggeredKeyword
 from mtg_engine.models.game import PendingTrigger
 
 if TYPE_CHECKING:
-    from mtg_engine.models.game import GameState, Card, Permanent
+    from mtg_engine.models.game import GameState, Card, Permanent, StackObject
 
 _AFTERLIFE_PATTERN = re.compile(r"\bAfterlife\b\s+(?P<count>\d+)", re.IGNORECASE)
 _AFTERLIFE_PLAIN = re.compile(r"\bAfterlife\b", re.IGNORECASE)
@@ -125,5 +125,56 @@ class AfterlifeKeyword(TriggeredKeyword):
         """Apply afterlife (no-op without death context)."""
         return game_state
 
+    def resolve_trigger(
+        self,
+        game_state: "GameState",
+        controller: str,
+        count: int = 1,
+    ) -> "GameState":
+        """Resolve afterlife trigger: create N 0/0 white Spirit tokens with afterlife 1.
+
+        CR 702.108b: Create N 0/0 white Spirit creature tokens with afterlife 1.
+        Pure transform: delegates to _create_token_with_pt_and_keywords from stack.py.
+
+        Args:
+            game_state: Current game state.
+            controller: Player who controlled the dying permanent (owns new tokens).
+            count: Number of Spirit tokens to create.
+
+        Returns:
+            New GameState with tokens on battlefield.
+        """
+        # Lazy import to avoid circular dependency (stack.py imports from this module)
+        from mtg_engine.engine.stack import _create_token_with_pt_and_keywords
+
+        for _ in range(count):
+            game_state = _create_token_with_pt_and_keywords(
+                game_state, controller, "a", "0", "0", "Spirit", "afterlife"
+            )
+
+        logger.info("Afterlife: %s created %d 0/0 white Spirit token(s)", controller, count)
+        return game_state
+
     def get_trigger_description(self) -> str:
         return f"Afterlife {self.count}: When this dies, create {self.count} 0/0 white Spirit tokens"
+
+
+def resolve_trigger(game_state: "GameState", stack_obj: "StackObject") -> "GameState":
+    """Resolve afterlife trigger from a StackObject.
+
+    Extracts count from stack_obj.trigger_data and delegates to AfterlifeKeyword.resolve_trigger().
+    This is the primary entry point called by stack.py's dispatcher.
+
+    Args:
+        game_state: Current game state.
+        stack_obj: The stack object containing trigger data.
+
+    Returns:
+        New GameState with Spirit tokens created.
+    """
+    trigger_data = getattr(stack_obj, "trigger_data", {}) or {}
+    count = trigger_data.get("count", 1)
+    controller = stack_obj.controller
+
+    kw = AfterlifeKeyword(count=count)
+    return kw.resolve_trigger(game_state, controller, count)

@@ -81,38 +81,52 @@ class ToxicKeyword(TriggeredKeyword):
     ) -> "GameState":
         """Apply toxic effect: give poison counters to the damaged player.
 
+        CR 702.134a: Whenever a toxic creature deals combat damage to a
+        player, that player gets N poison counters — once per combat damage
+        event, regardless of the amount of damage dealt.
+
+        Pure transform: returns a new GameState via model_copy(update={...}).
+        Never mutates the live player. No-op (returns the same object) when
+        the toxic value is 0 or the target player is not in the game.
+
+        The 10+ poison counters loss condition (CR 704.5c) is NOT handled
+        here — the SBA (engine/sba.py) checks poison counters and marks the
+        player as having lost.
+
         Args:
             game_state: Current game state.
             source_perm: The creature with toxic that dealt damage.
             damaged_player_name: Name of the player who was dealt damage.
 
         Returns:
-            Modified game state with poison counters added.
+            New game state with poison counters added to the damaged player.
         """
         toxic_value = self.get_toxic_value(source_perm)
+        if toxic_value <= 0:
+            return game_state
 
-        # Find the damaged player
+        found = False
+        new_players: list = []
         for player in game_state.players:
             if player.name == damaged_player_name:
-                player.poison_counters += toxic_value
+                new_count = player.poison_counters + toxic_value
+                new_players.append(player.model_copy(update={"poison_counters": new_count}))
+                found = True
                 logger.info(
-                    "%s gets %d poison counters from Toxic on %s (total: %d)",
+                    "%s gets %d poison counters from Toxic on %s (total: %d); "
+                    "SBA will check for loss at 10+ (CR 704.5c)",
                     player.name,
                     toxic_value,
                     source_perm.card.name,
-                    player.poison_counters,
+                    new_count,
                 )
-                # Check for lethal poison (10+ poison counters = loss)
-                # CR 704.5i: A player with 10+ poison counters loses
-                if player.poison_counters >= 10:
-                    logger.warning(
-                        "%s has %d poison counters and loses the game",
-                        player.name,
-                        player.poison_counters,
-                    )
-                break
+            else:
+                new_players.append(player)
 
-        return game_state
+        if not found:
+            return game_state
+
+        return game_state.model_copy(update={"players": new_players})
 
     def apply(
         self,
@@ -140,3 +154,32 @@ class ToxicKeyword(TriggeredKeyword):
         if match:
             return cls(value=int(match.group(1)))
         return None
+
+
+def apply_toxic(
+    game_state: "GameState",
+    source_perm: "Permanent",
+    damaged_player_name: str,
+) -> "GameState":
+    """Module-level convenience: apply toxic to the damaged player (CR 702.134a).
+
+    Called from the combat damage flow (engine/combat/core.py) when a toxic
+    source deals combat damage to a player. The toxic value is parsed from
+    the source card's oracle text ("Toxic N"); defaults to 1 when the oracle
+    text has no explicit value.
+
+    Pure transform: returns a new GameState via model_copy(update={...}), or
+    the same object when nothing changes. Loss at 10+ poison counters is
+    handled by the SBA (CR 704.5c), not here.
+
+    Args:
+        game_state: Current game state.
+        source_perm: The toxic creature that dealt combat damage.
+        damaged_player_name: Name of the player dealt combat damage.
+
+    Returns:
+        New game state with poison counters added to the damaged player.
+    """
+    oracle = source_perm.card.oracle_text or ""
+    keyword = ToxicKeyword.from_oracle(oracle) or ToxicKeyword()
+    return keyword.apply_toxic(game_state, source_perm, damaged_player_name)

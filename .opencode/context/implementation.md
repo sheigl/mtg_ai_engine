@@ -1,46 +1,33 @@
-# Implementation Notes
+# Implementation Context
 
-## APP-06 Code Review R3 Fixes (2026-07-15)
+## Sprint 7 P1 Bloodthirst Keyword (CR 702.22) — Story 7-6e — 2026-09-02
 
-### Files Modified
-- `mtg_engine/api/routers/player_stats.py` — exception handler split, type hint added
-- `tests/api/test_player_stats.py` — 2 new game completion tests
+Implemented the Bloodthirst keyword (previously a NOOP stub) as part of the alternative-casting-cost umbrella Story 7-6 (sub-story 7-6e).
 
-### Changes Summary
+### Production changes
+- `mtg_engine/ability/keywords/bloodthirst.py` — `BloodthirstKeyword.apply()` now has a real implementation:
+  - No-op guards (permanent lacks bloodthirst / no opponent dealt damage this turn) return the SAME GameState per Q4
+  - Bloodthirst amount from `self.amount` or parsed from oracle text
+  - Checks `game_state.damage_dealt_this_turn` (dict[str, int] mapping player → damage received this turn)
+  - If any opponent has damage > 0, adds N +1/+1 counters to the entering permanent
+  - Pure transform via `model_copy`; emits `counter_placed` event
+- `mtg_engine/models/game.py` (line 376) — NEW `damage_dealt_this_turn: dict[str, int]` field
+- `mtg_engine/engine/zones.py` (lines 767-775) — ETB wiring in `put_permanent_onto_battlefield()`: detects Bloodthirst via `from_oracle()`, applies counters
+- `mtg_engine/engine/combat/core.py` (lines 731-733) — combat damage tracking (CR 702.22b)
+- `mtg_engine/engine/stack.py` (lines 2090-2092) — spell/ability damage tracking (CR 702.22b)
+- `mtg_engine/engine/turn_manager.py` (line 543) — resets `damage_dealt_this_turn` at turn start
 
-#### player_stats.py
-1. **CRITICAL #1 (exception handler):** Split single try/except wrapping both winner+loser updates into two independent try/except blocks with `winner_updated`/`loser_updated` flags. Only retry failed ones via full `$set` replace, preventing overwrites of already-successful updates.
-2. **MINOR #4 (type hint):** Added `gs: GameState` type annotation to `update_stats_for_game_completion()` signature; added `GameState` import from `mtg_engine.models.game`.
+### Tests
+- `tests/engine/test_bloodthirst_integration.py` — 19 tests across 4 classes:
+  - `TestBloodthirstUnit` (6): module helpers (has/parse/from_oracle)
+  - `TestBloodthirstApply` (5): direct apply (counters, no-op same-object guard, oracle-parsed amount, pure transform)
+  - `TestBloodthirstETB` (6): `put_permanent_onto_battlefield` wiring incl. AI controller and multi-opponent
+  - `TestBloodthirstDamageTracking` (2): combat and spell damage both trigger per CR 702.22b
 
-#### test_player_stats.py
-1. **MAJOR #2 (both players new):** Added `test_game_completion_both_players_new` — empty docs list, both players upserted via `$set`, verifies positive ELO for winner and loser.
-2. **MAJOR #3 (format None fallback):** Added `test_game_completion_format_none_fallback` — sets `gs.format = None`, verifies stats stored under `"standard"` key in formats dict.
+### Status
+- Full suite: **3167 passed / 0 failed / 3 skipped / 13 xfailed**
+- Skip/xfail set unchanged from baseline
+- ruff 0 NEW errors (4 E402 in bloodthirst.py are pre-existing at git HEAD)
 
-### Test Results
-- 30 player stats tests pass (was 28, +2 new)
-- 2640 total regression tests pass (was 2638), 0 regressions
-
-## APP-06 Code Review R2 Fixes (2026-07-15)
-
-### Files Modified
-- `mtg_engine/api/routers/player_stats.py` — 4 fixes + documentation
-- `tests/api/test_player_stats.py` — mock extension + 3 new tests
-
-### Changes Summary
-
-#### player_stats.py
-1. **CRITICAL #1 ($inc upsert bug):** Split update logic into two paths: existing players get atomic `$inc`, new players get full `$set` with computed stats. Previously, `$inc` with `upsert=True` would initialize missing fields to 0, causing negative ELO for new losers (e.g., `0 + (-16) = -16`).
-2. **MAJOR #4 (narrow exception):** Changed `except Exception:` to `except (WriteError, OperationFailure):` from pymongo.errors. Added import at top of file.
-3. **MINOR #6 (format fallback):** Changed `gs.format` to `getattr(gs, "format", None) or "standard"` to prevent `"formats.None"` MongoDB key.
-4. **TODO documentation:** Added comment near ELO delta computation documenting stale-delta race condition as architectural limitation.
-
-#### test_player_stats.py
-1. **MAJOR #3 (mock $inc support):** Extended `_mock_col.update_one()` to handle both `$set` and `$inc`, including dotted paths like `formats.commander.wins`. For upsert with `$inc`, simulates MongoDB behavior of initializing missing fields from 0 + delta.
-2. **MAJOR #5 (game completion tests):** Added `TestGameCompletionStatsUpdate` class with 3 sync tests using `asyncio.run()`:
-   - `test_game_completion_both_players_exist` — verifies $inc path for existing players
-   - `test_game_completion_new_player_upsert` — verifies $set path catches critical bug #1
-   - `test_game_completion_no_winner_skips` — verifies early return when winner is None
-
-### Test Results
-- 28 player stats tests pass (was 25, +3 new)
-- 2638 total regression tests pass (was 2635), 0 regressions
+### Known limitation
+- Damage tracking counts only player life loss/poison, not damage to permanents (sufficient for the Bloodthirst condition which checks whether an opponent was dealt damage).

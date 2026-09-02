@@ -64,8 +64,10 @@ class TestPoisonousKeyword:
             priority_holder="P1",
         )
         keyword = PoisonousKeyword(poison_amount=2)
-        keyword.apply(gs, "source_id", "P2")
-        assert gs.players[1].poison_counters == 2
+        gs2 = keyword.apply(gs, "source_id", "P2")
+        assert gs2.players[1].poison_counters == 2
+        # Original unchanged (pure transform)
+        assert gs.players[1].poison_counters == 0
 
     def test_apply_poisonous_accumulates(self):
         gs = GameState(
@@ -77,8 +79,8 @@ class TestPoisonousKeyword:
             priority_holder="P1",
         )
         keyword = PoisonousKeyword(poison_amount=2)
-        keyword.apply(gs, "source_id", "P2")
-        keyword.apply(gs, "source_id", "P2")
+        gs = keyword.apply(gs, "source_id", "P2")
+        gs = keyword.apply(gs, "source_id", "P2")
         assert gs.players[1].poison_counters == 4
 
     def test_apply_poisonous_lethal(self):
@@ -92,6 +94,22 @@ class TestPoisonousKeyword:
         )
         gs.players[1].poison_counters = 7
         keyword = PoisonousKeyword(poison_amount=3)
-        keyword.apply(gs, "source_id", "P2")
-        assert gs.players[1].poison_counters == 10
-        assert gs.players[1].has_lost
+        gs2 = keyword.apply(gs, "source_id", "P2")
+        assert gs2.players[1].poison_counters == 10
+        assert gs2.players[1].has_lost
+
+    def test_apply_poisonous_pure_transform(self):
+        """PoisonousKeyword.apply returns new GameState, doesn't mutate original."""
+        gs = GameState(
+            game_id="test",
+            seed=42,
+            players=[PlayerState(name="P1", life=20, library=[], hand=[]),
+                     PlayerState(name="P2", life=20, library=[], hand=[])],
+            active_player="P1",
+            priority_holder="P1",
+        )
+        keyword = PoisonousKeyword(poison_amount=5)
+        gs2 = keyword.apply(gs, "source_id", "P2")
+        assert id(gs) != id(gs2)
+        assert gs.players[1].poison_counters == 0  # Original unchanged
+        assert gs2.players[1].poison_counters == 5

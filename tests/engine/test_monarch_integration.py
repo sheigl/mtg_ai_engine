@@ -228,37 +228,34 @@ class TestEndStepDrawIntegration:
     def test_monarch_draws_at_end_of_own_turn(self):
         """Monarch draws a card at end step of their turn."""
         gs = _make_gs(monarch="Alice", active_player="Alice")
-        alice = next(p for p in gs.players if p.name == "Alice")
-        hand_before = len(alice.hand)
+        hand_before = len(gs.players[0].hand)
 
         gs = handle_end_step_draw(gs)
 
-        assert len(alice.hand) == hand_before + 1
+        assert len(gs.players[0].hand) == hand_before + 1
 
     def test_monarch_does_not_draw_on_opponents_turn(self):
         """Monarch does not draw during opponent's end step."""
         gs = _make_gs(monarch="Alice", active_player="Bob")
-        alice = next(p for p in gs.players if p.name == "Alice")
-        hand_before = len(alice.hand)
+        hand_before = len(gs.players[0].hand)
 
         gs = handle_end_step_draw(gs)
 
-        assert len(alice.hand) == hand_before  # No draw, Bob is active but Alice is monarch
+        assert len(gs.players[0].hand) == hand_before  # No draw, Bob is active but Alice is monarch
 
     def test_monarch_draw_after_combat_transfer(self):
         """After gaining monarch via combat, player draws at their end step."""
         # Setup: p2 is monarch, p1 attacks and gains monarch
         gs = _make_gs(monarch="Bob", active_player="Alice")
-        alice = next(p for p in gs.players if p.name == "Alice")
 
         # Simulate combat damage transfer (p1 deals damage to monarch Bob)
         gs = check_combat_damage_monarch(gs, "Bob", "Alice")
         assert is_monarch(gs, "Alice"), "Alice should now be the monarch"
 
         # Alice's end step — she draws as monarch
-        hand_before = len(alice.hand)
+        hand_before = len(gs.players[0].hand)
         gs = handle_end_step_draw(gs)
-        assert len(alice.hand) == hand_before + 1
+        assert len(gs.players[0].hand) == hand_before + 1
 
 
 # ── Edge cases ──────────────────────────────────────────────────────────────

@@ -154,7 +154,12 @@ def begin_step(game_state: GameState) -> GameState:
         # DNG-01: Day/Night transition check (CR 730.2 — second part of untap step)
         if gs.is_day is not None:
             from mtg_engine.engine.daynight import check_daynight_transition
+            prev_is_day = gs.is_day
             gs = check_daynight_transition(gs)
+            # If transition occurred, scan battlefield for card ability triggers (e.g., Tovolar's Huntmaster)
+            if gs.is_day != prev_is_day:
+                from mtg_engine.engine.triggers import check_day_night_change_triggers
+                gs = check_day_night_change_triggers(gs)
 
         # No priority in untap step; mana pools don't need clearing
         return gs
@@ -162,54 +167,42 @@ def begin_step(game_state: GameState) -> GameState:
     elif step == Step.UPKEEP:
         # CR 702.61c: At the beginning of your upkeep, remove a time counter from each
         # suspended card you own. When the last is removed, cast it for free.
-        active = get_player(game_state, game_state.active_player)
-        still_suspended = []
-        for card in active.suspended_cards:
-            tc_match = None
-            if card.parse_status and card.parse_status.startswith("suspended:"):
-                try:
-                    tc_match = int(card.parse_status.split(":")[1])
-                except (ValueError, IndexError):
-                    tc_match = 0
-            remaining = (tc_match or 0) - 1
-            if remaining <= 0:
-                # Cast for free — TASK-019-026: auto-cast suspended card
-                logger.info("Suspend: %s time counters exhausted — casting for free", card.name)
-                from mtg_engine.engine.stack import cast_spell
-                
-                # Add card to hand temporarily so cast_spell can find it
-                ready = card.model_copy(update={"parse_status": "ok"})
-                active.hand.append(ready)
-                
-                try:
-                    # Cast with empty mana payment (it's free under suspend)
-                    game_state = cast_spell(
-                        game_state,
-                        game_state.active_player,
-                        ready.id,
-                        targets=[],
-                        mana_payment={}
-                    )
-                    # If it's a creature, grant haste (TASK-019-027)
-                    if "creature" in ready.type_line.lower():
-                        # Mark that haste should be granted when creature enters
-                        # This is handled in put_permanent_onto_battlefield via metadata
-                        for stack_obj in game_state.stack:
-                            if stack_obj.source_card.id == ready.id:
-                                if not stack_obj.metadata:
-                                    stack_obj.metadata = {}
-                                stack_obj.metadata["grant_haste"] = True
-                                break
-                except ValueError as e:
-                    # If cast fails, put it back on suspended_cards
-                    active.hand[:] = [c for c in active.hand if c.id != ready.id]
-                    still_suspended.append(card)
-                    logger.debug("Suspend cast failed for %s: %s", card.name, e)
-            else:
-                updated = card.model_copy(update={"parse_status": f"suspended:{remaining}"})
-                still_suspended.append(updated)
-                logger.debug("Suspend: %s now has %d time counter(s)", card.name, remaining)
-        active.suspended_cards = still_suspended
+        active_player_name = game_state.active_player
+        from mtg_engine.engine.suspend import (
+            remove_time_counter as _remove_tc,
+            get_suspend_ready_cards as _get_ready,
+        )
+
+        # Step 1: Remove time counters — moves ready cards to hand with suspend_ready status
+        game_state = _remove_tc(game_state, active_player_name)
+
+        # Step 2: Auto-cast any cards that are now ready (TASK-019-026)
+        from mtg_engine.engine.stack import cast_spell as _cast_spell
+
+        ready_cards = _get_ready(game_state, active_player_name)
+        for rc in ready_cards:
+            card_id = rc["id"]
+            card_name = rc["name"]
+            logger.info("Suspend: %s time counters exhausted — casting for free", card_name)
+            try:
+                # SA-04: Use from_suspended=True so cast_spell moves from hand (suspend_ready), not normal hand
+                game_state = _cast_spell(
+                    game_state,
+                    active_player_name,
+                    card_id,
+                    targets=[],
+                    mana_payment={},
+                    from_suspended=True,
+                )
+                # If it's a creature, grant haste (TASK-019-027)
+                for stack_obj in game_state.stack:
+                    if stack_obj.source_card.id == card_id:
+                        if not stack_obj.metadata:
+                            stack_obj.metadata = {}
+                        stack_obj.metadata["grant_haste"] = True
+                        break
+            except ValueError as e:
+                logger.debug("Suspend cast failed for %s: %s", card_name, e)
 
         # US26 (T058): Fading upkeep — remove one fade counter from each fading permanent;
         # sacrifice when last counter is removed (CR 702.67)
@@ -225,12 +218,18 @@ def begin_step(game_state: GameState) -> GameState:
             # Remove one fade counter
             perm.counters["fade"] = perm.counters["fade"] - 1
             logger.debug("Fading upkeep: %s now has %d fade counter(s)", perm.card.name, perm.counters["fade"])
+            # Wire: Counter Removed Trigger (CR 701.32) — a fade counter was removed
+            # this upkeep, so "whenever a counter is removed from this permanent"
+            # triggers fire (before any sacrifice of the last-counter case).
+            from mtg_engine.engine.triggers import check_counter_triggers as _check_counter_removed
+            game_state = _check_counter_removed(
+                game_state, perm.id, game_state.active_player, counter_event="removed"
+            )
             if perm.counters["fade"] <= 0:
-                # No more counters — sacrifice the permanent
-                game_state = move_permanent_to_zone(game_state, perm, "graveyard")
+                # No more counters — sacrifice the permanent (wires sacrifice triggers)
+                from mtg_engine.engine.zones import _sacrifice_permanent as _do_sacrifice
+                game_state = _do_sacrifice(game_state, perm.id)
                 logger.info("Fading: %s has no fade counters — sacrificed to graveyard", perm.card.name)
-                # Remove from battlefield (moved_permanent already did this, but be safe)
-                game_state.battlefield[:] = [p for p in game_state.battlefield if p.id != perm.id]
 
         # US14 (T033): Saga upkeep — increment lore counter and queue chapter ability
         from mtg_engine.models.game import PendingTrigger
@@ -407,6 +406,11 @@ def begin_step(game_state: GameState) -> GameState:
         from mtg_engine.engine.monarch import handle_end_step_draw
         game_state = handle_end_step_draw(game_state)
 
+    # SA-04: Evoke (CR 702.41) — mandatory sacrifice at beginning of end step
+    if step == Step.END and game_state.pending_evoke_sacrifice is not None:
+        from mtg_engine.engine.evoke import resolve_evoke_sacrifice as _resolve_evoke
+        game_state = _resolve_evoke(game_state)
+
     # Clear mana pools at end of each step (mana floating rule)
     # Untap and Cleanup already handled above
     if step not in (Step.UNTAP, Step.CLEANUP):
@@ -535,13 +539,15 @@ def _advance_turn(game_state: GameState) -> GameState:
         "spells_cast_last_turn": game_state.spells_cast_this_turn_by_player.get(prev_active, 0),
         "spells_cast_this_turn": 0,
         "spells_cast_this_turn_by_player": {},
+        "cards_drawn_this_turn": {},
+        "damage_dealt_this_turn": {},
         "extra_turns": new_extra_turns,
         "active_player": next_player,
         "priority_holder": next_player,
         "turn": game_state.turn + 1,
         "phase": Phase.BEGINNING,
         "step": Step.UNTAP,
-        "phase_skip_flags": set(),
+        "phase_skip_flags": {},
     })
     logger.info("Turn %d begins; active player: %s", gs.turn, gs.active_player)
     return gs
@@ -591,21 +597,19 @@ def process_cleanup_step(game_state: GameState) -> GameState:
             perm.toughness_bonus = 0
             perm.toughness_bonus_expires = None
         
-        # Clear crew status
+        # Clear crew status (legacy per-permanent flag kept in sync). The
+        # authoritative reversion of crewed vehicles is handled below via
+        # handle_crew_expiration(game_state) using the crewed_vehicles dict.
         if perm.crewed_until_end_of_turn:
             perm.crewed_until_end_of_turn = False
-            # Remove "Creature" from type_line
-            if "creature" in perm.card.type_line.lower():
-                # Already a creature, no change needed
-                pass
-            else:
-                # Remove creature type
-                words = perm.card.type_line.split()
-                new_words = [w for w in words if w.lower() != "creature"]
-                perm.card = perm.card.model_copy(update={
-                    "type_line": " ".join(new_words),
-                })
-    
+
+    # 3b. Expire crewed vehicles (CR 702.147b): revert each tracked vehicle to
+    # its non-vehicle artifact form and clear the tracking dict. No-op (returns
+    # the same object) when nothing is crewed, so this never changes behaviour
+    # for games that never crewed.
+    from mtg_engine.ability.keywords.crew import handle_crew_expiration
+    game_state = handle_crew_expiration(game_state)
+
     # 4. Check SBAs and triggers - if anything fires, we need to loop back
     game_state, sba_fired = _check_once(game_state)
     

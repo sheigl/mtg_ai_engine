@@ -8,7 +8,7 @@ import logging
 import uuid
 import re as _re
 
-from mtg_engine.models.game import GameState, PendingTrigger, Permanent
+from mtg_engine.models.game import GameState, PendingTrigger, Permanent, StackObject
 from mtg_engine.engine.zones import register_zone_change_listener, ZoneChangeEvent
 
 logger = logging.getLogger(__name__)
@@ -144,19 +144,23 @@ MANA_PRODUCTION_TRIGGER_PATTERNS = [
     _re.compile(r"whenever a land produces mana", _re.IGNORECASE),
     _re.compile(r"whenever you add mana", _re.IGNORECASE),
     _re.compile(r"whenever a source you control adds mana", _re.IGNORECASE),
-    # TRG-20 Fix 9: "Whenever a player spends mana" also matches mana production triggers
-    _re.compile(r"whenever a player spends mana", _re.IGNORECASE),
+    # NOTE: "whenever a player spends mana" is a MANA-SPENT trigger (CR 118.9),
+    # NOT a mana-production trigger. It lives in MANA_SPENT_TRIGGER_PATTERNS only.
+    # (Removed here to prevent it firing on mana production — MAJOR 5.)
 ]
 
 # ─── B1: Missing Trigger Categories (Sprint 3) ──────────────────────────────
 
 # Sacrifice triggers — e.g. [[Zulaport Cutthroat]]
+# NOTE: "dies" triggers are NOT listed here. A sacrifice is a death, and "dies"
+# triggers are owned by the zone-change listener (single owner, CR 704.5d token
+# suppression applied there). The sacrifice path emits a zone-change event so
+# "dies" triggers fire exactly once. check_sacrifice_triggers() only handles
+# "is sacrificed" triggers (which DO fire for tokens — CR 701.19).
 SACRIFICE_TRIGGER_PATTERNS = [
     _re.compile(r"whenever (?:a|an) (.*?) you control is sacrificed", _re.IGNORECASE),
     _re.compile(r"whenever you sacrifice (?:a|an) (.*?)(?:,|\.|\?|$)", _re.IGNORECASE),
     _re.compile(r"whenever a player sacrifices (?:a|an) (.*?)(?:,|\.|\?|$)", _re.IGNORECASE),
-    # TRG-20 Fix 1: "Whenever a creature dies" also matches sacrifice triggers
-    _re.compile(r"whenever (?:a|an) .*? dies", _re.IGNORECASE),
 ]
 
 # Life gain/loss triggers — e.g. [[Karametra's Blessing]], [[Geth's Grimoire]]
@@ -220,6 +224,35 @@ MANA_SPENT_TRIGGER_PATTERNS = [
     _re.compile(r"whenever a player spends mana", _re.IGNORECASE),
 ]
 
+# Countered triggers (CR 701.5) — e.g. "whenever a spell is countered"
+COUNTERED_TRIGGER_PATTERNS = [
+    # index 0 — self-referential: "whenever this is countered" / "whenever ~ is countered"
+    _re.compile(r"whenever (?:this|~) (?:spell )?is countered", _re.IGNORECASE),
+    # index 1 — "you control" filter: "whenever a spell you control is countered"
+    _re.compile(r"whenever (?:a|an) spell you control is countered", _re.IGNORECASE),
+    # index 2 — general: "whenever a spell is countered" / "whenever a spell <modifier> is countered"
+    # NOTE: the modifier ("you control" handled at index 1, or e.g. "your opponent controls")
+    # is optional, so the bare "a spell is countered" form matches too.
+    _re.compile(r"whenever (?:a|an) spell (?:.*? )?is countered", _re.IGNORECASE),
+]
+
+# Investigated triggers (CR 701.32) — e.g. "whenever you investigate"
+#
+# Pattern-ownership split (7-3 test round 1 fix): token-entering-the-battlefield
+# phrasings ("whenever a/an [clue|investigate] token enters...") are deliberately
+# NOT in this list — they are matched by the generic token-trigger path
+# (TOKEN_TRIGGER_PATTERNS / check_token_triggers, which fires when the 1/1 red
+# Goblin "investigate" token enters via _investigate), so each watcher fires
+# exactly once. Keeping them here double-queued such watchers (1x "token" +
+# 1x "investigated" for the same effect), violating exactly-once (CR 110.6-style
+# per-event single firing).
+INVESTIGATED_TRIGGER_PATTERNS = [
+    # index 0 — "you" filter: "whenever you investigate"
+    _re.compile(r"whenever you investigate", _re.IGNORECASE),
+    # index 1 — general: "whenever a player investigates"
+    _re.compile(r"whenever a player investigates?", _re.IGNORECASE),
+]
+
 # Combined trigger dictionary
 TRIGGER_PATTERNS = {
     "cast": CAST_TRIGGER_PATTERNS,
@@ -253,6 +286,9 @@ TRIGGER_PATTERNS = {
     "day_night_change": DAY_NIGHT_CHANGE_TRIGGER_PATTERNS,
     "completed_dungeon": COMPLETED_DUNGEON_TRIGGER_PATTERNS,
     "mana_spent": MANA_SPENT_TRIGGER_PATTERNS,
+    # Sprint 7 P0: Countered (CR 701.5) + Investigated (CR 701.32)
+    "countered": COUNTERED_TRIGGER_PATTERNS,
+    "investigated": INVESTIGATED_TRIGGER_PATTERNS,
 }
 
 
@@ -328,6 +364,79 @@ def _on_zone_change(event: ZoneChangeEvent, game_state: GameState) -> None:
                         game_state.pending_triggers.append(trigger)
                         logger.debug("Landfall trigger queued from %s", card.name)
 
+    # Death-trigger wiring for Afterlife, Undying, Persist (CR 702.108, 702.51, 702.61)
+    # MUST be OUTSIDE the battlefield loop — dying permanent is already removed by this point
+    if event.get("to_zone") == "graveyard" and event.get("from_zone") == "battlefield":
+        # CR 704.5d: tokens cease to exist when leaving battlefield — no death triggers fire
+        if not event.get("is_token", False):
+            _queue_death_triggers(event, game_state)
+
+
+def _queue_death_triggers(event: ZoneChangeEvent, game_state: GameState) -> None:
+    """Queue afterlife, undying, persist triggers when a creature dies.
+
+    CR 702.108 (Afterlife), CR 702.51 (Undying), CR 702.61 (Persist).
+    These are triggered abilities that fire when the permanent with the keyword
+    moves from battlefield to graveyard ("dies").
+
+    Counter guard checks happen here at trigger-queuing time, not during resolution.
+    """
+    card_name = event.get("card_name", "")
+    player = event.get("player", "")
+    perm_id = event.get("permanent_id", "") or event.get("card_id", "")
+    keywords = [k.lower() for k in (event.get("permanent_keywords") or [])]
+    counters = event.get("permanent_counters") or {}
+    power_str = event.get("permanent_power", "0")
+    toughness_str = event.get("permanent_toughness", "0")
+    oracle_text = event.get("oracle_text", "")
+
+    # --- Afterlife (CR 702.108) ---
+    if "afterlife" in keywords:
+        from mtg_engine.ability.keywords.afterlife import AfterlifeKeyword
+        count = AfterlifeKeyword.parse_afterlife_count(oracle_text) or 1
+        trigger = AfterlifeKeyword(count=count).create_trigger(
+            card=None, controller=player, perm_id=perm_id
+        )
+        # Store token count for resolution
+        from mtg_engine.models.game import PendingTrigger as PT
+        if isinstance(trigger, PT):
+            trigger.trigger_data = {"count": count}
+        game_state.pending_triggers.append(trigger)
+        logger.debug("Afterlife %d trigger queued for %s", count, card_name)
+
+    # --- Undying (CR 702.51): only if no +1/+1 counters on dying creature ---
+    if "undying" in keywords and counters.get("+1/+1", 0) == 0:
+        from mtg_engine.models.game import Card, Permanent
+        from mtg_engine.ability.keywords.undying import UndyingKeyword
+        dummy_perm = Permanent(
+            card=Card(name=card_name, power=str(power_str), toughness=str(toughness_str)),
+            controller=player,
+            id=perm_id,
+            counters=counters,
+        )
+        kw = UndyingKeyword()
+        trigger = kw.create_trigger(game_state, dummy_perm, dummy_perm, to_zone="graveyard")
+        if trigger is not None:
+            # Store P/T for resolution (source_card on stack may lack these)
+            from mtg_engine.models.game import PendingTrigger as PT
+            if isinstance(trigger, PT):
+                trigger.trigger_data = {"power": str(power_str), "toughness": str(toughness_str)}
+            game_state.pending_triggers.append(trigger)
+            logger.debug("Undying trigger queued for %s", card_name)
+
+    # --- Persist (CR 702.61): only if no -1/-1 counters on dying creature ---
+    if "persist" in keywords and counters.get("-1/-1", 0) == 0:
+        from mtg_engine.models.game import Card, Permanent
+        from mtg_engine.ability.keywords.persist import PersistKeyword
+        dummy_perm = Permanent(
+            card=Card(name=card_name), controller=player, id=perm_id, counters=counters
+        )
+        kw = PersistKeyword()
+        trigger = kw.create_trigger(game_state, dummy_perm, dummy_perm, to_zone="graveyard")
+        if trigger is not None:
+            game_state.pending_triggers.append(trigger)
+            logger.debug("Persist trigger queued for %s", card_name)
+
 
 def _matches_zone_change(
     ability,
@@ -344,10 +453,23 @@ def _matches_zone_change(
     to_z = event.get("to_zone", "")
     event_card_id = event.get("card_id", "")
 
+    # Token triggers (CR 704.5c) are owned by check_token_triggers(), NOT the
+    # zone listener. Skip them here to avoid double-firing: the zone listener
+    # would otherwise match "whenever a token enters the battlefield" via the
+    # generic "enters" branch below. check_token_triggers() is invoked at every
+    # token-creation site (stack.py, ability/effects/base.py, ability/loyalty.py).
+    for _tp in TOKEN_TRIGGER_PATTERNS:
+        if _tp.search(cond):
+            return False
+
     # "when this creature dies" / "whenever a creature dies"
     # "dies" = moves from battlefield to graveyard
     if "dies" in cond or ("graveyard" in cond and from_z == "battlefield"):
         if to_z == "graveyard" and from_z == "battlefield":
+            # CR 704.5d: tokens cease to exist when leaving the battlefield —
+            # they do not "die", so "dies" triggers do not fire for tokens.
+            if event.get("is_token", False):
+                return False
             # Self-referential trigger: "when this creature dies"
             if "this" in cond or "enchanted" in cond:
                 return event_card_id == source_perm.id
@@ -467,6 +589,27 @@ def _matches_phase_trigger(
     return False
 
 
+def _is_inside_parenthetical(text: str, start: int) -> bool:
+    """Return True if position ``start`` in ``text`` is inside a parenthetical.
+
+    Paren depth at ``start`` is the count of ``(`` minus ``)`` over
+    ``text[:start]``; depth > 0 means the position is inside parentheses.
+
+    Used to distinguish real self-referential trigger text (top-level, e.g.
+    "Whenever this creature deals combat damage to a player, draw a card.")
+    from keyword reminder text (inside parentheses, e.g. the Toxic reminder
+    "(whenever this creature deals combat damage to a player, ...)"), which
+    must not queue a spurious no-op combat_damage trigger.
+    """
+    depth = 0
+    for ch in text[:start]:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+    return depth > 0
+
+
 def check_damage_triggers(
     game_state: GameState,
     assignments: list,
@@ -551,12 +694,21 @@ def check_damage_triggers(
 
         # Fallback: direct regex match for "this creature deals combat damage" patterns
         # that may not be parsed correctly by the ability parser.
+        #
+        # Only TOP-LEVEL matches are real self-referential triggers. Keyword
+        # reminder text (e.g. "Toxic 2 (whenever this creature deals combat
+        # damage to a player, that player gets 2 poison counters.)") lives inside
+        # a parenthetical group and must NOT queue a spurious no-op trigger —
+        # those keywords are handled by their dedicated apply_*() paths
+        # (e.g. apply_toxic in combat/core.py).
         _COMBAT_DAMAGE_TRIGGER_RE = _re.compile(
             r"whenever (?:this|~|this creature) deals? (?:combat )?damage(?: to a player)?",
             _re.IGNORECASE,
         )
         oracle_text = perm.card.oracle_text or ""
-        if _COMBAT_DAMAGE_TRIGGER_RE.search(oracle_text):
+        for _match in _COMBAT_DAMAGE_TRIGGER_RE.finditer(oracle_text):
+            if _is_inside_parenthetical(oracle_text, _match.start()):
+                continue  # keyword reminder text, not a real trigger
             trigger = PendingTrigger(
                 id=str(uuid.uuid4()),
                 source_permanent_id=perm.id,
@@ -570,6 +722,7 @@ def check_damage_triggers(
                 "Combat damage trigger queued from %s (controller: %s)",
                 card.name, perm.controller,
             )
+            break  # at most one fallback combat_damage trigger per permanent
 
     return game_state
 
@@ -583,14 +736,74 @@ def _is_you_pattern(pattern_idx: int) -> bool:
 
 def check_sacrifice_triggers(
     game_state: GameState,
-    sacrificed_perm_ids: list[str],
+    sacrificed_perms: list[Permanent],
     controller: str,
 ) -> GameState:
-    """Check for "whenever a creature you control is sacrificed" triggers. Pure transform."""
+    """Check "is sacrificed" triggers (CR 701.19). Pure transform.
+
+    Args:
+        game_state: Current game state. The sacrificed permanents are already
+            removed from the battlefield (so they cannot be watched here).
+        sacrificed_perms: The Permanent objects that were sacrificed, captured
+            BEFORE removal so type_line / controller / is_token are available.
+        controller: The player who performed the sacrifice (the "you" for
+            "whenever you sacrifice ..." patterns).
+
+    Returns:
+        New GameState with matching triggers queued.
+
+    Semantics:
+        - "whenever a/an <type> you control is sacrificed": fires if any
+          sacrificed permanent is controlled by the watcher AND its type matches.
+        - "whenever you sacrifice a/an <type>": fires if the sacrificer is the
+          watcher's controller AND a sacrificed permanent's type matches.
+        - "whenever a player sacrifices a/an <type>": fires if any sacrificed
+          permanent's type matches (any player may be the sacrificer).
+        - Self-referential "whenever this <perm> is sacrificed": checked against
+          each sacrificed permanent's own oracle text (it is off the battlefield).
+        - "dies" triggers are NOT handled here — they fire via the zone-change
+          event emitted by the sacrifice path (single owner, with the CR 704.5d
+          token suppression applied in the zone listener).
+        - "is sacrificed" triggers fire for tokens (sacrifice != death for
+          trigger purposes, CR 701.19).
+    """
     from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
 
     new_triggers = list(game_state.pending_triggers)
 
+    def _type_matches(captured: str, type_line: str) -> bool:
+        cap = (captured or "").strip()
+        if not cap:
+            return True
+        return cap in (type_line or "").lower()
+
+    # --- Self-referential: "whenever this ... is sacrificed" on the sacrificed
+    #     permanent itself (it is off the battlefield, so check its own text). ---
+    _self_sac_re = _re.compile(
+        r"whenever this (?:creature|permanent|card|land|artifact|planeswalker|enchantment) is sacrificed",
+        _re.IGNORECASE,
+    )
+    for sac in sacrificed_perms:
+        abilities = parse_oracle_text(sac.card.oracle_text or "", sac.card.type_line)
+        for ab in abilities:
+            if not isinstance(ab, TriggeredAbility):
+                continue
+            cond = ab.trigger_condition.lower()
+            if _self_sac_re.search(cond):
+                is_optional = ab.effect.lower().startswith("you may")
+                new_triggers.append(PendingTrigger(
+                    id=str(uuid.uuid4()),
+                    source_permanent_id=sac.id,
+                    controller=sac.controller,
+                    trigger_type="sacrifice",
+                    effect_description=ab.effect,
+                    source_card_name=sac.card.name,
+                    is_optional=is_optional,
+                ))
+                logger.debug("Self sacrifice trigger queued: %r from %s", cond, sac.card.name)
+                break
+
+    # --- Battlefield watchers ---
     for perm in game_state.battlefield:
         card = perm.card
         abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
@@ -599,20 +812,42 @@ def check_sacrifice_triggers(
                 continue
             cond = ab.trigger_condition.lower()
             for pattern_idx, pattern in enumerate(SACRIFICE_TRIGGER_PATTERNS):
-                if pattern.search(cond):
-                    is_optional = ab.effect.lower().startswith("you may")
-                    trigger = PendingTrigger(
-                        id=str(uuid.uuid4()),
-                        source_permanent_id=perm.id,
-                        controller=perm.controller,
-                        trigger_type="sacrifice",
-                        effect_description=ab.effect,
-                        source_card_name=card.name,
-                        is_optional=is_optional,
-                    )
-                    new_triggers.append(trigger)
-                    logger.debug("Sacrifice trigger queued: %r from %s", ab.trigger_condition, card.name)
-                    break
+                m = pattern.search(cond)
+                if not m:
+                    continue
+                captured = m.group(1) if m.lastindex and m.lastindex >= 1 else ""
+                if pattern_idx == 0:
+                    # "whenever a/an <type> you control is sacrificed"
+                    if not any(
+                        sac.controller == perm.controller
+                        and _type_matches(captured, sac.card.type_line)
+                        for sac in sacrificed_perms
+                    ):
+                        continue
+                elif pattern_idx == 1:
+                    # "whenever you sacrifice a/an <type>"
+                    if controller != perm.controller:
+                        continue
+                    if not any(_type_matches(captured, sac.card.type_line) for sac in sacrificed_perms):
+                        continue
+                elif pattern_idx == 2:
+                    # "whenever a player sacrifices a/an <type>" (any player)
+                    if not any(_type_matches(captured, sac.card.type_line) for sac in sacrificed_perms):
+                        continue
+                else:
+                    continue
+                is_optional = ab.effect.lower().startswith("you may")
+                new_triggers.append(PendingTrigger(
+                    id=str(uuid.uuid4()),
+                    source_permanent_id=perm.id,
+                    controller=perm.controller,
+                    trigger_type="sacrifice",
+                    effect_description=ab.effect,
+                    source_card_name=card.name,
+                    is_optional=is_optional,
+                ))
+                logger.debug("Sacrifice trigger queued: %r from %s", ab.trigger_condition, card.name)
+                break
 
     return game_state.model_copy(update={"pending_triggers": new_triggers})
 
@@ -622,10 +857,15 @@ def check_life_gain_lost_triggers(
     player_name: str,
     amount: int,
 ) -> GameState:
-    """Check for "whenever you gain/lose life" triggers. Pure transform."""
+    """Check for "whenever you gain/lose life" triggers. Pure transform.
+
+    amount > 0 means life was gained; amount < 0 means life was lost.
+    Only matching trigger types fire (gain triggers on gain, lose on loss).
+    """
     from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
 
     new_triggers = list(game_state.pending_triggers)
+    is_gain = amount > 0
 
     for perm in game_state.battlefield:
         card = perm.card
@@ -638,6 +878,14 @@ def check_life_gain_lost_triggers(
                 if pattern.search(cond):
                     # TRG-20 Fix 2: "whenever you gain/lose life" only fires for controller
                     if _is_you_pattern(pattern_idx) and perm.controller != player_name:
+                        continue
+                    # FIX: Distinguish between gain and loss triggers
+                    # Only fire "gain life" triggers when amount > 0, and vice versa
+                    cond_has_gain = "gain" in cond
+                    cond_has_lose = "lose" in cond
+                    if is_gain and not cond_has_gain:
+                        continue
+                    if not is_gain and not cond_has_lose:
                         continue
                     is_optional = ab.effect.lower().startswith("you may")
                     trigger = PendingTrigger(
@@ -814,10 +1062,18 @@ def check_becomes_target_triggers(
     game_state: GameState,
     target_perm_id: str,
 ) -> GameState:
-    """Check for "whenever this becomes the target of a spell or ability" triggers. Pure transform."""
+    """Check for "whenever this becomes the target of a spell or ability" triggers. Pure transform.
+
+    Only fires for permanents that are actually targeted (target_perm_id), not all permanents.
+    Self-referential abilities ("this creature", "~") only fire if perm.id == target_perm_id.
+    Broad abilities ("a creature you control") fire if the targeted permanent matches.
+    """
     from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
 
     new_triggers = list(game_state.pending_triggers)
+
+    # Find the targeted permanent for type/controller checks
+    target_perm = next((p for p in game_state.battlefield if p.id == target_perm_id), None)
 
     for perm in game_state.battlefield:
         card = perm.card
@@ -828,6 +1084,25 @@ def check_becomes_target_triggers(
             cond = ab.trigger_condition.lower()
             for pattern in BECOMES_TARGET_TRIGGER_PATTERNS:
                 if pattern.search(cond):
+                    # FIX: Only fire for the targeted permanent or matching broad triggers
+                    is_this_trigger = bool(_re.compile(
+                        r"whenever (?:this|~)", _re.IGNORECASE
+                    ).search(cond))
+
+                    if is_this_trigger and perm.id != target_perm_id:
+                        continue
+
+                    # For "a <type> you control becomes the target", check if target matches type
+                    is_you_control = bool(_re.compile(
+                        r"whenever (?:a|an) .*? you control becomes the target", _re.IGNORECASE
+                    ).search(cond))
+                    if is_you_control and perm.id != target_perm_id:
+                        # Only fire if this perm controls a creature that was targeted
+                        if target_perm and target_perm.controller == perm.controller:
+                            pass  # OK — controlled permanent was targeted
+                        else:
+                            continue
+
                     is_optional = ab.effect.lower().startswith("you may")
                     trigger = PendingTrigger(
                         id=str(uuid.uuid4()),
@@ -848,11 +1123,47 @@ def check_becomes_target_triggers(
 def check_attach_triggers(
     game_state: GameState,
     aura_perm_id: str,
+    attach_event: str = "attach",
+    attached_controller: str | None = None,
 ) -> GameState:
-    """Check for "whenever this becomes attached to another permanent" triggers. Pure transform."""
+    """Check attach / unattach triggers. Pure transform.
+
+    Args:
+        game_state: Current game state.
+        aura_perm_id: ID of the aura/equipment being attached or unattached.
+        attach_event: "attach" (default) fires the "whenever this becomes
+            attached to another permanent" pattern (index 0) with a
+            self-referential "this" guard. "unattach" fires the "whenever an
+            aura you control becomes unattached" pattern (index 1) with a
+            "you control" filter (the unattached aura must be controlled by the
+            watcher). Splitting the two event types prevents an unattach
+            trigger from firing when an aura/equipment ATTACHES, and vice-versa.
+        attached_controller: Controller of the aura being attached/unattached.
+            Required for the "unattach" path because the aura has already left
+            the battlefield by call time — a battlefield lookup would return ""
+            and the "you control" filter could never match. For "attach" it may
+            be omitted (the aura is still on the battlefield) or passed through.
+
+    Returns:
+        New GameState with matching triggers queued.
+    """
     from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
 
     new_triggers = list(game_state.pending_triggers)
+
+    # Select the single relevant pattern for this event type.
+    pattern = ATTACH_TRIGGER_PATTERNS[1] if attach_event == "unattach" else ATTACH_TRIGGER_PATTERNS[0]
+    is_this_trigger = attach_event == "attach"
+
+    # Controller of the aura/equipment being attached/unattached (for the
+    # "you control" filter on the unattach pattern). For "attach" the aura is
+    # still on the battlefield and looked up below; for "unattach" it has left,
+    # so the caller passes the controller captured BEFORE removal.
+    if attached_controller is not None:
+        attached_perm_controller = attached_controller
+    else:
+        attached_perm = next((p for p in game_state.battlefield if p.id == aura_perm_id), None)
+        attached_perm_controller = attached_perm.controller if attached_perm else ""
 
     for perm in game_state.battlefield:
         card = perm.card
@@ -863,49 +1174,54 @@ def check_attach_triggers(
                 continue
             cond = ab.trigger_condition.lower()
             # TRG-20 Fix 6: "whenever this becomes attached" only fires for the aura being attached
-            is_this_trigger = bool(_re.compile(r"whenever this becomes attached", _re.IGNORECASE).search(cond))
             if is_this_trigger and perm.id != aura_perm_id:
                 continue
-            for pattern in ATTACH_TRIGGER_PATTERNS:
-                if pattern.search(cond):
-                    is_optional = ab.effect.lower().startswith("you may")
-                    trigger = PendingTrigger(
-                        id=str(uuid.uuid4()),
-                        source_permanent_id=perm.id,
-                        controller=perm.controller,
-                        trigger_type="attach",
-                        effect_description=ab.effect,
-                        source_card_name=card.name,
-                        is_optional=is_optional,
-                    )
-                    new_triggers.append(trigger)
-                    logger.debug("Attach trigger queued: %r from %s", ab.trigger_condition, card.name)
-                    found_trigger = True
-                    break
+            if not pattern.search(cond):
+                continue
+            # "you control" filter for the unattach pattern: the unattached aura
+            # must be controlled by the watcher (CR 702.5). Uses the controller
+            # captured before the aura left the battlefield (see attached_perm_controller).
+            if attach_event == "unattach" and "you control" in cond and attached_perm_controller != perm.controller:
+                continue
+            is_optional = ab.effect.lower().startswith("you may")
+            trigger = PendingTrigger(
+                id=str(uuid.uuid4()),
+                source_permanent_id=perm.id,
+                controller=perm.controller,
+                trigger_type="attach",
+                effect_description=ab.effect,
+                source_card_name=card.name,
+                is_optional=is_optional,
+            )
+            new_triggers.append(trigger)
+            logger.debug("Attach trigger queued: %r from %s", ab.trigger_condition, card.name)
+            found_trigger = True
+            break
 
-        # Fallback: check raw oracle text when parser can't handle mixed static+triggered abilities
-        if not found_trigger and card.oracle_text:
+        # Fallback: check raw oracle text when the parser can't handle mixed
+        # static+triggered abilities (attach pattern only — "whenever this
+        # becomes attached" embedded in mixed text).
+        if attach_event == "attach" and not found_trigger and card.oracle_text:
             oracle_lower = card.oracle_text.lower()
-            is_this_trigger = bool(_re.compile(r"whenever this becomes attached", _re.IGNORECASE).search(oracle_lower))
             if is_this_trigger and perm.id != aura_perm_id:
                 continue
-            for pattern in ATTACH_TRIGGER_PATTERNS:
-                if pattern.search(oracle_lower):
-                    # Extract effect text after the comma/period following "attached"
-                    effect_match = _re.search(r"whenever this becomes attached[^.]*?,\s*(.+?)(?:\.|$)", oracle_lower)
-                    effect_text = effect_match.group(1).strip().rstrip(".") if effect_match else card.oracle_text
-                    trigger = PendingTrigger(
-                        id=str(uuid.uuid4()),
-                        source_permanent_id=perm.id,
-                        controller=perm.controller,
-                        trigger_type="attach",
-                        effect_description=effect_text,
-                        source_card_name=card.name,
-                        is_optional=False,
-                    )
-                    new_triggers.append(trigger)
-                    logger.debug("Attach trigger queued (oracle fallback): %s", card.name)
-                    break
+            if not pattern.search(oracle_lower):
+                continue
+            # Extract effect text after the comma/period following "attached"
+            effect_match = _re.search(r"whenever this becomes attached[^.]*?,\s*(.+?)(?:\.|$)", oracle_lower)
+            effect_text = effect_match.group(1).strip().rstrip(".") if effect_match else card.oracle_text
+            trigger = PendingTrigger(
+                id=str(uuid.uuid4()),
+                source_permanent_id=perm.id,
+                controller=perm.controller,
+                trigger_type="attach",
+                effect_description=effect_text,
+                source_card_name=card.name,
+                is_optional=False,
+            )
+            new_triggers.append(trigger)
+            logger.debug("Attach trigger queued (oracle fallback): %s", card.name)
+            break
 
     return game_state.model_copy(update={"pending_triggers": new_triggers})
 
@@ -1140,8 +1456,165 @@ def check_counter_triggers(
     game_state: GameState,
     perm_id: str,
     player_name: str,
+    counter_event: str = "placed",
 ) -> GameState:
-    """Check for 'whenever a counter is put on' / 'whenever a counter is removed from' triggers. Pure transform."""
+    """Check 'whenever a counter is put on' / 'removed from' triggers. Pure transform.
+
+    Args:
+        game_state: Current game state.
+        perm_id: ID of the permanent a counter was placed/removed on.
+        player_name: The player who caused the counter change (for "you" filters).
+        counter_event: "placed" (default) fires "counter is put on" patterns
+            (indices 0-1); "removed" fires the "counter is removed from"
+            pattern (index 2) only. Splitting the two event types prevents a
+            "counter is put on" trigger from firing when a counter is removed
+            (e.g., Fading upkeep) and vice-versa.
+
+    Returns:
+        New GameState with matching triggers queued.
+    """
+    from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    new_triggers = list(game_state.pending_triggers)
+
+    # Pattern indices to consider, based on the event type.
+    candidate_idxs = [2] if counter_event == "removed" else [0, 1]
+
+    for perm in game_state.battlefield:
+        card = perm.card
+        abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+        for ab in abilities:
+            if not isinstance(ab, TriggeredAbility):
+                continue
+            cond = ab.trigger_condition.lower()
+
+            # Self-referential "this" guard: "whenever a counter is put on this
+            # creature" only fires for the permanent that actually changed.
+            if "this" in cond and perm.id != perm_id:
+                continue
+
+            for pattern_idx in candidate_idxs:
+                pattern = COUNTER_TRIGGER_PATTERNS[pattern_idx]
+                if not pattern.search(cond):
+                    continue
+                # Filter "you" patterns by controller — break to skip general fallback
+                if _is_you_pattern(pattern_idx) and perm.controller != player_name:
+                    break
+                is_optional = ab.effect.lower().startswith("you may")
+                trigger = PendingTrigger(
+                    id=str(uuid.uuid4()),
+                    source_permanent_id=perm.id,
+                    controller=perm.controller,
+                    trigger_type="counter",
+                    effect_description=ab.effect,
+                    source_card_name=card.name,
+                    is_optional=is_optional,
+                )
+                new_triggers.append(trigger)
+                logger.debug("Counter trigger queued: %r from %s", ab.trigger_condition, card.name)
+                break
+
+    return game_state.model_copy(update={"pending_triggers": new_triggers})
+
+
+def check_countered_triggers(
+    game_state: GameState,
+    countered_stack_obj: "StackObject",
+) -> GameState:
+    """Check "whenever a spell is countered" triggers (CR 701.5). Pure transform.
+
+    Must be called BEFORE the countered spell is removed from the stack so that
+    self-referential triggers ("whenever this is countered") can still read the
+    source card (Q3: pre-removal capture).
+
+    Args:
+        game_state: Current game state.
+        countered_stack_obj: The StackObject being countered (still on the stack
+            at call time, so its source_card data is readable).
+
+    Returns:
+        New GameState with matching triggers queued.
+
+    Semantics (pattern-index → filter, COUNTERED_TRIGGER_PATTERNS):
+        - index 0 — self-referential "this"/"~": fires only when the countered
+          spell's source card is this permanent's own card (name match, the
+          engine's identity model).
+        - index 1 — "a spell you control is countered": fires only when the
+          watcher controls the countered spell. Note: the "you" variant here is
+          at index 1 (not index 0), so it is filtered explicitly rather than via
+          _is_you_pattern (which is index-0 keyed).
+        - index 2 — general "a spell is countered": fires for any countered spell.
+    """
+    from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
+
+    new_triggers = list(game_state.pending_triggers)
+    countered_name = countered_stack_obj.source_card.name
+
+    for perm in game_state.battlefield:
+        card = perm.card
+        abilities = parse_oracle_text(card.oracle_text or "", card.type_line)
+        for ab in abilities:
+            if not isinstance(ab, TriggeredAbility):
+                continue
+            cond = ab.trigger_condition.lower()
+
+            for pattern_idx, pattern in enumerate(COUNTERED_TRIGGER_PATTERNS):
+                if not pattern.search(cond):
+                    continue
+                # CR 701.5 self-referential guard (index 0): "whenever this is
+                # countered" fires only for the permanent whose own spell was
+                # countered.
+                if pattern_idx == 0 and countered_name != card.name:
+                    break
+                # "you control" filter (index 1): the watcher must control the
+                # countered spell.
+                if pattern_idx == 1 and perm.controller != countered_stack_obj.controller:
+                    break
+                is_optional = ab.effect.lower().startswith("you may")
+                trigger = PendingTrigger(
+                    id=str(uuid.uuid4()),
+                    source_permanent_id=perm.id,
+                    controller=perm.controller,
+                    trigger_type="countered",
+                    effect_description=ab.effect,
+                    source_card_name=card.name,
+                    is_optional=is_optional,
+                )
+                new_triggers.append(trigger)
+                logger.debug("Countered trigger queued: %r from %s", ab.trigger_condition, card.name)
+                break
+
+    return game_state.model_copy(update={"pending_triggers": new_triggers})
+
+
+def check_investigated_triggers(
+    game_state: GameState,
+    player_name: str,
+) -> GameState:
+    """Check "whenever you investigate" triggers (CR 701.32). Pure transform.
+
+    Called after a player performs the investigate action (and after the
+    1/1 red Goblin "investigate" token has been created).
+
+    Args:
+        game_state: Current game state.
+        player_name: The player who just investigated (the "you" for
+            "whenever you investigate"; the actor for
+            "whenever a player investigates").
+
+    Returns:
+        New GameState with matching triggers queued.
+
+    Semantics (pattern-index → filter, INVESTIGATED_TRIGGER_PATTERNS):
+        - index 0 — "you" filter: "whenever you investigate" fires only when the
+          watcher is the player who just investigated.
+        - index 1 — general: "whenever a player investigates" (any player).
+
+    Note: token-entering-the-battlefield phrasings ("whenever a/an
+    clue/investigate token enters...") are owned by the generic token-trigger
+    path (check_token_triggers), not this function — see the
+    INVESTIGATED_TRIGGER_PATTERNS comment for the exactly-once rationale.
+    """
     from mtg_engine.card_data.ability_parser import parse_oracle_text, TriggeredAbility
 
     new_triggers = list(game_state.pending_triggers)
@@ -1153,24 +1626,27 @@ def check_counter_triggers(
             if not isinstance(ab, TriggeredAbility):
                 continue
             cond = ab.trigger_condition.lower()
-            for pattern_idx, pattern in enumerate(COUNTER_TRIGGER_PATTERNS):
-                if pattern.search(cond):
-                    # Filter "you" patterns by controller — break to skip general fallback
-                    if _is_you_pattern(pattern_idx) and perm.controller != player_name:
-                        break
-                    is_optional = ab.effect.lower().startswith("you may")
-                    trigger = PendingTrigger(
-                        id=str(uuid.uuid4()),
-                        source_permanent_id=perm.id,
-                        controller=perm.controller,
-                        trigger_type="counter",
-                        effect_description=ab.effect,
-                        source_card_name=card.name,
-                        is_optional=is_optional,
-                    )
-                    new_triggers.append(trigger)
-                    logger.debug("Counter trigger queued: %r from %s", ab.trigger_condition, card.name)
+
+            for pattern_idx, pattern in enumerate(INVESTIGATED_TRIGGER_PATTERNS):
+                if not pattern.search(cond):
+                    continue
+                # "you" filter (index 0): the watcher must be the investigating
+                # player.
+                if _is_you_pattern(pattern_idx) and perm.controller != player_name:
                     break
+                is_optional = ab.effect.lower().startswith("you may")
+                trigger = PendingTrigger(
+                    id=str(uuid.uuid4()),
+                    source_permanent_id=perm.id,
+                    controller=perm.controller,
+                    trigger_type="investigated",
+                    effect_description=ab.effect,
+                    source_card_name=card.name,
+                    is_optional=is_optional,
+                )
+                new_triggers.append(trigger)
+                logger.debug("Investigated trigger queued: %r from %s", ab.trigger_condition, card.name)
+                break
 
     return game_state.model_copy(update={"pending_triggers": new_triggers})
 
@@ -1629,6 +2105,8 @@ def put_trigger_on_stack(
         controller=trigger.controller,
         targets=targets,
         effects=[trigger.effect_description],
+        trigger_type=trigger.trigger_type,
+        trigger_data=getattr(trigger, "trigger_data", {}) or {},
     )
     game_state.stack.append(stack_obj)
     game_state.pending_triggers[:] = [

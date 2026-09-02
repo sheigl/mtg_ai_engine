@@ -5,10 +5,28 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 import pytest
 from mtg_engine.card_data.scryfall import ScryfallClient
 
+# Canned Lightning Bolt payload so the tests are fully hermetic (no network,
+# no rate limits, no MongoDB, and no MagicMock leaking into JSON serialization).
+_LIGHTNING_BOLT = {
+    "id": "0482a799-4f8c-41f6-9969-66760d5959a2",
+    "name": "Lightning Bolt",
+    "mana_cost": "{R}",
+    "type_line": "Instant",
+    "oracle_text": "Deal 3 damage to any target.",
+    "colors": ["R"],
+    "color_identity": ["R"],
+    "keywords": [],
+}
+
 
 @pytest.fixture
-def client(tmp_path):
-    return ScryfallClient(db_path=tmp_path / "test_cache.db")
+def client(tmp_path, monkeypatch):
+    c = ScryfallClient(db_path=tmp_path / "test_cache.db")
+    # Force no MongoDB and stub the HTTP layer with the canned payload so the
+    # tests never hit the network and always get a JSON-serializable dict.
+    c._mongo_col = None
+    monkeypatch.setattr(c, "_api_get", lambda path, params=None: dict(_LIGHTNING_BOLT))
+    return c
 
 
 def test_get_card_lightning_bolt(client):

@@ -52,6 +52,14 @@ def _perm(gs: GameState, card: Card, controller: str) -> tuple[GameState, Perman
 class TestSacrificeTriggers:
     """Test check_sacrifice_triggers()."""
 
+    def _sac_perm(self, controller: str = "p1") -> Permanent:
+        """A sacrificed (off-battlefield) creature permanent."""
+        return Permanent(
+            id=f"perm-{uuid.uuid4().hex[:8]}",
+            card=_card("Sacrificed Beast", oracle_text=""),
+            controller=controller,
+        )
+
     def test_triggers_on_sacrifice(self):
         gs = _make_gs()
         card = _card(
@@ -59,8 +67,10 @@ class TestSacrificeTriggers:
             oracle_text="Whenever a creature you control is sacrificed, each opponent loses 1 life and you gain 1 life.",
         )
         gs, perm = _perm(gs, card, "p1")
+        # A creature controlled by the watcher (p1) is sacrificed (off-battlefield)
+        sac = self._sac_perm(controller="p1")
         before = len(gs.pending_triggers)
-        gs = check_sacrifice_triggers(gs, sacrificed_perm_ids=["other-perm-id"], controller="p1")
+        gs = check_sacrifice_triggers(gs, [sac], "p1")
         assert len(gs.pending_triggers) == before + 1
         trig = gs.pending_triggers[-1]
         assert trig.trigger_type == "sacrifice"
@@ -71,11 +81,12 @@ class TestSacrificeTriggers:
         gs = _make_gs()
         card = _card(
             "Blood Artist",
-            oracle_text="Whenever a creature dies, each opponent loses 1 life and you gain 1 life.",
+            oracle_text="Whenever a player sacrifices a creature, each opponent loses 1 life and you gain 1 life.",
         )
         gs, _ = _perm(gs, card, "p1")
         before = len(gs.pending_triggers)
-        gs = check_sacrifice_triggers(gs, sacrificed_perm_ids=["sacrificed-id"], controller="p1")
+        # Pattern 2 fires for any sacrificer (here the opponent, p2)
+        gs = check_sacrifice_triggers(gs, [self._sac_perm(controller="p2")], "p2")
         assert len(gs.pending_triggers) == before + 1
 
     def test_no_trigger_without_match(self):
@@ -83,7 +94,7 @@ class TestSacrificeTriggers:
         card = _card("Bear", oracle_text="2/2")
         gs, _ = _perm(gs, card, "p1")
         before = len(gs.pending_triggers)
-        gs = check_sacrifice_triggers(gs, sacrificed_perm_ids=["some-id"], controller="p1")
+        gs = check_sacrifice_triggers(gs, [self._sac_perm(controller="p1")], "p1")
         assert len(gs.pending_triggers) == before
 
     def test_optional_sacrifice_trigger(self):
@@ -93,7 +104,7 @@ class TestSacrificeTriggers:
             oracle_text="Whenever a creature you control is sacrificed, you may return target creature card from your graveyard to the battlefield.",
         )
         gs, perm = _perm(gs, card, "p1")
-        gs = check_sacrifice_triggers(gs, sacrificed_perm_ids=["x"], controller="p1")
+        gs = check_sacrifice_triggers(gs, [self._sac_perm(controller="p1")], "p1")
         trig = next((t for t in gs.pending_triggers if t.source_permanent_id == perm.id), None)
         assert trig is not None
         assert trig.is_optional is True
@@ -336,7 +347,7 @@ class TestBecomesTargetTriggers:
 class TestAttachTriggers:
     """Test check_attach_triggers()."""
 
-    def test_trigger_on_attach(self):
+    def test_trigger_on_unattach(self):
         gs = _make_gs()
         card = _card(
             "Eland",
@@ -344,7 +355,7 @@ class TestAttachTriggers:
         )
         gs, perm = _perm(gs, card, "p1")
         before = len(gs.pending_triggers)
-        gs = check_attach_triggers(gs, aura_perm_id=perm.id)
+        gs = check_attach_triggers(gs, aura_perm_id=perm.id, attach_event="unattach")
         assert len(gs.pending_triggers) == before + 1
         trig = gs.pending_triggers[-1]
         assert trig.trigger_type == "attach"
@@ -478,7 +489,10 @@ class TestManaProductionTriggers:
             "Notion",
             oracle_text="Whenever a player spends mana, that player mills a card.",
         )
-        gs, perm = _perm(gs, card, "p1")
+        gs, _ = _perm(gs, card, "p1")
         before = len(gs.pending_triggers)
-        gs = check_mana_production_triggers(gs, perm.id, "p2", ["R"])
+        # "spends mana" is a MANA_SPENT trigger (MAJOR 5), not a production trigger
+        gs = check_mana_spent_triggers(gs, "p2")
         assert len(gs.pending_triggers) == before + 1
+        trig = gs.pending_triggers[-1]
+        assert trig.trigger_type == "mana_spent"

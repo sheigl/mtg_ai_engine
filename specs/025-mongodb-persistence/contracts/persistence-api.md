@@ -136,7 +136,7 @@ Same applies to `PATCH .../rerate`.
 ## Environment Configuration
 
 ```bash
-MONGODB_URL=mongodb://localhost:27017/mtg_training
+MONGODB_URL=mongodb://server.home:27017/mtg_training
 ```
 
 The database name is parsed from the URL path. If not set, all MongoDB functionality is silently disabled.

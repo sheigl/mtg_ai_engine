@@ -297,6 +297,23 @@ def _check_once(game_state: GameState) -> tuple[GameState, list[SBAEvent]]:
                     [perm.id],
                 ))
 
+    # CR 301.7 / CR 704.5n: Fortification attached to a non-land (or to a
+    # permanent that left the battlefield) → becomes unattached and stays on
+    # the battlefield. Unlike the Equipment SBA above, this also cleans the
+    # host's stale attachments reference (matching zones.py zone-change
+    # cleanup). Self-contained loop: a Fortification type line contains
+    # neither "aura" nor "equipment", so there is no overlap with the blocks
+    # above.
+    from mtg_engine.ability.keywords.fortify import Fortify
+    for perm in game_state.battlefield:
+        if Fortify.is_fortification(perm.card) and perm.attached_to:
+            target_perm = next((p for p in game_state.battlefield if p.id == perm.attached_to), None)
+            if target_perm is None or not Fortify.is_land_card(target_perm.card):
+                perm.attached_to = None
+                if target_perm is not None and perm.id in target_perm.attachments:
+                    target_perm.attachments[:] = [a for a in target_perm.attachments if a != perm.id]
+                events.append(SBAEvent("fortification_detach", f"{perm.card.name} detached", [perm.id]))
+
     # CR 704.5k: World enchantment rule — if 2+ world permanents exist, keep the newest (US15)
     world_perms = [p for p in game_state.battlefield if "world" in p.card.type_line.lower()]
     if len(world_perms) > 1:

@@ -133,14 +133,55 @@ class SunburstKeyword(TriggeredKeyword):
             source_card_name=card.name if card else "Unknown",
         )
 
+    @staticmethod
+    def apply_sunburst_counters(
+        game_state: "GameState",
+        permanent_id: str,
+        mana_cost: str | None,
+    ) -> "GameState":
+        """Apply sunburst counters to a permanent on the battlefield.
+
+        CR 702.103b: Put +1/+1 counters on creatures, charge counters on others.
+        Simplified: unconditional (no day/night tracking).
+
+        Args:
+            game_state: Current game state with the permanent already on battlefield.
+            permanent_id: ID of the permanent to add counters to.
+            mana_cost: The mana cost string used for casting.
+
+        Returns:
+            New GameState with counters applied via model_copy.
+        """
+        colored_count = SunburstKeyword.count_colored_mana_symbols(mana_cost)
+        if colored_count == 0:
+            return game_state
+
+        battlefield = list(game_state.battlefield)
+        for i, p in enumerate(battlefield):
+            if p.id == permanent_id:
+                # Determine counter type based on card type
+                is_creature = "creature" in (p.card.type_line or "").lower()
+                counter_type = "+1/+1" if is_creature else "charge"
+
+                new_counters = dict(p.counters) if p.counters else {}
+                new_counters[counter_type] = new_counters.get(counter_type, 0) + colored_count
+                battlefield[i] = p.model_copy(update={"counters": new_counters})
+                break
+
+        return game_state.model_copy(update={"battlefield": battlefield})
+
     def apply(
         self,
         game_state: "GameState",
         permanent: "Permanent",
         target: "Permanent | None" = None,
     ) -> "GameState":
-        """Apply sunburst (no-op without time-of-day tracking)."""
-        return game_state
+        """Apply sunburst counters to a permanent on the battlefield.
+
+        Wrapper around static method for keyword module API consistency.
+        """
+        mana_cost = permanent.card.mana_cost if permanent.card else None
+        return self.apply_sunburst_counters(game_state, permanent.id, mana_cost)
 
     def get_trigger_description(self) -> str:
         return "Sunburst: Enter with charge counters equal to colored mana symbols in cost"

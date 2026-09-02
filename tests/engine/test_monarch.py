@@ -62,38 +62,33 @@ class TestSetMonarch:
 class TestEndStepDraw:
     def test_monarch_draws_card(self):
         gs = _make_gs(monarch="Alice")
-        alice = gs.players[0]
-        hand_before = len(alice.hand)
+        hand_before = len(gs.players[0].hand)
         gs = handle_end_step_draw(gs)
-        assert len(alice.hand) == hand_before + 1
+        assert len(gs.players[0].hand) == hand_before + 1
 
     def test_non_monarch_does_not_draw(self):
         gs = _make_gs(monarch="Bob")
-        alice = gs.players[0]
-        hand_before = len(alice.hand)
+        hand_before = len(gs.players[0].hand)
         gs = handle_end_step_draw(gs)
-        assert len(alice.hand) == hand_before
+        assert len(gs.players[0].hand) == hand_before
 
     def test_no_monarch_does_nothing(self):
         gs = _make_gs(monarch=None)
-        alice = gs.players[0]
-        hand_before = len(alice.hand)
+        hand_before = len(gs.players[0].hand)
         gs = handle_end_step_draw(gs)
-        assert len(alice.hand) == hand_before
+        assert len(gs.players[0].hand) == hand_before
 
     def test_active_player_not_monarch_does_not_draw(self):
         gs = _make_gs(monarch="Bob", active_player="Bob")
-        bob = gs.players[1]
-        hand_before = len(bob.hand)
+        hand_before = len(gs.players[1].hand)
         gs = handle_end_step_draw(gs)
-        assert len(bob.hand) == hand_before + 1  # Bob is active AND monarch
+        assert len(gs.players[1].hand) == hand_before + 1  # Bob is active AND monarch
 
     def test_not_active_player_does_not_draw_even_if_monarch(self):
         gs = _make_gs(monarch="Bob", active_player="Alice")
-        bob = gs.players[1]
-        hand_before = len(bob.hand)
+        hand_before = len(gs.players[1].hand)
         gs = handle_end_step_draw(gs)
-        assert len(bob.hand) == hand_before  # Alice is active, Bob is monarch, no draw
+        assert len(gs.players[1].hand) == hand_before  # Alice is active, Bob is monarch, no draw
 
 
 class TestCombatDamage:

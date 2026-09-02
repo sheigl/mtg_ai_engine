@@ -276,12 +276,20 @@ class CreateTokenEffect(Effect):
         
         token_count = self._get_token_count(source)
         card = source
-        
+
+        # Wire: Token Trigger (CR 704.5c) — "whenever you create a token" /
+        # "whenever a token enters the battlefield". check_token_triggers is the
+        # single owner of token triggers (the zone listener skips them). Fire once
+        # PER token created so each token is a separate event (CR 110.6).
+        from mtg_engine.engine.triggers import check_token_triggers as _check_token
+
         for _ in range(token_count):
             game_state, _ = put_permanent_onto_battlefield(
                 game_state, card, player.name, is_token=True
             )
-        
+            # One "token created" event per token (CR 110.6).
+            game_state = _check_token(game_state, player.name)
+
         logger.info("%s creates %d token(s)", player.name, token_count)
         return game_state
     

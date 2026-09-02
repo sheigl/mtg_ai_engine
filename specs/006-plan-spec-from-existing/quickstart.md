@@ -39,7 +39,7 @@ curl -L "https://media.wizards.com/2025/downloads/MagicCompRules_20250404.txt" \
 Create `.env` file:
 
 ```bash
-MONGODB_URI=mongodb://localhost:27017
+MONGODB_URI=mongodb://server.home:27017
 MONGODB_DB=mtg_training_data
 SCRYALFAY_API_KEY=your_api_key  # Optional, for rate limit increase
 RANDOM_SEED=42  # For deterministic games

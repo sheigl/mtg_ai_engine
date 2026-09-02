@@ -266,44 +266,90 @@ def apply_damage_event(
     final_damage = event.modified_amount if event.modified_amount is not None else event.amount
     redirect = event.redirect_target_id or effective_target
 
-    has_deathtouch = "deathtouch" in source_keywords
-    has_lifelink   = "lifelink" in source_keywords
-    has_infect     = "infect" in source_keywords
+    from mtg_engine.ability.keywords.deathtouch import apply_deathtouch_damage_from_card
+    from mtg_engine.ability.keywords.infect import (
+        apply_infect_damage_to_creature,
+        apply_infect_poison_to_player,
+    )
+    from mtg_engine.ability.keywords.lifelink import apply_lifelink_to_gamestate
 
-
-    # Apply damage to target
+    # Apply damage to target permanent
     target_perm = next((p for p in game_state.battlefield if p.id == redirect), None)
     if target_perm and "planeswalker" in target_perm.card.type_line.lower():
-        # Damage to a planeswalker reduces its loyalty (CR 306.7)
-        target_perm.loyalty = max(0, target_perm.loyalty - final_damage)
+        # Damage to a planeswalker reduces its loyalty (CR 306.7) — pure transform
+        new_loyalty = max(0, target_perm.loyalty - final_damage)
+        new_target = target_perm.model_copy(update={"loyalty": new_loyalty})
+        game_state = game_state.model_copy(
+            update={
+                "battlefield": [
+                    new_target if p.id == redirect else p
+                    for p in game_state.battlefield
+                ]
+            }
+        )
         logger.info(
             "Planeswalker %s took %d damage (loyalty now %d)",
-            target_perm.card.name, final_damage, target_perm.loyalty,
+            target_perm.card.name, final_damage, new_loyalty,
         )
     elif target_perm:
+        has_infect = "infect" in source_keywords
+
         if has_infect:
-            # REQ-R12: infect damage to creatures as -1/-1 counters
-            target_perm.counters["-1/-1"] = target_perm.counters.get("-1/-1", 0) + final_damage
-        else:
-            target_perm.damage_marked += final_damage
-        if has_deathtouch and final_damage > 0:
-            # REQ-R10: mark for deathtouch SBA (CR 702.2b)
-            target_perm.counters["__deathtouch_damage__"] = (
-                target_perm.counters.get("__deathtouch_damage__", 0) + final_damage
+            # REQ-R12: infect damage to creatures as -1/-1 counters (pure transform)
+            game_state = apply_infect_damage_to_creature(
+                game_state, target_perm, final_damage
             )
+        else:
+            # Normal damage: mark damage on creature via model_copy (pure transform)
+            new_target = target_perm.model_copy(
+                update={"damage_marked": target_perm.damage_marked + final_damage}
+            )
+            game_state = game_state.model_copy(
+                update={
+                    "battlefield": [
+                        new_target if p.id == redirect else p
+                        for p in game_state.battlefield
+                    ]
+                }
+            )
+
+        # Deathtouch tracking (pure transform, no-op if no deathtouch or zero damage)
+        game_state = apply_deathtouch_damage_from_card(
+            game_state, source_keywords, target_perm.id, final_damage
+        )
     else:
         # Target is a player
         for player in game_state.players:
             if player.name == redirect:
+                has_infect = "infect" in source_keywords
+
                 if has_infect:
-                    # REQ-R12: infect damage to players as poison counters
-                    player.poison_counters += final_damage
+                    # REQ-R12: infect damage to players as poison counters (pure transform)
+                    game_state = apply_infect_poison_to_player(
+                        game_state, player.name, final_damage
+                    )
                 else:
-                    player.life -= final_damage
+                    old_life = player.life
+                    new_life = old_life - final_damage
+                    # Apply life reduction via model_copy (pure transform)
+                    new_player = player.model_copy(update={"life": new_life})
+                    game_state = game_state.model_copy(
+                        update={
+                            "players": [
+                                new_player if p.name == redirect else p
+                                for p in game_state.players
+                            ]
+                        }
+                    )
                 break
 
-    # Lifelink: controller of the SOURCE gains life (REQ-R11)
-    # (simplified: lifelink handled in combat.py where we know the attacker's controller)
+    # Lifelink: controller of the SOURCE gains life (REQ-R11) — pure transform
+    # Need to find source permanent on battlefield to get controller
+    source_perm = next((p for p in game_state.battlefield if p.card.name == source_card_name), None)
+    if source_perm and "lifelink" in source_keywords:
+        game_state = apply_lifelink_to_gamestate(
+            game_state, source_perm, final_damage
+        )
 
     return game_state
 

@@ -1,8 +1,17 @@
-# 038-gap-analysis: Fresh Gap Analysis (June 2026)
+# 038-gap-analysis: Gap Analysis (July 2026 Refresh)
 
 ## Status
-All 037-forge-parity deferred tasks (PHASE 1300-1700) have been closed.
-This document identifies remaining functional gaps beyond the original spec.
+All original gaps from the June 2026 analysis have been re-evaluated against the current codebase.
+**~90% of gaps closed.** See below for remaining items.
+
+## Major Changes Since June 2026
+- **All 8 game mechanics** (Sprint 1-2) are now fully implemented and tested
+- **All 6 API features** (Sprint 5) are now fully implemented and tested
+- **Format validation** (Sprint 4) is now fully implemented and tested
+- **Trigger coverage** increased from 55 to 65+ patterns
+- **Keyword modules** increased from 17 to 49, with 20 having full engine integration
+- **Test count**: 1,552 → 2,792 (80% increase)
+- **Full list of changes**: See `AGENTS.md` "Recent Changes" section
 
 ---
 

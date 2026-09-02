@@ -125,6 +125,101 @@ class EvokeKeyword(TriggeredKeyword):
         """Apply evoke (no-op without spell casting context)."""
         return game_state
 
+    def queue_sacrifice(
+        self,
+        game_state: "GameState",
+        permanent_id: str,
+        player_name: str,
+        card_name: str,
+    ) -> "GameState":
+        """Queue a mandatory evoke sacrifice for the end step.
+
+        Pure transform: returns new GameState via model_copy.
+
+        Args:
+            game_state: Current game state.
+            permanent_id: ID of the evoked creature on battlefield.
+            player_name: Controller of the evoked creature.
+            card_name: Name of the card for logging/display.
+
+        Returns:
+            New GameState with pending_evoke_sacrifice set.
+        """
+        logger.info("Evoke: queued mandatory sacrifice for %s (%s)", permanent_id, card_name)
+
+        return game_state.model_copy(
+            update={
+                "pending_evoke_sacrifice": {
+                    "player": player_name,
+                    "permanent_id": permanent_id,
+                    "card_name": card_name,
+                }
+            }
+        )
+
+    def resolve_sacrifice(self, game_state: "GameState") -> "GameState":
+        """Execute the mandatory evoke sacrifice.
+
+        Moves the permanent to graveyard and clears pending state.
+        Pure transform: returns new GameState via model_copy.
+
+        Args:
+            game_state: Current game state with pending_evoke_sacrifice set.
+
+        Returns:
+            New GameState with the creature sacrificed (moved to graveyard).
+        """
+        if not game_state.pending_evoke_sacrifice:
+            return game_state
+
+        perm_id = game_state.pending_evoke_sacrifice["permanent_id"]
+
+        # Find the permanent on battlefield
+        perm = next((p for p in game_state.battlefield if p.id == perm_id), None)
+        if perm is None:
+            logger.warning("Evoke sacrifice: %s not found on battlefield, clearing", perm_id)
+            return game_state.model_copy(update={"pending_evoke_sacrifice": None})
+
+        # Use centralized sacrifice helper (wires sacrifice triggers)
+        from mtg_engine.engine.zones import _sacrifice_permanent as _do_sacrifice
+        game_state = _do_sacrifice(game_state, perm_id)
+
+        logger.info("Evoke: sacrificed %s (%s)", perm_id, game_state.pending_evoke_sacrifice["card_name"])
+
+        return game_state.model_copy(
+            update={
+                "pending_evoke_sacrifice": None,
+            }
+        )
+
     def get_trigger_description(self) -> str:
         cost_str = self.cost or "{1}{B}"
         return f"Evoke {cost_str}: Pay to cast; sacrifice as it enters the battlefield"
+
+
+# --- Module-level convenience functions ---
+
+def queue_sacrifice(
+    game_state: "GameState",
+    permanent_id: str,
+    player_name: str,
+    card_name: str,
+) -> "GameState":
+    """Queue a mandatory evoke sacrifice for the end step.
+
+    Convenience wrapper around EvokeKeyword.queue_sacrifice().
+    """
+    return EvokeKeyword().queue_sacrifice(game_state, permanent_id, player_name, card_name)
+
+
+def resolve_sacrifice(game_state: "GameState") -> "GameState":
+    """Execute the mandatory evoke sacrifice.
+
+    Convenience wrapper around EvokeKeyword.resolve_sacrifice().
+    """
+    return EvokeKeyword().resolve_sacrifice(game_state)
+
+
+def resolve_with_ai(game_state: "GameState") -> "GameState":
+    """AI auto-resolves evoke sacrifice (always sacrifices as mandatory)."""
+    return resolve_sacrifice(game_state)

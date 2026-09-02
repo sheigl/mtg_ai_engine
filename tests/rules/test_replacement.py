@@ -51,9 +51,11 @@ def test_infect_damage_to_creature_as_counters():
     gs = _make_game()
     card = Card(name="Creature", type_line="Creature — Beast", power="2", toughness="2")
     gs, perm = put_permanent_onto_battlefield(gs, card, "p1")
-    gs = apply_damage_event(gs, "Infect Source", ["infect"], perm.id, 2)
-    assert perm.counters.get("-1/-1", 0) == 2
-    assert perm.damage_marked == 0  # no regular damage
+    perm_id = perm.id
+    gs = apply_damage_event(gs, "Infect Source", ["infect"], perm_id, 2)
+    updated_perm = next(p for p in gs.battlefield if p.id == perm_id)
+    assert updated_perm.counters.get("-1/-1", 0) == 2
+    assert updated_perm.damage_marked == 0  # no regular damage
 
 
 # ─── US4: Damage prevention replacement effects ───────────────────────────────
@@ -86,10 +88,12 @@ def test_damage_prevention_effect_reduces_damage():
     gs = _make_game()
     card = Card(name="Target", type_line="Creature — Beast", power="2", toughness="5")
     gs, perm = put_permanent_onto_battlefield(gs, card, "p2")
-    prev = DamagePreventionEffect(remaining=3, target_id=perm.id)
+    perm_id = perm.id
+    prev = DamagePreventionEffect(remaining=3, target_id=perm_id)
     gs.prevention_effects.append(prev)
-    gs = apply_damage_event(gs, "Source", [], perm.id, 5)
-    assert perm.damage_marked == 2  # 5 - 3 = 2
+    gs = apply_damage_event(gs, "Source", [], perm_id, 5)
+    updated_perm = next(p for p in gs.battlefield if p.id == perm_id)
+    assert updated_perm.damage_marked == 2  # 5 - 3 = 2
 
 
 def test_damage_prevention_depletes_remaining():
@@ -98,11 +102,13 @@ def test_damage_prevention_depletes_remaining():
     gs = _make_game()
     card = Card(name="Target", type_line="Creature — Beast", power="2", toughness="5")
     gs, perm = put_permanent_onto_battlefield(gs, card, "p2")
-    prev = DamagePreventionEffect(remaining=3, target_id=perm.id)
+    perm_id = perm.id
+    prev = DamagePreventionEffect(remaining=3, target_id=perm_id)
     gs.prevention_effects.append(prev)
-    gs = apply_damage_event(gs, "Source", [], perm.id, 2)
+    gs = apply_damage_event(gs, "Source", [], perm_id, 2)
     # 2 damage fully prevented; remaining should be 1
-    assert perm.damage_marked == 0
+    updated_perm = next(p for p in gs.battlefield if p.id == perm_id)
+    assert updated_perm.damage_marked == 0
     assert len(gs.prevention_effects) == 1
     assert gs.prevention_effects[0].remaining == 1
 
@@ -116,8 +122,10 @@ def test_protection_from_red_prevents_damage():
         keywords=["protection from red"],
     )
     gs, perm = put_permanent_onto_battlefield(gs, card, "p2")
-    gs = apply_damage_event(gs, "Lightning Bolt", ["R"], perm.id, 3)
-    assert perm.damage_marked == 0  # protection prevents all damage
+    perm_id = perm.id
+    gs = apply_damage_event(gs, "Lightning Bolt", ["R"], perm_id, 3)
+    updated_perm = next(p for p in gs.battlefield if p.id == perm_id)
+    assert updated_perm.damage_marked == 0  # protection prevents all damage
 
 
 def test_protection_does_not_prevent_non_matching_color():
@@ -129,5 +137,7 @@ def test_protection_does_not_prevent_non_matching_color():
         keywords=["protection from red"],
     )
     gs, perm = put_permanent_onto_battlefield(gs, card, "p2")
-    gs = apply_damage_event(gs, "Counterspell Source", ["U"], perm.id, 3)
-    assert perm.damage_marked == 3  # blue damage not prevented
+    perm_id = perm.id
+    gs = apply_damage_event(gs, "Counterspell Source", ["U"], perm_id, 3)
+    updated_perm = next(p for p in gs.battlefield if p.id == perm_id)
+    assert updated_perm.damage_marked == 3  # blue damage not prevented

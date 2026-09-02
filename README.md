@@ -44,7 +44,7 @@ The API will be available at `http://localhost:8000`. Interactive docs at `http:
 PYTHONPATH=. uv run python -m pytest tests/ -v
 ```
 
-All 2678+ tests should pass.
+The full suite passes — **3167 passed, 0 failed, 3 skipped, 13 xfailed** (the 3 skips and 13 xfails are pre-existing known-gap markers in the ETB-choices test file, not regressions).
 
 ## API Usage
 
@@ -548,7 +548,7 @@ Unknown game IDs return HTTP 404.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | SQLite cache | `mtg_engine/card_data/cache.db` | Card data cache path |
-| MongoDB URI | `mongodb://localhost:27017` | Training data export target |
+| MongoDB URI | `mongodb://server.home:27017` | Training data export target |
 | MongoDB DB | `mtg_training` | Database name |
 | MongoDB collection | `games` | Game training data collection |
 | MongoDB collection | `player_stats` | Player stats & ELO ratings (APP-06) |

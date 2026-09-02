@@ -14,6 +14,77 @@ from mtg_engine.engine.zones import get_player, put_permanent_onto_battlefield
 logger = logging.getLogger(__name__)
 
 
+def _split_modal_texts(oracle_text: str) -> list[str]:
+    """Split modal spell oracle text into individual mode texts.
+
+    Uses the same logic as the modal resolution block: split on bullet (•) or
+    "Mode N:" markers, then filter out short fragments.
+    """
+    raw = oracle_text or ""
+    mode_texts = re.split(r'•|Mode \d+:', raw)
+    return [m.strip() for m in mode_texts if len(m.strip()) > 5]
+
+
+def _update_player_life(game_state: GameState, player_name: str, new_life: int) -> GameState:
+    """Pure transform: update a player's life total. Returns new GameState."""
+    players = []
+    for p in game_state.players:
+        if p.name == player_name:
+            players.append(p.model_copy(update={"life": new_life}))
+        else:
+            players.append(p)
+    return game_state.model_copy(update={"players": players})
+
+
+def _update_player_hand(game_state: GameState, player_name: str, new_hand: list[Card]) -> GameState:
+    """Pure transform: update a player's hand. Returns new GameState."""
+    players = []
+    for p in game_state.players:
+        if p.name == player_name:
+            players.append(p.model_copy(update={"hand": new_hand}))
+        else:
+            players.append(p)
+    return game_state.model_copy(update={"players": players})
+
+
+def _update_player_graveyard(game_state: GameState, player_name: str, new_graveyard: list[Card]) -> GameState:
+    """Pure transform: update a player's graveyard. Returns new GameState."""
+    players = []
+    for p in game_state.players:
+        if p.name == player_name:
+            players.append(p.model_copy(update={"graveyard": new_graveyard}))
+        else:
+            players.append(p)
+    return game_state.model_copy(update={"players": players})
+
+
+def _update_player_library(game_state: GameState, player_name: str, new_library: list[Card]) -> GameState:
+    """Pure transform: update a player's library. Returns new GameState."""
+    players = []
+    for p in game_state.players:
+        if p.name == player_name:
+            players.append(p.model_copy(update={"library": new_library}))
+        else:
+            players.append(p)
+    return game_state.model_copy(update={"players": players})
+
+
+def _update_player_mana_pool(game_state: GameState, player_name: str, new_pool) -> GameState:
+    """Pure transform: update a player's mana pool. Returns new GameState."""
+    players = []
+    for p in game_state.players:
+        if p.name == player_name:
+            players.append(p.model_copy(update={"mana_pool": new_pool}))
+        else:
+            players.append(p)
+    return game_state.model_copy(update={"players": players})
+
+
+def _update_battlefield(game_state: GameState, new_battlefield: list) -> GameState:
+    """Pure transform: replace battlefield. Returns new GameState."""
+    return game_state.model_copy(update={"battlefield": new_battlefield})
+
+
 def _has_split_second(game_state: GameState) -> bool:
     """
     REQ-S03: split-second prevents casting spells or activating non-mana abilities.
@@ -71,6 +142,9 @@ def cast_spell(
     from_graveyard: bool = False,
     from_adventure_exile: bool = False,
     overload_paid: bool = False,
+    from_suspended: bool = False,
+    buyback_paid: bool = False,
+    entwine_paid: bool = False,
 ) -> GameState:
     """
     Cast a spell from a player's hand (or graveyard/adventure exile).
@@ -130,7 +204,117 @@ def cast_spell(
             cost = (card.mana_cost or "")
     else:
         cost = alternative_cost if alternative_cost is not None else (card.mana_cost or "")
-    
+
+    # KW-... Overload (CR 702.95) — overload is an ALTERNATIVE cost that replaces the base cost.
+    # When overload_paid is True, replace cost with the parsed overload cost.
+    if overload_paid and not from_graveyard:
+        from mtg_engine.ability.keywords.overload import OverloadKeyword
+        _parsed_overload = OverloadKeyword.parse_overload_cost_static(card.oracle_text or "")
+        if _parsed_overload:
+            cost = _parsed_overload
+            # Rebuild mana_payment if it doesn't cover the new cost
+            if not can_pay_cost(player.mana_pool, cost, mana_payment):
+                from mtg_engine.engine.mana import parse_mana_cost as _parse_overload_cost
+                _ol_cost = _parse_overload_cost(cost)
+                _ol_pool = {c: getattr(player.mana_pool, c, 0) for c in ("W", "U", "B", "R", "G", "C")}
+                _ol_pay: dict[str, int] = {}
+                for _c in ("W", "U", "B", "R", "G"):
+                    _need = _ol_cost.get(_c, 0)
+                    if _need:
+                        _ol_pay[_c] = min(_need, _ol_pool[_c])
+                        _ol_pool[_c] -= _ol_pay[_c]
+                if _ol_cost.get("C"):
+                    _ol_pay["C"] = min(_ol_cost["C"], _ol_pool["C"])
+                    _ol_pool["C"] -= _ol_pay["C"]
+                _generic = _ol_cost.get("generic", 0)
+                for _c in ("C", "W", "U", "B", "R", "G"):
+                    if _generic <= 0:
+                        break
+                    _take = min(_generic, _ol_pool[_c])
+                    if _take:
+                        _ol_pay[_c] = _ol_pay.get(_c, 0) + _take
+                        _ol_pool[_c] -= _take
+                        _generic -= _take
+                mana_payment = _ol_pay
+
+    # KW-27: Buyback (CR 702.27) — the buyback cost is an ADDITIONAL cost on
+    # top of the base cost, paid as the spell is cast. When the ``buyback_paid``
+    # flag is set (human choice handler / AI auto-resolution), append the
+    # parsed buyback cost to ``cost`` so the single payment flow below
+    # validates and deducts base + buyback together. Only applies to normal
+    # hand casts — not alternative-cost casts (flashback/escape/foretell/...)
+    # or graveyard casts.
+    buyback_extra_cost = ""
+    if buyback_paid and not from_graveyard:
+        from mtg_engine.ability.keywords.buyback import BuybackKeyword
+        _parsed_bb = BuybackKeyword.parse_buyback_cost(card.oracle_text or "")
+        if _parsed_bb:
+            buyback_extra_cost = _parsed_bb
+            cost = cost + _parsed_bb
+            # The provided payment was typically derived for the BASE cost only
+            # (endpoint auto-derivation / explicit client payment). If it does
+            # not cover base + buyback, rebuild it from the player's pool so
+            # the single payment flow below deducts both (same pattern as the
+            # empty-payment auto-derivation above).
+            if not can_pay_cost(player.mana_pool, cost, mana_payment):
+                from mtg_engine.engine.mana import parse_mana_cost as _parse_bb_cost
+                _bb_cost = _parse_bb_cost(cost)
+                _bb_pool = {c: getattr(player.mana_pool, c, 0) for c in ("W", "U", "B", "R", "G", "C")}
+                _bb_pay: dict[str, int] = {}
+                for _c in ("W", "U", "B", "R", "G"):
+                    _need = _bb_cost.get(_c, 0)
+                    if _need:
+                        _bb_pay[_c] = min(_need, _bb_pool[_c])
+                        _bb_pool[_c] -= _bb_pay[_c]
+                if _bb_cost.get("C"):
+                    _bb_pay["C"] = min(_bb_cost["C"], _bb_pool["C"])
+                    _bb_pool["C"] -= _bb_pay["C"]
+                _generic = _bb_cost.get("generic", 0)
+                for _c in ("C", "W", "U", "B", "R", "G"):
+                    if _generic <= 0:
+                        break
+                    _take = min(_generic, _bb_pool[_c])
+                    if _take:
+                        _bb_pay[_c] = _bb_pay.get(_c, 0) + _take
+                        _bb_pool[_c] -= _take
+                        _generic -= _take
+                mana_payment = _bb_pay
+
+    # KW-39: Entwine (CR 702.39) — the entwine cost is an ADDITIONAL cost on top of
+    # the base cost, paid as the spell is cast. When the ``entwine_paid`` flag is
+    # set (human choice handler / AI auto-resolution), append the parsed entwine
+    # cost to ``cost`` so the single payment flow below validates and deducts
+    # base + entwine together. Only applies to normal hand casts — not
+    # alternative-cost casts or graveyard casts.
+    if entwine_paid and not from_graveyard:
+        from mtg_engine.ability.keywords.entwine import EntwineKeyword
+        _parsed_ent = EntwineKeyword.parse_entwine_cost(card.oracle_text or "")
+        if _parsed_ent:
+            cost = cost + _parsed_ent
+            if not can_pay_cost(player.mana_pool, cost, mana_payment):
+                from mtg_engine.engine.mana import parse_mana_cost as _parse_ent_cost
+                _ent_cost = _parse_ent_cost(cost)
+                _ent_pool = {c: getattr(player.mana_pool, c, 0) for c in ("W", "U", "B", "R", "G", "C")}
+                _ent_pay: dict[str, int] = {}
+                for _c in ("W", "U", "B", "R", "G"):
+                    _need = _ent_cost.get(_c, 0)
+                    if _need:
+                        _ent_pay[_c] = min(_need, _ent_pool[_c])
+                        _ent_pool[_c] -= _ent_pay[_c]
+                if _ent_cost.get("C"):
+                    _ent_pay["C"] = min(_ent_cost["C"], _ent_pool["C"])
+                    _ent_pool["C"] -= _ent_pay["C"]
+                _generic = _ent_cost.get("generic", 0)
+                for _c in ("C", "W", "U", "B", "R", "G"):
+                    if _generic <= 0:
+                        break
+                    _take = min(_generic, _ent_pool[_c])
+                    if _take:
+                        _ent_pay[_c] = _ent_pay.get(_c, 0) + _take
+                        _ent_pool[_c] -= _take
+                        _generic -= _take
+                mana_payment = _ent_pay
+
     # Auto-calculate payment if not provided (BUG fix for bots/empty payment)
     if not mana_payment:
         from mtg_engine.engine.mana import parse_mana_cost as _parse_cost
@@ -155,8 +339,16 @@ def cast_spell(
             f"Insufficient mana to cast {card.name!r}: cost={cost!r}, payment={mana_payment}"
         )
 
-    # Pay cost — deducts mana from player's pool
-    player.mana_pool = pay_cost(player.mana_pool, cost, mana_payment)
+    # Pay cost — deducts mana from player's pool (pure transform)
+    new_mana_pool = pay_cost(player.mana_pool, cost, mana_payment)
+    game_state = _update_player_mana_pool(game_state, player_name, new_mana_pool)
+
+    # Wire: Mana Spent Trigger (CR 118.9) — fire only if mana was actually paid.
+    # An empty mana_payment dict means the spell was cast for free (0-cost or a
+    # free alternative cost), so no mana was "spent" and the trigger must not fire.
+    if mana_payment:
+        from mtg_engine.engine.triggers import check_mana_spent_triggers as _check_mana_spent
+        game_state = _check_mana_spent(game_state, player_name)
 
     # Handle Spree mechanic - detect and queue choice for additional costs
     oracle_lower = (card.oracle_text or "").lower()
@@ -178,11 +370,14 @@ def cast_spell(
             }
             logger.info("%s: queued Spree choice with %d modes", card.name, len(spree_modes))
 
-    # Move card from hand (or graveyard/adventure exile) to stack
+    # Move card from source zone to stack
     if from_adventure_exile:
         player.adventure_cards[:] = [c for c in player.adventure_cards if c.id != card_id]
     elif from_graveyard:
         player.graveyard[:] = [c for c in player.graveyard if c.id != card_id]
+    elif from_suspended:
+        # SA-04 Suspend: move from suspended_cards zone, not hand
+        player.suspended_cards[:] = [c for c in player.suspended_cards if c.id != card_id]
     else:
         player.hand[:] = [c for c in player.hand if c.id != card_id]
 
@@ -200,9 +395,6 @@ def cast_spell(
         or "cannot be countered" in oracle_lower
     )
 
-    # US7: Detect buyback (CR 702.27) — buyback allows returning spell to hand from graveyard
-    has_buyback = "buyback" in (card.keywords or []) or "buyback" in oracle_lower
-
     # US7: Detect replicate (CR 702.87) — replicate creates copies for additional cost
     has_replicate = "replicate" in (card.keywords or []) or "replicate" in oracle_lower
     replicate_count = 0
@@ -217,9 +409,8 @@ def cast_spell(
     # US8: Detect flashback and escape from alternative_cost
     is_flashback = alternative_cost == "flashback"
     is_escape = alternative_cost == "escape"
-
-    # SPL-02: Detect overload (CR 702.76)
-    has_overload = "overload" in oracle_lower
+    # SA-04: Detect evoke from alternative_cost
+    is_evoke = alternative_cost == "evoke"
 
     # US30: Validate mutate target
     if mutate_target_id:
@@ -246,10 +437,11 @@ def cast_spell(
         kicker_paid=kicker_paid,
         jump_start_discard_id=jump_start_discard_id,
         uncounterable=is_uncounterable,
-        buyback_paid=has_buyback,  # US7: Mark if buyback cost was paid (set by API)
+        buyback_paid=buyback_paid and bool(buyback_extra_cost),  # KW-27: True only if the buyback cost was actually paid AND parsed (CR 702.27)
         replicate_count=replicate_count,  # US7: Number of replicates to create
         flashback=is_flashback,  # US8: Whether cast via flashback from graveyard
         escape=is_escape,  # US8: Whether cast via escape from graveyard
+        metadata={"is_evoke": is_evoke},  # SA-04: Evoke flag for ETB sacrifice
         face_index=face_index,
         is_face_down=as_face_down,
         is_adventure=card.card_layout == "adventure" and face_index == 1,
@@ -260,6 +452,31 @@ def cast_spell(
         overload_paid=overload_paid,  # SPL-02: Overload (CR 702.76)
     )
     game_state.stack.append(stack_obj)
+
+    # Wire: Becomes Target Trigger (CR 109.3) — fire for each permanent target
+    if targets:
+        from mtg_engine.engine.triggers import check_becomes_target_triggers as _check_becomes_target
+        for t in targets:
+            # Only fire for targets that are permanent IDs on battlefield
+            target_perm = next((p for p in game_state.battlefield if p.id == t), None)
+            if target_perm is not None:
+                game_state = _check_becomes_target(game_state, t)
+                # Ward (CR 702.145): an opponent targeting a permanent with ward
+                # triggers it — the caster pays the ward cost or the spell is
+                # countered. Fires once per targeted permanent; self-targeting is
+                # ignored inside apply_ward(). Uses the keyword list (not oracle
+                # text) for precise detection, avoiding substrings like "award".
+                from mtg_engine.ability.keywords.ward import (
+                    Ward as _Ward,
+                    apply_ward as _apply_ward,
+                )
+                if _Ward.has_ward(target_perm.card.keywords or []) and target_perm.controller != player_name:
+                    game_state = _apply_ward(
+                        game_state,
+                        target_perm,
+                        target=stack_obj,
+                        caster_name=player_name,
+                    )
 
     logger.info("Cast %s → stack. Controller: %s, targets: %s", card.name, player_name, targets)
 
@@ -601,6 +818,10 @@ def resolve_top(game_state: GameState) -> GameState:
                 perm.attached_to = target_id
                 if perm.id not in target_perm.attachments:
                     target_perm.attachments.append(perm.id)
+
+                # Wire: Attach Trigger (CR 702.5) — fire when aura attaches
+                from mtg_engine.engine.triggers import check_attach_triggers as _check_attach
+                game_state = _check_attach(game_state, perm.id)
                 # Apply aura's continuous P/T bonus and keyword grants to the enchanted creature.
                 # Reversed in zones.move_permanent_to_zone when the aura leaves.
                 pt_match = re.search(r"enchanted creature gets? \+(\d+)/\+(\d+)", oracle)
@@ -615,6 +836,14 @@ def resolve_top(game_state: GameState) -> GameState:
                         target_perm.card = target_perm.card.model_copy(
                             update={"keywords": list(target_perm.card.keywords) + [kw]}
                         )
+        
+        # SA-04: Evoke (CR 702.41) — queue mandatory sacrifice if cast via evoke cost
+        if stack_obj.metadata and stack_obj.metadata.get("is_evoke", False):
+            from mtg_engine.engine.evoke import queue_evoke_sacrifice as _queue_evoke
+            game_state = _queue_evoke(
+                game_state, perm.id, stack_obj.controller, card.name
+            )
+
     elif "instant" in type_lower or "sorcery" in type_lower:
         # SPL-02: Overload (CR 702.76) — if overload was paid, get all valid targets
         if stack_obj.overload_paid and "overload" in oracle_lower:
@@ -716,7 +945,22 @@ def _apply_triggered_effect(game_state: GameState, stack_obj: StackObject) -> Ga
     (token creation, card draw, destroy, life gain, counters, etc.).
     Handles self-referential "return this to its owner's hand" separately
     since that pattern has no `target` clause.
+
+    Keyword-triggered abilities (afterlife, undying, persist) are dispatched
+    at the top based on stack_obj.trigger_type for explicit handling via keyword modules.
     """
+    # ── Keyword-trigger dispatch ─────────────────────────────────────────────
+    trigger_type = getattr(stack_obj, "trigger_type", None)
+    if trigger_type == "afterlife":
+        from mtg_engine.ability.keywords.afterlife import resolve_trigger as _resolve_afterlife
+        return _resolve_afterlife(game_state, stack_obj)
+    if trigger_type == "undying":
+        from mtg_engine.ability.keywords.undying import resolve_trigger as _resolve_undying
+        return _resolve_undying(game_state, stack_obj)
+    if trigger_type == "persist":
+        from mtg_engine.ability.keywords.persist import resolve_trigger as _resolve_persist
+        return _resolve_persist(game_state, stack_obj)
+
     for effect_text in stack_obj.effects:
         effect_lower = effect_text.lower()
 
@@ -835,6 +1079,26 @@ def _apply_single_effect_text(game_state: GameState, stack_obj: StackObject, eff
         # ── VEN-01: Venture into the dungeon (CR 701.61) ───────────────────
         (r"\bventure\s+into\s+(?:the\s+)?dungeon\b",
           lambda m: _apply_venture(game_state, stack_obj.controller)),
+        # ── CR 701.6: Fight ────────────────────────────────────────────────
+        (r"(?:(?:this|target) creature )?fights target creature",
+         lambda m: _apply_fight(
+             game_state,
+             stack_obj.source_permanent_id if stack_obj.source_permanent_id else (stack_obj.targets[0] if len(stack_obj.targets) >= 1 else None),
+             stack_obj.targets[-1] if stack_obj.targets else None)),
+        # ── CR 702.5: Equip/Attach ────────────────────────────────────────
+        (r"equip target creature",
+          lambda m: _apply_equip(game_state, stack_obj.source_permanent_id,
+                                 stack_obj.targets[0] if stack_obj.targets else None)),
+        # ── CR 701.32: Investigate ─────────────────────────────────────────
+        # Standalone "Investigate." instruction (e.g. "At the beginning of your
+        # upkeep, investigate."). On this triggered-ability path no other
+        # pattern consumes "investigate". On the spell path (_apply_spell_effect)
+        # the create-token pattern precedes it, but that function strips
+        # parenthetical reminder text first (CR 201.8), so the create-token
+        # phrasing inside the canonical [[Investigate]] reminder cannot shadow
+        # this match.
+        (r"\binvestigate\b",
+          lambda m: _investigate(game_state, stack_obj.controller)),
     ]
 
     oracle_lower = effect_text.lower()
@@ -872,7 +1136,18 @@ def _apply_spell_effect(game_state: GameState, stack_obj: StackObject) -> GameSt
     CR 608.2: effects are applied as described on the card.
     """
     card = stack_obj.source_card
-    oracle = (card.oracle_text or "").lower()
+    # CR 201.8: parenthetical text is reminder text, not rules text. Strip it
+    # before pattern matching so a reminder sentence cannot shadow a real
+    # effect pattern. Concrete example: the canonical [[Investigate]] (M19)
+    # reminder contains "create a 1/1 red Goblin creature token with
+    # 'investigate.'", which would otherwise match the create-token pattern
+    # below (listed earlier) and skip the library interaction and the
+    # investigated trigger entirely. Stripping here makes ALL patterns in this
+    # function immune to reminder-text shadowing.
+    oracle = re.sub(r"\([^)]*\)", "", card.oracle_text or "").lower()
+    # CR 702.95 Overload: replace "target" with "each" in effect text
+    if getattr(stack_obj, "overload_paid", False):
+        oracle = re.sub(r"\btarget\b", "each", oracle)
 
     # Spree mechanic (036-spree): apply selected mode effects
     # Spree cards have mode lines in their oracle text; the modes ARE the effect,
@@ -894,10 +1169,7 @@ def _apply_spell_effect(game_state: GameState, stack_obj: StackObject) -> GameSt
 
     # Modal spells (US4): apply only chosen modes
     if stack_obj.modes_chosen:
-        # Split oracle text by bullet (•) or "Mode N:" markers
-        raw = card.oracle_text or ""
-        mode_texts = re.split(r'•|Mode \d+:', raw)
-        mode_texts = [m.strip() for m in mode_texts if len(m.strip()) > 5]
+        mode_texts = _split_modal_texts(card.oracle_text or "")
         for mode_idx in stack_obj.modes_chosen:
             if mode_idx < len(mode_texts):
                 game_state = _apply_single_effect_text(game_state, stack_obj, mode_texts[mode_idx])
@@ -956,8 +1228,8 @@ def _apply_spell_effect(game_state: GameState, stack_obj: StackObject) -> GameSt
                                   int(m.group(1)) if m.group(1).isdigit() else x_value)),
         # 12. Damage: "deals N damage"
         (r"deals?\s+(\d+)\s+damage",
-         lambda m: _deal_damage(game_state, stack_obj.targets[0] if stack_obj.targets else None,
-                                int(m.group(1)), card) if stack_obj.targets else None),
+          lambda m: _deal_damage(game_state, stack_obj.targets[0] if stack_obj.targets else None,
+                                 int(m.group(1)), card, stack_obj.controller) if stack_obj.targets else None),
         # 13. Pump: "target creature gets +N/+M until your next turn"  (US23: different scope)
         (r"target creature gets \+(\d+)/\+(\d+) until your next turn",
          lambda m: _pump_creature(
@@ -993,6 +1265,18 @@ def _apply_spell_effect(game_state: GameState, stack_obj: StackObject) -> GameSt
         # ── VEN-01: Venture into the dungeon (CR 701.61) ───────────────────
         (r"\bventure\s+into\s+(?:the\s+)?dungeon\b",
           lambda m: _apply_venture(game_state, stack_obj.controller)),
+        # ── CR 701.6: Fight ────────────────────────────────────────────────
+        (r"(?:(?:this|target) creature )?fights target creature",
+          lambda m: _apply_fight(
+              game_state,
+              stack_obj.source_permanent_id if stack_obj.source_permanent_id else (stack_obj.targets[0] if len(stack_obj.targets) >= 1 else None),
+              stack_obj.targets[-1] if stack_obj.targets else None)),
+        # ── CR 701.32: Investigate ─────────────────────────────────────────
+        # Standalone "Investigate." instruction in a spell's main effect.
+        # Mirrors the pattern in _apply_single_effect_text so the action works
+        # for both triggered abilities and main spell resolution.
+        (r"\binvestigate\b",
+          lambda m: _investigate(game_state, stack_obj.controller)),
     ]
 
     # Try each pattern in order; pass the full match object to the lambda.
@@ -1044,26 +1328,45 @@ def get_opponents(game_state: GameState, player_name: str):
 
 
 def _draw_cards(game_state: GameState, player_name: str, n: int) -> GameState:
-    """Draw N cards from the top of player's library to their hand."""
+    """Draw N cards from the top of player's library to their hand. Pure transform."""
     player = get_player(game_state, player_name)
     if n <= 0:
         return game_state
-    
-    # Draw cards from top of library
-    drawn_cards = []
-    for _ in range(min(n, len(player.library))):
-        if player.library:
-            drawn_cards.append(player.library.pop(0))
-    
-    player.hand.extend(drawn_cards)
-    
-    # Check for empty library (player loses)
-    if not player.library:
-        player.has_lost = True
-        game_state.winner = next((p.name for p in game_state.players if p.name != player_name), None)
+
+    # Draw cards from top of library — pure (no mutation)
+    num_to_draw = min(n, len(player.library))
+    drawn_cards = list(player.library[:num_to_draw])
+    new_library = list(player.library[num_to_draw:])
+    new_hand = list(player.hand) + drawn_cards
+
+    # Check for empty library (player loses) — pure transform
+    has_lost = False
+    winner_name = None
+    if not new_library:
+        has_lost = True
+        winner_name = next((p.name for p in game_state.players if p.name != player_name), None)
         logger.info("%s draws from empty library and loses the game", player_name)
-    
+
+    new_players = []
+    for p in game_state.players:
+        if p.name == player_name:
+            updates = {"library": new_library, "hand": new_hand}
+            if has_lost:
+                updates["has_lost"] = True
+            new_players.append(p.model_copy(update=updates))
+        else:
+            new_players.append(p)
+
+    update_dict = {"players": new_players}
+    if winner_name and not game_state.is_game_over:
+        update_dict["winner"] = winner_name
+    game_state = game_state.model_copy(update=update_dict)
+
     logger.info("%s draws %d cards", player_name, len(drawn_cards))
+
+    # Wire: Draw Trigger (CR 701.16)
+    from mtg_engine.engine.triggers import check_draw_triggers as _check_draw
+    game_state = _check_draw(game_state, player_name)
     return game_state
 
 
@@ -1145,11 +1448,11 @@ def _create_tokens(game_state: GameState, controller: str, count_str: str, power
     # Parse count
     count_map = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3}
     count = count_map.get(count_str.lower(), int(count_str) if count_str.isdigit() else 1)
-    
+
     # Parse power/toughness
     p = int(power) if power.isdigit() else 0
     t = int(toughness) if toughness.isdigit() else 0
-    
+
     # Create token cards
     token_name = f"{subtypes} Token"
     token_card = Card(
@@ -1162,89 +1465,169 @@ def _create_tokens(game_state: GameState, controller: str, count_str: str, power
         keywords=[],
         parse_status="ok"
     )
-    
+
+    # Wire: Token Created Trigger (CR 110.5/110.6). Fire once PER token created —
+    # a "whenever a token enters the battlefield" watcher must see each token as a
+    # separate event, not one trigger for the whole batch (CR 110.6).
+    from mtg_engine.engine.triggers import check_token_triggers as _check_token
+
     # Create tokens
     for _ in range(count):
         _, new_perm = put_permanent_onto_battlefield(game_state, token_card, controller, from_zone="hand", is_token=True)
         logger.info("%s token created", token_name)
-    
+        game_state = _check_token(game_state, controller)
+
+    return game_state
+
+
+def _investigate(game_state: GameState, player_name: str) -> GameState:
+    """Perform the investigate action (CR 701.32, MODERN rules).
+
+    Look at the top card of the library:
+      - If it's a land: reveal it and keep it revealed. This engine represents
+        "kept revealed" by moving the card to the player's hand (simplest
+        correct representation; documented decision).
+      - Otherwise: put it on the bottom of the library (auto-bottom; a human
+        "may put on bottom" pending choice is out of scope for this story).
+    Then create a 1/1 red Goblin creature token with "investigate".
+    Finally, fire "whenever you investigate" triggers (CR 701.32).
+    """
+    player = get_player(game_state, player_name)
+
+    if player.library:
+        top = player.library[0]
+        if "land" in (top.type_line or "").lower():
+            # CR 701.32: land — reveal and keep revealed (moved to hand here).
+            new_library = list(player.library[1:])
+            new_hand = list(player.hand) + [top]
+            game_state = _update_player_library(game_state, player_name, new_library)
+            game_state = _update_player_hand(game_state, player_name, new_hand)
+            logger.info("%s investigates and reveals %s (land, kept revealed)", player_name, top.name)
+        else:
+            # CR 701.32: non-land — put on the bottom of the library.
+            new_library = list(player.library[1:]) + [top]
+            game_state = _update_player_library(game_state, player_name, new_library)
+            logger.info("%s investigates and puts %s on the bottom of the library", player_name, top.name)
+
+    # Create the 1/1 red Goblin "investigate" token (CR 701.32). put_permanent_onto_battlefield
+    # does NOT itself fire token-created triggers, so _create_token_with_pt_and_keywords calls
+    # check_token_triggers AFTER each put — so both "token created" and "investigated" fire on
+    # investigate (correct).
+    game_state = _create_token_with_pt_and_keywords(
+        game_state, player_name, "a", "1", "1", "Goblin", "investigate", colors=["R"]
+    )
+
+    # Fire "whenever you investigate" triggers (CR 701.32). Pure transform —
+    # capture the returned state (Q4).
+    from mtg_engine.engine.triggers import check_investigated_triggers as _check_investigated
+    game_state = _check_investigated(game_state, player_name)
+
     return game_state
 
 
 def _gain_life(game_state: GameState, player_name: str, n: int) -> GameState:
-    """Gain life."""
+    """Gain N life. Pure transform."""
     player = get_player(game_state, player_name)
     old = player.life
-    player.life += n
-    _emit_life_changed(game_state, player_name, old, player.life, n, "spell")
+    new_life = old + n
+    game_state = _update_player_life(game_state, player_name, new_life)
+    _emit_life_changed(game_state, player_name, old, new_life, n, "spell")
     logger.info("%s gains %d life", player_name, n)
+
+    # Wire: Life Gain/Lost Trigger (CR 701.12/701.13)
+    from mtg_engine.engine.triggers import check_life_gain_lost_triggers as _check_life
+    game_state = _check_life(game_state, player_name, n)
     return game_state
 
 
 def _lose_life(game_state: GameState, player_name: str, n: int) -> GameState:
-    """Lose life (for spell effects like 'lose X life')."""
+    """Lose N life (for spell effects like 'lose X life'). Pure transform."""
     player = get_player(game_state, player_name)
     old = player.life
-    player.life -= n
-    _emit_life_changed(game_state, player_name, old, player.life, -n, "spell")
+    new_life = old - n
+    game_state = _update_player_life(game_state, player_name, new_life)
+    _emit_life_changed(game_state, player_name, old, new_life, -n, "spell")
     logger.info("%s loses %d life", player_name, n)
+
+    # Wire: Life Gain/Lost Trigger (CR 701.12/701.13) — negative for loss
+    from mtg_engine.engine.triggers import check_life_gain_lost_triggers as _check_life
+    game_state = _check_life(game_state, player_name, -n)
     return game_state
 
 
 def _discard_cards(game_state: GameState, player_name: str, n: int) -> GameState:
-    """Discard N cards from player's hand."""
+    """Discard N cards from player's hand. Pure transform."""
     player = get_player(game_state, player_name)
     if n <= 0:
         return game_state
-    
+
     # For heuristic AI, we'll just discard the lowest CMC cards
     # In a real implementation, this would be handled by pending_discard_choice
     cards_to_discard = min(n, len(player.hand))
-    discarded = player.hand[:cards_to_discard]
-    player.hand = player.hand[cards_to_discard:]
-    
-    # Add to graveyard
-    player.graveyard.extend(discarded)
-    
+    discarded = list(player.hand[:cards_to_discard])
+    new_hand = list(player.hand[cards_to_discard:])
+    new_graveyard = list(player.graveyard) + discarded
+
+    game_state = _update_player_hand(game_state, player_name, new_hand)
+    game_state = _update_player_graveyard(game_state, player_name, new_graveyard)
+
     logger.info("%s discards %d cards", player_name, cards_to_discard)
+
+    # Wire: Discard Trigger (CR 701.18)
+    from mtg_engine.engine.triggers import check_discard_triggers as _check_discard
+    game_state = _check_discard(game_state, player_name)
     return game_state
 
 
 def _tutor(game_state: GameState, player_name: str, filter_type: str, destination: str) -> GameState:
-    """Search library for a card and put it in hand."""
+    """Search library for a card and put it in hand. Pure-ish transform."""
     player = get_player(game_state, player_name)
     if not player.library:
         return game_state
-    
+
     # Set pending tutor choice - in a real implementation, this would be handled by AI
     # For now, we'll just pick the first card
     if player.library:
         card = player.library.pop(0)
+        new_library = list(player.library)
         if destination == "hand":
-            player.hand.append(card)
+            new_hand = list(player.hand) + [card]
+            game_state = _update_player_hand(game_state, player_name, new_hand)
         elif destination == "battlefield":
             _, _ = put_permanent_onto_battlefield(game_state, card, player_name, from_zone="hand")
+        else:
+            # Default: return to library
+            pass
+        game_state = _update_player_library(game_state, player_name, new_library)
         logger.info("%s tutors for %s", player_name, card.name)
-    
+
+    # Wire: Tutor/Search Library Trigger (CR 400.8/400.9)
+    from mtg_engine.engine.triggers import check_tutor_triggers as _check_tutor
+    game_state = _check_tutor(game_state, player_name)
     return game_state
 
 
 def _tutor_to_top(game_state: GameState, player_name: str) -> GameState:
     """Search library for a card and put it on top of library.
-    
+
     For Spree effects like "Search your library for a card, then shuffle and put that card on top."
+    Pure-ish transform.
     """
     player = get_player(game_state, player_name)
     if not player.library:
         return game_state
-    
+
     # For heuristic AI, pick the first card from library
     # In a real implementation, this would be handled by pending_tutor_choice
     if player.library:
         card = player.library.pop(0)
-        player.library.insert(0, card)
+        new_library = [card] + list(player.library)
+        game_state = _update_player_library(game_state, player_name, new_library)
         logger.info("%s tutors for %s and puts it on top of library", player_name, card.name)
-    
+
+    # Wire: Tutor/Search Library Trigger (CR 400.8/400.9)
+    from mtg_engine.engine.triggers import check_tutor_triggers as _check_tutor
+    game_state = _check_tutor(game_state, player_name)
     return game_state
 
 
@@ -1265,6 +1648,136 @@ def _apply_venture(game_state: GameState, player_name: str) -> GameState:
     return game_state
 
 
+def _apply_fight(game_state: GameState, attacker_id: str, defender_id: str) -> GameState:
+    """Apply 'target creature fights target creature' effect (CR 701.6).
+
+    Each creature deals damage equal to its power to the other.
+    Pure transform where possible.
+    """
+    if not attacker_id or not defender_id:
+        return game_state
+
+    attacker = next((p for p in game_state.battlefield if p.id == attacker_id), None)
+    defender = next((p for p in game_state.battlefield if p.id == defender_id), None)
+    if not attacker or not defender:
+        logger.debug("Fight: one or both creatures not found (%s, %s)", attacker_id, defender_id)
+        return game_state
+
+    # Get power values (default to 0 if not parseable)
+    try:
+        atk_power = int(attacker.card.power) if attacker.card.power else 0
+    except (ValueError, TypeError):
+        atk_power = 0
+    try:
+        def_power = int(defender.card.power) if defender.card.power else 0
+    except (ValueError, TypeError):
+        def_power = 0
+
+    # Deal damage from attacker to defender and vice versa
+    new_battlefield = []
+    for perm in game_state.battlefield:
+        if perm.id == defender_id:
+            # Attacker deals power damage to defender
+            new_damage = getattr(perm, "damage_marked", 0) + atk_power
+            new_perm = perm.model_copy(update={"damage_marked": new_damage})
+            logger.info("Fight: %s deals %d damage to %s", attacker.card.name, atk_power, defender.card.name)
+            new_battlefield.append(new_perm)
+        elif perm.id == attacker_id:
+            # Defender deals power damage to attacker
+            new_damage = getattr(perm, "damage_marked", 0) + def_power
+            new_perm = perm.model_copy(update={"damage_marked": new_damage})
+            logger.info("Fight: %s deals %d damage to %s", defender.card.name, def_power, attacker.card.name)
+            new_battlefield.append(new_perm)
+        else:
+            new_battlefield.append(perm)
+
+    game_state = _update_battlefield(game_state, new_battlefield)
+
+    # Wire: Fight Trigger (CR 701.6)
+    from mtg_engine.engine.triggers import check_fight_triggers as _check_fight
+    game_state = _check_fight(game_state, [attacker_id, defender_id])
+    return game_state
+
+
+def _apply_equip(game_state: GameState, equipment_id: str, creature_id: str) -> GameState:
+    """Apply 'equip target creature' effect (CR 702.5).
+
+    Attaches the equipment to the target creature and fires attach triggers.
+    Pure transform where possible.
+    """
+    if not equipment_id or not creature_id:
+        return game_state
+
+    equipment = next((p for p in game_state.battlefield if p.id == equipment_id), None)
+    creature = next((p for p in game_state.battlefield if p.id == creature_id), None)
+    if not equipment or not creature:
+        logger.debug("Equip: one or both permanents not found (%s, %s)", equipment_id, creature_id)
+        return game_state
+
+    # Update battlefield with new attachment (pure transform)
+    new_battlefield = []
+    for perm in game_state.battlefield:
+        if perm.id == equipment_id:
+            new_perm = perm.model_copy(update={"attached_to": creature_id})
+            new_battlefield.append(new_perm)
+        elif perm.id == creature_id:
+            attachments = list(perm.attachments)
+            if equipment_id not in attachments:
+                attachments.append(equipment_id)
+            new_perm = perm.model_copy(update={"attachments": attachments})
+            new_battlefield.append(new_perm)
+        else:
+            new_battlefield.append(perm)
+
+    game_state = _update_battlefield(game_state, new_battlefield)
+    logger.info("Equip: %s attached to %s", equipment.card.name, creature.card.name)
+
+    # Wire: Attach Trigger (CR 702.5)
+    from mtg_engine.engine.triggers import check_attach_triggers as _check_attach
+    game_state = _check_attach(game_state, equipment_id)
+    return game_state
+
+
+def _apply_fortify(game_state: GameState, fortification_id: str, land_id: str) -> GameState:
+    """Apply 'attach this Fortification to target land' effect (CR 702.54a).
+
+    Attaches the Fortification to the target land and fires attach triggers.
+    No-op (same object) if either permanent is missing. Mirrors
+    ``_apply_equip`` as a pure transform.
+    """
+    if not fortification_id or not land_id:
+        return game_state
+
+    fortification = next((p for p in game_state.battlefield if p.id == fortification_id), None)
+    land = next((p for p in game_state.battlefield if p.id == land_id), None)
+    if not fortification or not land:
+        logger.debug("Fortify: one or both permanents not found (%s, %s)", fortification_id, land_id)
+        return game_state
+
+    # Update battlefield with new attachment (pure transform)
+    new_battlefield = []
+    for perm in game_state.battlefield:
+        if perm.id == fortification_id:
+            new_perm = perm.model_copy(update={"attached_to": land_id})
+            new_battlefield.append(new_perm)
+        elif perm.id == land_id:
+            attachments = list(perm.attachments)
+            if fortification_id not in attachments:
+                attachments.append(fortification_id)
+            new_perm = perm.model_copy(update={"attachments": attachments})
+            new_battlefield.append(new_perm)
+        else:
+            new_battlefield.append(perm)
+
+    game_state = _update_battlefield(game_state, new_battlefield)
+    logger.info("Fortify: %s attached to %s", fortification.card.name, land.card.name)
+
+    # Wire: Attach Trigger (CR 702.5)
+    from mtg_engine.engine.triggers import check_attach_triggers as _check_attach
+    game_state = _check_attach(game_state, fortification_id)
+    return game_state
+
+
 def _apply_combined_draw_lose_life(game_state: GameState, player_name: str, draw_count: int, life_loss: int) -> GameState:
     """Apply combined 'draw N cards and lose X life' effect (Spree mode).
     
@@ -1277,16 +1790,54 @@ def _apply_combined_draw_lose_life(game_state: GameState, player_name: str, draw
 
 
 def _add_counters(game_state: GameState, perm_id: str, counter_type: str, n: int) -> GameState:
-    """Add counters to a permanent."""
+    """Add counters to a permanent. Pure transform."""
     if not perm_id or n <= 0:
         return game_state
-    
+
     perm = next((p for p in game_state.battlefield if p.id == perm_id), None)
     if not perm:
         return game_state
-    
-    perm.counters[counter_type] = perm.counters.get(counter_type, 0) + n
+
+    new_counters = dict(perm.counters)
+    new_counters[counter_type] = new_counters.get(counter_type, 0) + n
+    new_perm = perm.model_copy(update={"counters": new_counters})
+
+    new_battlefield = [new_perm if p.id == perm_id else p for p in game_state.battlefield]
+    game_state = _update_battlefield(game_state, new_battlefield)
+
     logger.info("%s gets %d %s counters", perm.card.name, n, counter_type)
+
+    # Wire: Counter Placed Trigger (CR 122.1)
+    from mtg_engine.engine.triggers import check_counter_triggers as _check_counter
+    game_state = _check_counter(game_state, perm_id, perm.controller)
+    return game_state
+
+
+def _place_counter_on_permanent(game_state: GameState, perm_id: str, counter_type: str, amount: int) -> GameState:
+    """Centralized helper to place counters on a permanent. Pure transform.
+
+    Finds the permanent on battlefield, places the counter via model_copy,
+    and fires counter triggers.
+    """
+    if not perm_id or amount <= 0:
+        return game_state
+
+    perm = next((p for p in game_state.battlefield if p.id == perm_id), None)
+    if not perm:
+        return game_state
+
+    new_counters = dict(perm.counters)
+    new_counters[counter_type] = new_counters.get(counter_type, 0) + amount
+    new_perm = perm.model_copy(update={"counters": new_counters})
+
+    new_battlefield = [new_perm if p.id == perm_id else p for p in game_state.battlefield]
+    game_state = _update_battlefield(game_state, new_battlefield)
+
+    logger.info("%s gets %d %s counters", perm.card.name, amount, counter_type)
+
+    # Wire: Counter Placed Trigger (CR 122.1)
+    from mtg_engine.engine.triggers import check_counter_triggers as _check_counter
+    game_state = _check_counter(game_state, perm_id, perm.controller)
     return game_state
 
 
@@ -1435,6 +1986,11 @@ def _counter_spell(game_state: GameState, target_id: str) -> GameState:
         if countered.uncounterable:
             logger.info("%s can't be countered — counter effect does nothing", countered.source_card.name)
             return game_state
+        # CR 701.5: fire "countered" triggers BEFORE the spell leaves the stack so
+        # self-referential triggers ("whenever this is countered") can still read the
+        # source card. Pure transform — capture the returned state (Q3, Q4).
+        from mtg_engine.engine.triggers import check_countered_triggers as _check_countered
+        game_state = _check_countered(game_state, countered)
         game_state.stack[:] = [s for s in game_state.stack if s.id != target_id]
         # Put the countered card in its controller's graveyard
         owner = get_player(game_state, countered.controller)
@@ -1444,36 +2000,101 @@ def _counter_spell(game_state: GameState, target_id: str) -> GameState:
     return game_state
 
 
-def _deal_damage(game_state: GameState, target_id: str, damage: int, source: Card) -> GameState:
+def _deal_damage(game_state: GameState, target_id: str, damage: int, source: Card, controller_name: str) -> GameState:
     """
     Apply damage to a target (permanent or player). REQ-R07, REQ-R08.
     Marks damage on permanents; reduces life for players.
     Deathtouch flag is set for SBA processing (REQ-R10).
+    Lifelink and infect are handled via keyword module pure transforms.
+
+    controller_name: the player who controls the source of damage (for lifelink/infect).
     """
-    # Emit damage event
-    _emit_damage_dealt(game_state, source.id, game_state.active_player,
+    from mtg_engine.ability.keywords.deathtouch import apply_deathtouch_damage_from_card
+    from mtg_engine.ability.keywords.infect import apply_infect_from_card
+    from mtg_engine.ability.keywords.lifelink import apply_lifelink_from_card
+
+    source_keywords = source.keywords or []
+
+    # Emit damage event (must happen before state transforms for transcript)
+    _emit_damage_dealt(game_state, source.id, controller_name,
                        target_id, damage, is_combat=False)
 
     # Check if target is a permanent on the battlefield
     for perm in game_state.battlefield:
         if perm.id == target_id:
-            perm.damage_marked += damage
-            if "deathtouch" in source.keywords:
-                perm.counters["__deathtouch_damage__"] = (
-                    perm.counters.get("__deathtouch_damage__", 0) + damage
-                )
+            # Mark damage on creature via model_copy (pure transform)
+            new_perm = perm.model_copy(
+                update={"damage_marked": perm.damage_marked + damage}
+            )
+            game_state = game_state.model_copy(
+                update={
+                    "battlefield": [
+                        new_perm if p.id == target_id else p
+                        for p in game_state.battlefield
+                    ]
+                }
+            )
+
+            # Deathtouch tracking (pure transform, no-op if no deathtouch)
+            game_state = apply_deathtouch_damage_from_card(
+                game_state, source_keywords, target_id, damage
+            )
+
+            # Infect: -1/-1 counters on creatures (pure transform, no-op if no infect)
+            game_state = apply_infect_from_card(
+                game_state, source_keywords, controller_name,
+                target_perm_id=target_id, target_player_name=None,
+                damage_amount=damage,
+            )
+
+            # Lifelink: controller gains life (pure transform, no-op if no lifelink)
+            game_state = apply_lifelink_from_card(
+                game_state, source_keywords, controller_name, damage
+            )
+
             return game_state
 
     # Check if target is a player (player name used as target ID)
     for player in game_state.players:
         if player.name == target_id:
             old_life = player.life
-            player.life -= damage
-            _emit_life_changed(game_state, player.name, old_life, player.life,
+            new_life = old_life - damage
+
+            _emit_life_changed(game_state, player.name, old_life, new_life,
                                -damage, reason="spell_damage")
+
+            # Apply life reduction via model_copy (pure transform)
+            new_player = player.model_copy(update={"life": new_life})
+            game_state = game_state.model_copy(
+                update={
+                    "players": [
+                        new_player if p.name == target_id else p
+                        for p in game_state.players
+                    ]
+                }
+            )
+
+            # Infect: poison counters on players (pure transform, no-op if no infect)
+            game_state = apply_infect_from_card(
+                game_state, source_keywords, controller_name,
+                target_perm_id=None, target_player_name=target_id,
+                damage_amount=damage,
+            )
+
+            # Lifelink: controller gains life (pure transform, no-op if no lifelink)
+            game_state = apply_lifelink_from_card(
+                game_state, source_keywords, controller_name, damage
+            )
+
+            # Bloodthirst tracking: record damage dealt to player this turn
+            damage_dict = dict(game_state.damage_dealt_this_turn)
+            damage_dict[target_id] = damage_dict.get(target_id, 0) + damage
+            game_state = game_state.model_copy(update={"damage_dealt_this_turn": damage_dict})
+
             return game_state
 
     logger.warning("_deal_damage: target %r not found on battlefield or as a player", target_id)
+    return game_state
 
 
 # ─── Missing Spell Effects ────────────────────────────────────────────────────
@@ -1636,7 +2257,7 @@ def _create_token_with_keywords(game_state: GameState, controller: str, count_st
     """Create token with keywords (e.g., prowess,飞行, etc)."""
     count_map = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3}
     count = count_map.get(count_str.lower(), int(count_str) if count_str.isdigit() else 1)
-    
+
     token_name = f"{subtype} Token"
     token_card = Card(
         name=token_name,
@@ -1648,22 +2269,35 @@ def _create_token_with_keywords(game_state: GameState, controller: str, count_st
         keywords=keywords.split(),
         parse_status="ok"
     )
-    
+
+    # Wire: Token Created Trigger (CR 110.5/110.6). Fire once PER token created so
+    # a "whenever a token enters the battlefield" watcher sees each as a separate
+    # event, not one trigger for the whole batch (CR 110.6).
+    from mtg_engine.engine.triggers import check_token_triggers as _check_token
+
     for _ in range(count):
         _, new_perm = put_permanent_onto_battlefield(game_state, token_card, controller, from_zone="hand", is_token=True)
-    
+        # One "token created" event per token (CR 110.6).
+        game_state = _check_token(game_state, controller)
+
     logger.info("%s creates %d %s token(s) with %s", controller, count, token_name, keywords)
+
     return game_state
 
 
-def _create_token_with_pt_and_keywords(game_state: GameState, controller: str, count_str: str, power: str, toughness: str, subtype: str, keywords: str) -> GameState:
-    """Create token with power/toughness and keywords."""
+def _create_token_with_pt_and_keywords(game_state: GameState, controller: str, count_str: str, power: str, toughness: str, subtype: str, keywords: str, colors: list[str] | None = None) -> GameState:
+    """Create token with power/toughness and keywords (and optionally colors).
+
+    Sprint 7 (7-3): added the optional ``colors`` parameter so the investigate
+    token (CR 701.32: 1/1 red Goblin with "investigate") can be built with a
+    color identity. Backward compatible — existing callers pass no colors.
+    """
     count_map = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3}
     count = count_map.get(count_str.lower(), int(count_str) if count_str.isdigit() else 1)
-    
+
     p = int(power) if power.isdigit() else 1
     t = int(toughness) if toughness.isdigit() else 1
-    
+
     token_name = f"{subtype} Token"
     token_card = Card(
         name=token_name,
@@ -1671,15 +2305,23 @@ def _create_token_with_pt_and_keywords(game_state: GameState, controller: str, c
         power=str(p),
         toughness=str(t),
         mana_cost="",
-        colors=[],
+        colors=list(colors) if colors else [],
         keywords=keywords.split(),
         parse_status="ok"
     )
-    
+
+    # Wire: Token Created Trigger (CR 110.5/110.6). Fire once PER token created so
+    # a "whenever a token enters the battlefield" watcher sees each as a separate
+    # event, not one trigger for the whole batch (CR 110.6).
+    from mtg_engine.engine.triggers import check_token_triggers as _check_token
+
     for _ in range(count):
         _, new_perm = put_permanent_onto_battlefield(game_state, token_card, controller, from_zone="hand", is_token=True)
-    
+        # One "token created" event per token (CR 110.6).
+        game_state = _check_token(game_state, controller)
+
     logger.info("%s creates %d %s/%s %s token(s) with %s", controller, p, t, token_name, count, keywords)
+
     return game_state
 
 

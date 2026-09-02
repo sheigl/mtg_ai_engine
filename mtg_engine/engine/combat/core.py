@@ -608,6 +608,13 @@ def assign_combat_damage(
     from mtg_engine.engine.triggers import check_damage_triggers
     game_state = check_damage_triggers(game_state, all_assignments)
 
+    from mtg_engine.ability.keywords.deathtouch import apply_deathtouch_damage
+    from mtg_engine.ability.keywords.infect import (
+        apply_infect_damage_to_creature,
+        apply_infect_poison_to_player,
+    )
+    from mtg_engine.ability.keywords.lifelink import apply_lifelink_to_gamestate
+
     for assign in all_assignments:
         try:
             source = _get_perm(game_state, assign.source_id)
@@ -615,71 +622,128 @@ def assign_combat_damage(
             continue
 
         has_deathtouch = _has_keyword(source, "deathtouch")
-        has_lifelink   = _has_keyword(source, "lifelink")
         has_infect     = _has_keyword(source, "infect")
 
-        # Emit damage event
+        # Emit damage event (must happen before state transforms for transcript)
         _emit_damage_dealt(game_state, source.id, source.controller,
                            assign.target_id, assign.damage, is_combat=True)
 
-        # Deal damage to target
+        # Deal damage to target permanent
         target_perm = next((p for p in game_state.battlefield if p.id == assign.target_id), None)
         if target_perm:
             is_planeswalker_target = "planeswalker" in target_perm.card.type_line.lower()
             if is_planeswalker_target:
+                # Planeswalker: reduce loyalty via model_copy (pure transform)
                 old_loyalty = target_perm.loyalty
-                target_perm.loyalty = max(0, target_perm.loyalty - assign.damage)
-            elif has_infect:
-                target_perm.counters["-1/-1"] = target_perm.counters.get("-1/-1", 0) + assign.damage
-                _emit_counter_placed(game_state, target_perm.id, "-1/-1", assign.damage)
-            else:
-                target_perm.damage_marked += assign.damage
-            if has_deathtouch and assign.damage > 0 and not is_planeswalker_target:
-                target_perm.counters["__deathtouch_damage__"] = (
-                    target_perm.counters.get("__deathtouch_damage__", 0) + assign.damage
+                new_loyalty = max(0, old_loyalty - assign.damage)
+                new_target = target_perm.model_copy(update={"loyalty": new_loyalty})
+                game_state = game_state.model_copy(
+                    update={
+                        "battlefield": [
+                            new_target if p.id == target_perm.id else p
+                            for p in game_state.battlefield
+                        ]
+                    }
                 )
+            elif has_infect:
+                # Infect damage to creature as -1/-1 counters (pure transform)
+                _emit_counter_placed(game_state, target_perm.id, "-1/-1", assign.damage)
+                game_state = apply_infect_damage_to_creature(
+                    game_state, target_perm, assign.damage
+                )
+            else:
+                # Normal damage: mark damage on creature via model_copy (pure transform)
+                new_target = target_perm.model_copy(
+                    update={"damage_marked": target_perm.damage_marked + assign.damage}
+                )
+                game_state = game_state.model_copy(
+                    update={
+                        "battlefield": [
+                            new_target if p.id == target_perm.id else p
+                            for p in game_state.battlefield
+                        ]
+                    }
+                )
+
+            # Deathtouch tracking (pure transform, no-op for planeswalkers/zero damage)
+            game_state = apply_deathtouch_damage(
+                game_state, source, target_perm, assign.damage
+            )
         else:
             # Target is a player
-                for player in game_state.players:
-                    if player.name == assign.target_id:
-                        if has_infect:
-                            player.poison_counters += assign.damage
-                            _emit_counter_placed(game_state, player.name, "poison", assign.damage)
-                        else:
-                            old_life = player.life
-                            player.life -= assign.damage
-                            _emit_life_changed(game_state, player.name, old_life, player.life,
-                                               -assign.damage, reason="combat_damage")
-                            # Commander damage tracking (CR 903.10a)
-                            if game_state.format == "commander" and assign.damage > 0:
-                                controller = get_player(game_state, source.controller)
-                                if _is_commander(source.card.name, controller):
-                                    new_damage = dict(player.commander_damage)
-                                    prev = new_damage.get(source.id, 0)
-                                    new_damage[source.id] = prev + assign.damage
-                                    new_player = player.model_copy(update={"commander_damage": new_damage})
-                                    game_state.players = [
-                                        new_player if p.name == player.name else p
-                                        for p in game_state.players
-                                    ]
-                            # MON-01: Combat damage to monarch transfers the monarchy
-                            from mtg_engine.engine.monarch import check_combat_damage_monarch
-                            game_state = check_combat_damage_monarch(
-                                game_state, player.name, source.controller
-                            )
-                            # INT-01: Combat damage to initiative holder transfers initiative
-                            from mtg_engine.engine.initiative import check_combat_damage_initiative
-                            game_state = check_combat_damage_initiative(
-                                game_state, player.name, source.controller
-                            )
-                        break
+            for player in game_state.players:
+                if player.name == assign.target_id:
+                    if has_infect:
+                        # Infect damage to player as poison counters (pure transform)
+                        _emit_counter_placed(game_state, player.name, "poison", assign.damage)
+                        game_state = apply_infect_poison_to_player(
+                            game_state, player.name, assign.damage
+                        )
+                    else:
+                        old_life = player.life
+                        new_life = old_life - assign.damage
+                        _emit_life_changed(game_state, player.name, old_life, new_life,
+                                           -assign.damage, reason="combat_damage")
 
-        # Lifelink: source controller gains life (REQ-R11)
-        if has_lifelink and assign.damage > 0:
+                        # Build updates dict for this player
+                        player_updates: dict[str, Any] = {"life": new_life}
+
+                        # Commander damage tracking (CR 903.10a) — pure transform
+                        if game_state.format == "commander" and assign.damage > 0:
+                            controller = get_player(game_state, source.controller)
+                            if _is_commander(source.card.name, controller):
+                                new_damage = dict(player.commander_damage)
+                                prev = new_damage.get(source.id, 0)
+                                new_damage[source.id] = prev + assign.damage
+                                player_updates["commander_damage"] = new_damage
+
+                        # Apply life (and possibly commander damage) via model_copy
+                        new_player = player.model_copy(update=player_updates)
+                        game_state = game_state.model_copy(
+                            update={
+                                "players": [
+                                    new_player if p.name == player.name else p
+                                    for p in game_state.players
+                                ]
+                            }
+                        )
+
+                    # MON-01: Combat damage to monarch transfers the monarchy
+                    from mtg_engine.engine.monarch import check_combat_damage_monarch
+                    game_state = check_combat_damage_monarch(
+                        game_state, player.name, source.controller
+                    )
+                    # INT-01: Combat damage to initiative holder transfers initiative
+                    from mtg_engine.engine.initiative import check_combat_damage_initiative
+                    game_state = check_combat_damage_initiative(
+                        game_state, player.name, source.controller
+                    )
+                    # KW-06: Toxic — combat damage to a player gives N poison
+                    # counters (CR 702.134a). Fires once per damage assignment
+                    # regardless of amount (5/5 Toxic 2 dealing 5 damage gives
+                    # exactly 2). The 10+ counters loss (CR 704.5c) is handled
+                    # by the SBA, not here.
+                    if _has_keyword(source, "toxic") and assign.damage > 0:
+                        from mtg_engine.ability.keywords.toxic import apply_toxic
+                        game_state = apply_toxic(game_state, source, player.name)
+
+                    # Bloodthirst tracking: record damage dealt to player this turn
+                    damage_dict = dict(game_state.damage_dealt_this_turn)
+                    damage_dict[player.name] = damage_dict.get(player.name, 0) + assign.damage
+                    game_state = game_state.model_copy(update={"damage_dealt_this_turn": damage_dict})
+
+                    break
+
+        # Lifelink: source controller gains life (REQ-R11) — pure transform
+        if _has_keyword(source, "lifelink") and assign.damage > 0:
             controller = get_player(game_state, source.controller)
             old_life = controller.life
-            controller.life += assign.damage
-            _emit_life_changed(game_state, controller.name, old_life, controller.life,
+            game_state = apply_lifelink_to_gamestate(
+                game_state, source, assign.damage
+            )
+            # Emit event after state transform (read new life from updated state)
+            new_controller = get_player(game_state, source.controller)
+            _emit_life_changed(game_state, controller.name, old_life, new_controller.life,
                                assign.damage, reason="lifelink")
 
     return game_state

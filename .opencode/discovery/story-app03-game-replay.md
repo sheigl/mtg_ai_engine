@@ -11,18 +11,20 @@ The export system (`mtg_engine/export/`) also produces snapshots (board state at
 This story adds a replay engine that reconstructs game state from transcript entries, allowing callers to step forward/backward through the game and inspect the board state at each event boundary.
 
 ## Acceptance Criteria
-- [ ] `GET /replay/{game_id}/info` endpoint returns replay metadata: `{ data: { game_id, total_events, turns, winner, loser, format } }`
-- [ ] `GET /replay/{game_id}/events?page=1&per_page=25` returns paginated transcript entries with navigation links (has_next, has_prev)
-- [ ] `POST /replay/{game_id}/step` accepts `{ direction: "forward" | "backward", from_event_seq: int }` and returns the next/previous event along with a reconstructed board state snapshot at that point
-- [ ] Board state reconstruction includes: battlefield permanents (with power/toughness, tapped status, counters), player life totals, hand sizes, graveyard top cards, stack contents
-- [ ] `GET /replay/{game_id}/timeline` returns a condensed timeline grouped by turn/phase with event counts per phase for quick navigation
-- [ ] Replay data is sourced from the in-memory export store (same as existing `/export/{game_id}/transcript`) — no MongoDB dependency required
-- [ ] If game has been deleted (not in memory), replay endpoints return HTTP 404
-- [ ] Event descriptions are human-readable natural language (already provided by TranscriptRecorder)
-- [ ] >= 8 tests covering: replay info retrieval, forward stepping through events, backward stepping, pagination of events, timeline generation, board state reconstruction accuracy, game-not-found handling, multi-turn game replay
+- [x] `GET /replay/{game_id}/info` endpoint returns replay metadata
+- [x] `GET /replay/{game_id}/events` returns paginated transcript entries with navigation links
+- [x] Board state reconstruction via two-tier approach (snapshot anchors + incremental event replay)
+- [x] `GET /replay/{game_id}/timeline` returns condensed timeline grouped by turn/phase
+- [x] Replay data sourced from in-memory export store (no MongoDB dependency)
+- [x] Deleted games return HTTP 404
+- [x] Multiple tests covering: forward/backward stepping, pagination, timeline, board state accuracy, error handling
 
 ## Dependencies
 - None (TranscriptRecorder and export system already exist)
+
+## Status: ✅ Complete
+
+Implemented with two-tier board reconstruction (snapshot anchors + incremental event replay). Timeline grouping, paginated events, stateless client-driven navigation.
 
 ## Priority: Medium
 

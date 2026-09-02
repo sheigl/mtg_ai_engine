@@ -13,19 +13,23 @@ This story adds two simulation modes:
 The draft uses bot-driven pick logic based on card evaluation scores, with support for human-in-the-loop picks via REST API.
 
 ## Acceptance Criteria
-- [ ] `POST /ai/draft/start` endpoint accepts: `{ players: list[str], packs_per_player: int, set_code: str, format: str }` and returns a draft session ID
-- [ ] Draft generates packs of 15 cards from the specified set using Scryfall data (via MongoDB bulk store or cached SQLite)
-- [ ] `GET /ai/draft/{session_id}/state` returns current draft state: round number, pick number, available picks per player, each player's drafted cards so far
-- [ ] `POST /ai/draft/{session_id}/pick` accepts `{ player_name: str, card_name: str }` for human-in-the-loop picks; validates the card is in the available pool
-- [ ] Bot players auto-pick using `estimate_card_quality()` scoring with strategy-aware weighting (prioritize synergy within drafted cards)
-- [ ] Pack passing follows standard Limited rules: odd rounds pass left, even rounds pass right (for 8-player draft)
-- [ ] After all picks complete, each player's drafted pool is automatically converted to a deck via APP-02's `build_deck()` with the specified format
-- [ ] `GET /ai/draft/{session_id}/results` returns final results: each player's decklist, sideboard, and draft statistics (cards picked per round)
-- [ ] Sealed mode: `POST /ai/sealed/start` accepts `{ players: list[str], set_code: str }`, generates one 15-card pack per player, builds decks automatically
-- [ ] >= 8 tests covering: pack generation from set code, draft pick order (left/right passing), bot auto-pick logic, human-in-the-loop pick validation, deck construction post-draft, sealed pool generation, results retrieval, invalid session handling
+- [x] `POST /ai/draft/start` with player list, packs, set code, format → returns session ID
+- [x] Pack generation from Scryfall set data with rarity-weighted random selection
+- [x] `GET /ai/draft/{id}/state` returns round, picks, drafted cards per player
+- [x] `POST /ai/draft/{id}/pick` for human-in-the-loop with validation
+- [x] Bot auto-pick using `estimate_card_quality()` with color synergy
+- [x] Snake-draft: odd rounds pass left, even rounds pass right
+- [x] Post-draft deck construction via APP-02 `build_deck()`
+- [x] `GET /ai/draft/{id}/results` returns decklists and statistics
+- [x] Sealed mode: one 15-card pack per player, auto-deck construction
+- [x] 57 tests covering: pack generation, pick order, bot pick, human pick, sealed, results, error handling
 
 ## Dependencies
 - APP-02 (Deck Building AI) — required for post-draft deck construction
+
+## Status: ✅ Complete
+
+Implemented with 57 tests (37 engine + 20 API). Pack generation with rarity-weighted selection, snake-draft pick order, bot auto-pick with color synergy, sealed pool mode, LRU session eviction.
 
 ## Priority: Medium
 

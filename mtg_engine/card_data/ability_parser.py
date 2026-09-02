@@ -132,7 +132,19 @@ _ACTIVATED_RE = re.compile(
     r"^((?:\{[^}]+\})+(?:,\s*(?:(?:\{[^}]+\})+|[^:,]+))*)\s*:\s*(.+)$",
     re.DOTALL,
 )
-_TIMING_RE = re.compile(r"\(activate only (?:as a sorcery|during [^)]+)\)", re.IGNORECASE)
+_TIMING_RE = re.compile(
+    r"\((?:activate|fortify) only (?:as a sorcery|during [^)]+)\)",
+    re.IGNORECASE,
+)
+# Fortify keyword (CR 702.54a): a line that *starts* with "Fortify" followed by
+# a {cost}. Only 2 cards in all of MTG use Fortify (Darksteel Garrison, C.A.M.P.),
+# so this branch is safe to check before the keyword fall-through.
+# NB: the opening brace must be inside the repeated non-capturing group,
+# otherwise only the first {X} chunk is matched.
+_FORTIFY_RE = re.compile(
+    r"^fortify\s*[—\-]?\s*((?:\{[^{}]*\}\s*)+)",
+    re.IGNORECASE,
+)
 
 # Static / replacement-effect patterns the engine knows about but doesn't
 # structure as an Ability (e.g. ETB-tapped on lands is handled by
@@ -496,6 +508,19 @@ def _parse_segment(text: str) -> list[Ability]:
     # Strip surrounding parentheses (e.g. basic land mana abilities: "({T}: Add {W}.)")
     if text.startswith("(") and text.endswith(")"):
         text = text[1:-1].strip()
+
+    # Fortify (CR 702.54a): "Fortify {cost} (…)" is an activated ability of
+    # Fortification cards. Checked before the keyword fall-through, which
+    # would otherwise mis-parse it as KeywordAbility(name="fortify {cost}")
+    # because "fortify" is in KEYWORDS.
+    m = _FORTIFY_RE.match(text)
+    if m:
+        return [ActivatedAbility(
+            cost=m.group(1).strip(),
+            effect="Attach this Fortification to target land you control",
+            timing_restriction="(Fortify only as a sorcery.)",
+            raw_text=text,
+        )]
 
     # Check for comma-separated keywords first (e.g. "Flying, vigilance")
     keyword_results = _try_parse_keywords(text)

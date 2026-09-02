@@ -50,11 +50,27 @@ Rules enforcement — one file per concern, each returning new GameState via `mo
 | `mana.py` | — | Mana pool arithmetic: parse costs, payment validation, colored/generic/colorless |
 | `stack.py` | 601-608 | Spell casting, timing enforcement, target validation, resolve_top |
 | `sba.py` | 704 | State-based actions loop (704.5a–q): lethal damage, zero toughness, legend rule, etc. |
-| `triggers.py` | 603 | Triggered ability detection, zone-change listener, APNAP ordering |
+| `triggers.py` | 603 | Triggered ability detection (15 `check_*_triggers()` functions wired into event paths), zone-change listener, APNAP ordering; per-token firing (CR 110.6) at all token-creation sites |
 | `layers.py` | 613 | Continuous effect layer system (7 layers with timestamp/dependency ordering) |
 | `replacement.py` | 614-616 | Replacement/prevention effects: shield counters, regeneration, "instead" effects |
 | `combat/core.py` | 508-511 | Full combat phase: attackers, blockers (flying/reach), trample, deathtouch, lifelink |
 | `stats.py` | — | Player statistics & ELO rating: `calculate_new_elo()` (standard formula, K=32), `update_player_stats()` (pure transform via model_copy with deep copy of nested dicts) |
+
+### 2b. Keyword Ability Modules (`mtg_engine/ability/keywords/`)
+
+Keyword abilities are implemented as dedicated modules under `mtg_engine/ability/keywords/`, organized by keyword type. Each module follows a consistent pattern:
+
+- **Class-based API**: A keyword class (e.g., `EvokeKeyword`, `MorphKeyword`, `SuspendKeyword`) with instance methods for the keyword's core operations
+- **Module-level convenience functions**: Standalone functions that instantiate the class and delegate, enabling lazy imports from engine wrappers
+- **Pure transforms**: All `apply()` and action methods return new GameState via `model_copy(update={...})` — never mutate directly
+
+Engine files (`mtg_engine/engine/evoke.py`, `engine/morph.py`, `engine/suspend.py`) act as thin wrappers that import from keyword modules lazily, keeping the engine layer decoupled from specific keyword implementations. This pattern was established during Sprint 7 to consolidate all keyword logic in one location and eliminate duplicated inline code in engine files like `turn_manager.py`.
+
+**Implemented keywords by category:**
+- **Cost keywords**: Kicker (KW-16), Flashback (KW-17), Escape, Delve — modify casting costs; queue pending choices for human players, auto-resolve for AI. Fortify (CR 702.54a) — an activated ability of Fortification cards that attaches the Fortification to target land you control (the land-analogue of Equip, CR 301.7); sorcery-speed only
+- **Action keywords**: Evoke (sacrifice at end of first priority), Morph (turn face-up with mana payment), Suspend (time counter management) — full lifecycle methods on keyword classes
+- **Triggered/Replacement keywords**: Afterlife, Undying, Persist, Cascade, Storm, Madness, Dredge, Ninjutsu, Dash — fire at specific game moments via stack resolution. Bloodthirst (CR 702.22) — an ETB triggered ability that adds N +1/+1 counters to a creature entering the battlefield if an opponent was dealt damage this turn (tracked via `GameState.damage_dealt_this_turn`, reset each turn; both combat and non-combat damage count per CR 702.22b)
+- **Passive keywords**: Hexproof/Shroud (KW-29/30), Menace (KW-31), Reach (KW-28) — query helpers returning boolean; called from targeting validation and blocker assignment
 
 ### 3. AI Layer (`mtg_engine/ai/`)
 

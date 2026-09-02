@@ -1,4 +1,4 @@
-"""Menace keyword (CR 702.146).
+"""Menace keyword (CR 702.111).
 
 Menace is a static ability that modifies blocking rules:
 - A creature with menace can't be blocked except by two or more creatures
@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 
 
 class Menace(PassiveKeyword):
-    """Menace keyword ability (CR 702.146).
+    """Menace keyword ability (CR 702.111).
 
-    CR 702.146b: An attacking creature with menace can't be blocked unless
+    CR 702.111b: An attacking creature with menace can't be blocked unless
     it's blocked by two or more creatures.
     """
 
@@ -43,7 +43,7 @@ class Menace(PassiveKeyword):
         """Return minimum number of blockers required for a creature with menace.
 
         A creature with menace must be blocked by at least 2 creatures.
-        CR 702.146b.
+        CR 702.111b.
         """
         return 2
 
@@ -66,7 +66,7 @@ class Menace(PassiveKeyword):
 def is_menacing(game_state: "GameState", perm_id: str) -> bool:
     """Check if a permanent on the battlefield has menace.
 
-    Query helper for combat blocker assignment (CR 702.146). A creature with
+    Query helper for combat blocker assignment (CR 702.111). A creature with
     menace can't be blocked except by two or more creatures with flying or reach.
 
     Args:
@@ -92,7 +92,7 @@ def can_block_menacing(
 ) -> bool:
     """Check if the given blockers legally block a menacing attacker.
 
-    CR 702.146b: An attacking creature with menace can't be blocked unless
+    CR 702.111b: An attacking creature with menace can't be blocked unless
     it's blocked by two or more creatures.
 
     Args:

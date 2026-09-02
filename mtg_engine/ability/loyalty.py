@@ -156,8 +156,8 @@ def activate_loyalty_ability(
         perm.counters["loyalty"],
     )
 
-    # Execute the effect (placeholder - would integrate with effect system)
-    _execute_loyalty_effect(game_state, perm, controller, effect)
+    # Execute the effect — pure transform returns new GameState
+    game_state = _execute_loyalty_effect(game_state, perm, controller, effect)
 
     return game_state
 
@@ -167,9 +167,9 @@ def _execute_loyalty_effect(
     perm: Permanent,
     controller: str,
     effect: str,
-) -> None:
+) -> GameState:
     """
-    Execute the effect portion of a loyalty ability.
+    Execute the effect portion of a loyalty ability. Pure transform.
 
     This is a simplified implementation that handles common effect patterns.
     Full implementation would integrate with the effect system.
@@ -178,58 +178,70 @@ def _execute_loyalty_effect(
 
     # Draw cards
     if "draw" in lower:
-        import re
-        match = re.search(r"draw\s+(\d+)\s+card", effect, re.IGNORECASE)
+        import re as _re
+        match = _re.search(r"draw\s+(\d+)\s+card", effect, _re.IGNORECASE)
         count = int(match.group(1)) if match else 1
         player = next((p for p in game_state.players if p.name == controller), None)
         if player:
-            from mtg_engine.engine.zones import draw_card
+            from mtg_engine.engine.zones import draw_card as _draw_card
             for _ in range(count):
-                game_state, _ = draw_card(game_state, controller)
+                game_state, _ = _draw_card(game_state, controller)
 
     # Gain life
     elif "gain" in lower and "life" in lower:
-        import re
-        match = re.search(r"gain\s+(\d+)\s+life", effect, re.IGNORECASE)
+        import re as _re
+        match = _re.search(r"gain\s+(\d+)\s+life", effect, _re.IGNORECASE)
         amount = int(match.group(1)) if match else 1
-        player = next((p for p in game_state.players if p.name == controller), None)
-        if player:
-            player.life += amount
+        new_players = []
+        for p in game_state.players:
+            if p.name == controller:
+                new_players.append(p.model_copy(update={"life": p.life + amount}))
+            else:
+                new_players.append(p)
+        game_state = game_state.model_copy(update={"players": new_players})
 
     # Deal damage
     elif "damage" in lower:
-        import re
-        match = re.search(r"(\d+)\s+damage", effect, re.IGNORECASE)
+        import re as _re
+        match = _re.search(r"(\d+)\s+damage", effect, _re.IGNORECASE)
         amount = int(match.group(1)) if match else 1
-        # Simplified: deal to opponent
-        opponents = [
-            p for p in game_state.players if p.name != controller
-        ]
-        if opponents:
-            opponents[0].life -= amount
+        # Simplified: deal to first opponent — pure transform
+        new_players = []
+        damage_dealt = False
+        for p in game_state.players:
+            if not damage_dealt and p.name != controller:
+                new_players.append(p.model_copy(update={"life": p.life - amount}))
+                damage_dealt = True
+            else:
+                new_players.append(p)
+        game_state = game_state.model_copy(update={"players": new_players})
 
     # Create token
     elif "create" in lower and "token" in lower:
-        from mtg_engine.engine.zones import put_permanent_onto_battlefield
-        from mtg_engine.models.game import Card
+        from mtg_engine.engine.zones import put_permanent_onto_battlefield as _put_perm
+        from mtg_engine.models.game import Card as _Card
         player = next((p for p in game_state.players if p.name == controller), None)
         if player:
-            token = Card(
+            token = _Card(
                 name=f"{perm.card.name} Token",
                 type_line="Creature — Soldier",
                 power="1",
                 toughness="1",
                 colors=perm.card.colors,
             )
-            game_state, _ = put_permanent_onto_battlefield(
-                game_state, token, controller, is_token=True
-            )
+            game_state, _ = _put_perm(game_state, token, controller, is_token=True)
+            # Wire: Token Trigger (CR 704.5c) — check_token_triggers is the single
+            # owner of token triggers (the zone listener skips them).
+            from mtg_engine.engine.triggers import check_token_triggers as _check_token
+            game_state = _check_token(game_state, controller)
 
     # Generic fallback
     else:
         logger.debug(
             "Loyalty effect not yet implemented: %s", effect
         )
+
+    return game_state
 
 
 def set_initial_loyalty(perm: Permanent, card: Card) -> None:

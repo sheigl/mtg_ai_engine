@@ -55,23 +55,28 @@ def _perm(card_name: str, oracle_text: str, controller: str = "Alice") -> Perman
 class TestSacrificeTriggers:
     def test_sacrifice_creature_trigger(self):
         gs = _make_gs()
-        perm = _perm("Zulaport Cutthroat", "Whenever a creature you control is sacrificed, that creature's controller loses 1 life and you gain 1 life.")
-        gs.battlefield.append(perm)
-        gs = check_sacrifice_triggers(gs, [perm.id], "Alice")
+        watcher = _perm("Zulaport Cutthroat", "Whenever a creature you control is sacrificed, that creature's controller loses 1 life and you gain 1 life.")
+        gs.battlefield.append(watcher)
+        # A creature controlled by the watcher (Alice) is sacrificed (off-battlefield)
+        sac = _perm("Sacrificed Beast", "", controller="Alice")
+        gs = check_sacrifice_triggers(gs, [sac], "Alice")
         assert len([t for t in gs.pending_triggers if t.trigger_type == "sacrifice"]) >= 1
 
     def test_sacrifice_you_trigger(self):
         gs = _make_gs()
-        perm = _perm("Cabal Covenant", "Whenever you sacrifice a creature, put a +1/+1 counter on this creature.")
-        gs.battlefield.append(perm)
-        gs = check_sacrifice_triggers(gs, [perm.id], "Alice")
+        watcher = _perm("Cabal Covenant", "Whenever you sacrifice a creature, put a +1/+1 counter on this creature.")
+        gs.battlefield.append(watcher)
+        # The watcher's controller (Alice) sacrifices a creature
+        sac = _perm("Sacrificed Beast", "", controller="Alice")
+        gs = check_sacrifice_triggers(gs, [sac], "Alice")
         assert len([t for t in gs.pending_triggers if t.trigger_type == "sacrifice"]) >= 1
 
     def test_no_match_non_matching_oracle(self):
         gs = _make_gs()
-        perm = _perm("Basic Island", "{T}: Add {U}.")
-        gs.battlefield.append(perm)
-        gs = check_sacrifice_triggers(gs, [perm.id], "Alice")
+        watcher = _perm("Basic Island", "{T}: Add {U}.")
+        gs.battlefield.append(watcher)
+        sac = _perm("Sacrificed Beast", "", controller="Alice")
+        gs = check_sacrifice_triggers(gs, [sac], "Alice")
         assert len([t for t in gs.pending_triggers if t.trigger_type == "sacrifice"]) == 0
 
 
@@ -194,11 +199,49 @@ class TestBecomesTargetTriggers:
         assert len([t for t in gs.pending_triggers if t.trigger_type == "becomes_target"]) >= 1
 
     def test_creature_you_control_becomes_target(self):
+        """'Whenever a creature you control becomes the target' fires when a controlled perm is targeted."""
         gs = _make_gs()
-        perm = _perm("Some Card", "Whenever a creature you control becomes the target of a spell, draw a card.")
-        gs.battlefield.append(perm)
-        gs = check_becomes_target_triggers(gs, "some-target-id")
+        watcher = _perm("Some Card", "Whenever a creature you control becomes the target of a spell, draw a card.")
+        target_creature = _perm("Warhorse", "")  # The actual target
+        gs.battlefield.extend([watcher, target_creature])
+        gs = check_becomes_target_triggers(gs, target_creature.id)
         assert len([t for t in gs.pending_triggers if t.trigger_type == "becomes_target"]) >= 1
+
+    def test_non_targeted_perm_does_not_fire_this_trigger(self):
+        """'Whenever this creature becomes the target' only fires for the targeted perm."""
+        gs = _make_gs()
+        shiny = _perm("Shiny Impetus", "Whenever this creature becomes the target of a spell or ability, put a +1/+1 counter on it.")
+        other_creature = _perm("Warhorse", "")  # The actual target (different from Shiny)
+        gs.battlefield.extend([shiny, other_creature])
+        gs = check_becomes_target_triggers(gs, other_creature.id)
+        # Only other_creature was targeted; shiny's "this" trigger should NOT fire
+        assert len([t for t in gs.pending_triggers if t.trigger_type == "becomes_target" and t.source_permanent_id == shiny.id]) == 0
+
+    def test_life_gain_does_not_fire_lose_trigger(self):
+        """'Whenever you lose life' does NOT fire when player gains life."""
+        gs = _make_gs()
+        perm = _perm("Geth's Grimoire", "Whenever you lose life, draw a card.")
+        gs.battlefield.append(perm)
+        gs = check_life_gain_lost_triggers(gs, "Alice", 5)  # Positive amount = gain life
+        assert len([t for t in gs.pending_triggers if t.trigger_type == "life_gain_lost"]) == 0
+
+    def test_life_loss_does_not_fire_gain_trigger(self):
+        """'Whenever you gain life' does NOT fire when player loses life."""
+        gs = _make_gs()
+        perm = _perm("Karametra's Blessing", "Whenever you gain life, put a +1/+1 counter on this creature.")
+        gs.battlefield.append(perm)
+        gs = check_life_gain_lost_triggers(gs, "Alice", -3)  # Negative amount = lose life
+        assert len([t for t in gs.pending_triggers if t.trigger_type == "life_gain_lost"]) == 0
+
+    def test_opponent_targeted_does_not_fire_your_control(self):
+        """'Whenever a creature you control becomes the target' doesn't fire when opponent's perm is targeted."""
+        gs = _make_gs()
+        watcher_alice = _perm("Some Card", "Whenever a creature you control becomes the target of a spell, draw a card.")
+        bob_creature = _perm("Bob's Warhorse", "", controller="Bob")  # Bob controls this
+        gs.battlefield.extend([watcher_alice, bob_creature])
+        gs = check_becomes_target_triggers(gs, bob_creature.id)
+        # Alice's watcher should NOT fire because the targeted creature is controlled by Bob
+        assert len([t for t in gs.pending_triggers if t.trigger_type == "becomes_target" and t.source_permanent_id == watcher_alice.id]) == 0
 
 
 # ─── Attach Triggers ──────────────────────────────────────────────
@@ -213,9 +256,12 @@ class TestAttachTriggers:
 
     def test_aura_unattached(self):
         gs = _make_gs()
-        perm = _perm("Sun Titan", "Whenever an aura you control becomes unattached, return target exile card to battlefield.")
-        gs.battlefield.append(perm)
-        gs = check_attach_triggers(gs, "some-aura-id")
+        watcher = _perm("Sun Titan", "Whenever an aura you control becomes unattached, return target exile card to battlefield.")
+        gs.battlefield.append(watcher)
+        # A real aura (controlled by the watcher, Alice) still on the battlefield
+        aura = _perm("Some Aura", "Enchant creature. Enchanted creature gets +1/+1.")
+        gs.battlefield.append(aura)
+        gs = check_attach_triggers(gs, aura.id, attach_event="unattach")
         assert len([t for t in gs.pending_triggers if t.trigger_type == "attach"]) >= 1
 
 

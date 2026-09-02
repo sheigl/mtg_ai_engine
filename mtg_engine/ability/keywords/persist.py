@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from mtg_engine.ability.keywords.base import TriggeredKeyword
 
 if TYPE_CHECKING:
-    from mtg_engine.models.game import GameState, Permanent, PendingTrigger
+    from mtg_engine.models.game import GameState, Permanent, PendingTrigger, StackObject
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +75,58 @@ class PersistKeyword(TriggeredKeyword):
         """Apply persist (no-op without death context)."""
         return game_state
 
+    def resolve_trigger(
+        self,
+        game_state: "GameState",
+        controller: str,
+        card_name: str,
+    ) -> "GameState":
+        """Resolve persist trigger: return creature from graveyard with a -1/-1 counter.
+
+        CR 702.61b: Return it to the battlefield under its owner's control with a -1/-1 counter on it.
+        Pure transform: returns new GameState via model_copy.
+
+        Args:
+            game_state: Current game state.
+            controller: Player who controlled the dying permanent.
+            card_name: Name of the card in graveyard to return.
+
+        Returns:
+            New GameState with creature returned from graveyard.
+        """
+        from mtg_engine.engine.zones import get_player, put_permanent_onto_battlefield
+
+        player = get_player(game_state, controller)
+
+        # Find the card in graveyard (it should be there since it just died)
+        target_card = next((c for c in player.graveyard if c.name == card_name), None)
+        if target_card is None:
+            logger.warning("Persist: %s not found in %s's graveyard", card_name, controller)
+            return game_state
+
+        # Remove from graveyard — pure transform via model_copy on player and players list
+        new_graveyard = [c for c in player.graveyard if c.id != target_card.id]
+        new_player = player.model_copy(update={"graveyard": new_graveyard})
+        players = [new_player if p.name == controller else p for p in game_state.players]
+        game_state = game_state.model_copy(update={"players": players})
+
+        # Put onto battlefield with -1/-1 counter
+        game_state, perm = put_permanent_onto_battlefield(
+            game_state, target_card, controller, from_zone="graveyard"
+        )
+        if perm is not None:
+            new_counters = dict(perm.counters) if perm.counters else {}
+            new_counters["-1/-1"] = new_counters.get("-1/-1", 0) + 1
+            battlefield = list(game_state.battlefield)
+            for i, p in enumerate(battlefield):
+                if p.id == perm.id:
+                    battlefield[i] = p.model_copy(update={"counters": new_counters})
+                    break
+            game_state = game_state.model_copy(update={"battlefield": battlefield})
+
+        logger.info("Persist: %s returned to battlefield with a -1/-1 counter", card_name)
+        return game_state
+
     def create_trigger(
         self,
         game_state: "GameState",
@@ -127,3 +179,23 @@ class PersistKeyword(TriggeredKeyword):
 
     def get_trigger_description(self) -> str:
         return "Persist: When this dies with no -1/-1 counters, return it with a -1/-1 counter"
+
+
+def resolve_trigger(game_state: "GameState", stack_obj: "StackObject") -> "GameState":
+    """Resolve persist trigger from a StackObject.
+
+    Delegates to PersistKeyword.resolve_trigger(). This is the primary entry point
+    called by stack.py's dispatcher.
+
+    Args:
+        game_state: Current game state.
+        stack_obj: The stack object containing trigger data.
+
+    Returns:
+        New GameState with creature returned from graveyard.
+    """
+    controller = stack_obj.controller
+    card_name = stack_obj.source_card.name
+
+    kw = PersistKeyword()
+    return kw.resolve_trigger(game_state, controller, card_name)

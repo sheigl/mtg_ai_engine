@@ -9,7 +9,9 @@ from mtg_engine.models.game import (
 )
 from mtg_engine.engine.triggers import (
     check_mana_production_triggers,
+    check_mana_spent_triggers,
     MANA_PRODUCTION_TRIGGER_PATTERNS,
+    MANA_SPENT_TRIGGER_PATTERNS,
 )
 
 
@@ -75,6 +77,42 @@ def test_pattern_no_false_positive():
     assert matched is False
 
 
+def test_spend_mana_is_not_a_production_pattern():
+    """'whenever you spend mana' is NOT a mana-PRODUCTION trigger (MAJOR 5 guard).
+
+    Mana production fires when a *land/mana source* makes mana available;
+    "spend mana" fires when a player *pays* a cost. These must not be conflated.
+    """
+    text = "Whenever you spend mana, put a +1/+1 counter on this creature."
+    matched = any(p.search(text) for p in MANA_PRODUCTION_TRIGGER_PATTERNS)
+    assert matched is False
+
+
+def test_spend_mana_is_a_spent_pattern():
+    """'whenever you spend mana' IS a mana-SPENT trigger (MINOR 7 guard)."""
+    text = "Whenever you spend mana, put a +1/+1 counter on this creature."
+    matched = any(p.search(text) for p in MANA_SPENT_TRIGGER_PATTERNS)
+    assert matched is True
+
+
+def test_spend_mana_trigger_fires_via_check():
+    """check_mana_spent_triggers queues a trigger for a 'spend mana' watcher."""
+    watcher = _make_perm(
+        name="Spend Watcher",
+        type_line="Enchantment",
+        oracle_text="Whenever you spend mana, put a +1/+1 counter on this creature.",
+        controller="p1",
+    )
+    gs = _make_game([watcher])
+    gs = check_mana_spent_triggers(gs, "p1")
+
+    spent_triggers = [
+        t for t in gs.pending_triggers if t.trigger_type == "mana_spent"
+    ]
+    assert len(spent_triggers) == 1
+    assert spent_triggers[0].controller == "p1"
+
+
 # ─── check_mana_production_triggers ───────────────────────────────────────────
 
 def test_no_triggers_without_matching_permanents():
@@ -105,10 +143,14 @@ def test_trigger_queued_for_mana_production():
     gs = _make_game([watcher, forest])
     gs = check_mana_production_triggers(gs, forest.id, "p1", ["G"])
 
-    # The watcher's ability should have been detected as a mana production trigger
-    # Note: actual trigger queuing depends on ability_parser producing TriggeredAbility
-    # The function should at least not crash
-    assert gs is not None
+    # The watcher's "whenever you tap a land for mana" ability is a triggered
+    # ability and must produce exactly one queued trigger, owned by the watcher.
+    production_triggers = [
+        t for t in gs.pending_triggers if t.trigger_type == "mana_production"
+    ]
+    assert len(production_triggers) == 1
+    assert production_triggers[0].controller == "p1"
+    assert production_triggers[0].source_permanent_id == watcher.id
 
 
 def test_trigger_type_is_mana_production():

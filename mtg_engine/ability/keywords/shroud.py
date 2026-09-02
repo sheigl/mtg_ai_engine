@@ -1,4 +1,4 @@
-"""Shroud keyword (CR 702.41).
+"""Shroud keyword (CR 702.18).
 
 Shroud is a static ability that prevents all targeting:
 - A permanent or player with shroud can't be the target of any spell or ability,
@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 
 
 class Shroud(PassiveKeyword):
-    """Shroud keyword ability (CR 702.41).
+    """Shroud keyword ability (CR 702.18).
 
-    CR 702.41b: A permanent or player with shroud can't be the target of spells
+    CR 702.18b: A permanent or player with shroud can't be the target of spells
     or abilities. Neither opponent nor controller can target it.
     """
 
@@ -43,7 +43,7 @@ class Shroud(PassiveKeyword):
         """Check if the permanent can be targeted by anyone.
 
         A shrouded permanent can never be targeted.
-        CR 702.41b.
+        CR 702.18b.
 
         Args:
             target_keywords: Keywords of the target permanent.
@@ -60,7 +60,7 @@ def is_shrouded(
 ) -> bool:
     """Check if a permanent or player has shroud.
 
-    Query helper for targeting validation (CR 702.41). A permanent or player
+    Query helper for targeting validation (CR 702.18). A permanent or player
     with shroud can't be the target of any spell or ability, regardless of
     who controls it.
 
@@ -94,7 +94,7 @@ def can_target_shrouded(
 ) -> bool:
     """Check if a shroud-protected target can be targeted.
 
-    CR 702.41b: A permanent or player with shroud can't be the target of
+    CR 702.18b: A permanent or player with shroud can't be the target of
     spells or abilities. No one — not even the controller — may target it.
 
     Args:

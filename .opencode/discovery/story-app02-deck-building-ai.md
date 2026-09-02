@@ -12,19 +12,23 @@ The engine already has:
 This story builds a deck construction algorithm that scores cards from a pool, applies format constraints (deck size, banned lists, singleton rules), and produces a legal decklist. The "strategy" parameter guides card prioritization (e.g., "aggro" favors low-CMC creatures with haste; "control" favors counterspells and board wipes).
 
 ## Acceptance Criteria
-- [ ] `POST /ai/deck/build` endpoint accepts: `{ card_pool: list[Card], format: str, strategy: str, commander_names: optional[list[str]] }`
-- [ ] Returns `{ data: { deck: list[dict], sideboard: list[dict], validation: DeckValidationResponse } }` where each dict includes card name and quantity
-- [ ] Strategy parameter supports at minimum: "aggro", "control", "midrange", "combo" — each adjusts scoring weights (e.g., aggro boosts low-CMC creatures, control boosts removal/counterspells)
-- [ ] Deck construction respects format rules: deck size minimums (60/100), banned cards excluded, singleton enforcement for Legacy/Vintage/Commander/Brawl
-- [ ] Commander format: if `commander_names` provided, validates color identity and includes commanders in the 100-card total
-- [ ] Uses existing `estimate_card_quality()` as baseline score, modified by strategy weights and CMC curve targeting
-- [ ] Deck is validated via FMT-01's `validate_deck()` before returning; if validation fails, returns errors in the response rather than an invalid deck
-- [ ] Sideboard construction: for formats that support sideboards (non-Commander), fills remaining legal cards up to 15
-- [ ] Cards not in any format's legality window are excluded from consideration
-- [ ] >= 8 tests covering: aggro strategy produces low-CMC heavy deck, control strategy produces removal-heavy deck, banned card exclusion, singleton enforcement, commander color identity validation, minimum deck size met, sideboard population, invalid format handling
+- [x] `POST /ai/deck/build` endpoint accepts card pool, format, strategy, optional commander names
+- [x] Returns deck, sideboard, and validation results
+- [x] Strategy parameter supports: "aggro", "control", "midrange", "combo" with adjusted scoring weights
+- [x] Deck construction respects format rules: deck size, banned cards, singleton enforcement
+- [x] Commander format: validates color identity, includes commanders in 100-card total
+- [x] Uses `estimate_card_quality()` baseline modified by strategy weights and CMC curve targeting
+- [x] Deck validated via FMT-01's `validate_deck()` before returning
+- [x] Sideboard construction fills remaining legal cards up to 15 (non-Commander formats)
+- [x] Cards outside format legality window are excluded
+- [x] 59 tests covering: strategies, banned cards, singleton, commander, deck size, sideboard, invalid formats
 
 ## Dependencies
 - FMT-01 (Format Validation) — already complete ✅
+
+## Status: ✅ Complete
+
+Implemented with 59 tests (52 unit + 7 API). Full pipeline: Filter → Score → Select → Validate. Supports 8 formats with strategy weights, CMC curve targeting, basic land exemption.
 
 ## Priority: High
 
