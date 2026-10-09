@@ -1,18 +1,16 @@
 # Pipeline Status
 
-## Current Feature: Story 7-6 (Buyback/Entwine/Overload/Miracle/Bloodthirst/Convoke) — 7-6a ✅ 7-6b ✅ 7-6c ✅ 7-6d ✅ 7-6e ✅ 7-6f ✅, COMPLETE
-## Last Step Completed: 7-6f Convoke (CR 702.43) FULL PIPELINE + Document verified (3167/0/3/13, +18 net). AGENTS.md top entry. Ruff 0 NEW; skip/xfail byte-identical.
-## Next Action: 7-6 umbrella complete. Next backlog item: review remaining Sprint 7 P1/P2 items or move to next feature.
+## Current Feature: Story 7-7 (Phasing/Modulate/Saddle/Prototype) — 7-7a ✅, 7-7b🔄 in progress
+## Last Step Completed: 7-7a Phasing (CR 702.26) FULL PIPELINE (Implement → Code Review [revision round] → Test → Document). Suite 3193/0/3skip/13xfail (+26 net from Convoke baseline 3167); skip/xfail byte-identical; ruff 0 NEW. AGENTS.md updated.
+## Next Action: Implement Saddle (7-7b) — Discovery recommended order: Phasing first, then Saddle (highest infra reuse), then Modulate + Prototype in parallel.
 
-### 7-6 umbrella progress (sub-stories 7-6a..7-6f)
+### Story 7-7 sub-stories progress
 | Sub-story | Keyword (CR) | Implement | Code Review | Test | Document |
 |-----------|--------------|-----------|-------------|------|----------|
-| 7-6a | Buyback (702.27) | ✅ | ✅ | ✅ (3102/0/3/13) | ✅ |
-| 7-6b | Entwine (702.39) | ✅ | ✅ | ✅ (3115/0/3/13) | ✅ |
-| 7-6c | Overload (702.95) | ✅ | ✅ | ✅ (3126/0/3/13) | ✅ |
-| 7-6d | Miracle (702.93) | ✅ | ✅ | ✅ (3139/0/3/13) | ✅ |
-| 7-6e | Bloodthirst (702.22) | ✅ | ✅ | ✅ (3149/0/3/13) | ✅ |
-| 7-6f | Convoke (702.43) | ✅ | ✅ | ✅ (3167/0/3/13) | ✅ |
+| 7-7a | Phasing (702.26) | ✅ | ✅ (revision fixed: API-layer legal-action exclusion + cast_spell ValueError → HTTP 422) | ✅ (3193/0/3skip/13xfail, +26 net) | ✅ |
+| 7-7b | Saddle (BLI 2025) | 🔄 In progress | ⏳ | ⏳ | ⏳ |
+| 7-7c | Modulate (MOM 2023) | ⏳ | ⏳ | ⏳ | ⏳ |
+| 7-7d | Prototype (BLI 2025) | ⏳ | ⏳ | ⏳ | ⏳ |
 
 ## OOS items (user-directed completion)
 | Item | Description | Implement | Code Review | Test | Document |
@@ -20,16 +18,10 @@
 | OOS-1 | Ward fires on ABILITIES (CR 702.145a "spell or ability") — was spells-only | ✅ Done | ✅ Approved | ✅ Passed | ✅ Done |
 | OOS-2 | Toxic spurious no-op combat_damage PendingTrigger (trigger hygiene) | ✅ Done | ✅ Approved | ✅ Passed | ✅ Done |
 
-| Feature | Discovery + Planning | Implement | Code Review | Test | Document |
-|---------|----------|-------------|------|----------|----------|
-| 7-5 Umbrella (Crew..Toxic) | ✅ | ✅ | ✅ | ✅ | ✅ | SHIPPED (3046/0/3/13) |
-| OOS-1 Ward-on-Abilities | n/a | ✅ | ✅ | ✅ | ✅ | 3067/0/3/13 (+21 net) |
-| OOS-2 Toxic trigger hygiene | n/a | ✅ | ✅ | ✅ | ✅ | 3079/0/3/13 (+12 net) |
-
 ## Notes / Open items
-- Baseline evolution: 3031 (Ward) → 3046 (Toxic) → 3067 (Ward-on-Abilities/OOS-1) → 3079 (Toxic trigger hygiene/OOS-2) → 3102 (Buyback) → 3115 (Entwine) → 3126 (Overload) → 3139 (Miracle) → 3149 (Bloodthirst) → 3167 (Convoke). CURRENT: 3167/0/3/13.
-- 7-6e Bloodthirst: real apply() + ETB wiring + damage tracking complete; 19 integration tests (TestBloodthirstUnit 6, TestBloodthirstApply 5, TestBloodthirstETB 6, TestBloodthirstDamageTracking 2); suite 3149/0/3/13 (+10 net from 3139). AGENTS.md updated. Verified this session: 19 pass, keywords baseline 108 pass, ruff 0 NEW (4 E402 pre-existing).
-- 7-6f Convoke: real apply() + cost reduction via tapping creatures; 9 integration tests; suite 3167/0/3/13 (+18 net from 3149). AGENTS.md top entry. Verified this session: 9 pass.
-- 7-6 umbrella COMPLETE (all six sub-stories 7-6a..7-6f shipped).
+- Baseline evolution: 3031 (Ward) → 3046 (Toxic) → 3067 (Ward-on-Abilities/OOS-1) → 3079 (Toxic trigger hygiene/OOS-2) → 3102 (Buyback) → 3115 (Entwine) → 3126 (Overload) → 3139 (Miracle) → 3149 (Bloodthirst) → 3167 (Convoke) → **3193 (Phasing, 7-7a)**. CURRENT: 3193/0/3skip/13xfail.
+- Skip/xfail set MUST stay byte-identical: 3 skip = tests/api/test_etb_choices.py:185/190/195; 13 xfail across test_etb_ai/detection/integration. (Verified for Phasing.)
+- Git: committed as `78334bb` (rebased onto remote f207cfd), pushed as `e2d570d` to origin/main this session — 486 files changed, +45734/−2088. Per explicit user directive, commits ARE allowed now (the "do not commit" note in prior notes is STALE).
 - Subagents unreliable — empty/partial results + CodeReview is shell-less. ALWAYS confirm via ground-truth grep after; Test is the only authoritative regression source.
-- Tree dirty by design (Sprint 7 + OOS work uncommitted per "do not commit"). HEAD at 7363140; do NOT commit.
+
+(End of file)

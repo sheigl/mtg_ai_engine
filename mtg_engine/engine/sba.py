@@ -119,7 +119,7 @@ def _check_once(game_state: GameState) -> tuple[GameState, list[SBAEvent]]:
     # CR 704.5f: creature with toughness ≤ 0 → graveyard (regeneration cannot replace)
     to_remove: list[Permanent] = []
     for perm in game_state.battlefield:
-        if _is_creature(perm):
+        if _is_creature(perm) and not perm.phased_out:
             toughness = _effective_toughness(perm)
             if toughness is not None and toughness <= 0:
                 to_remove.append(perm)
@@ -131,7 +131,7 @@ def _check_once(game_state: GameState) -> tuple[GameState, list[SBAEvent]]:
     # (regeneration can replace; indestructible prevents) REQ-R07
     to_remove = []
     for perm in game_state.battlefield:
-        if _is_creature(perm) and not _is_indestructible(perm):
+        if _is_creature(perm) and not _is_indestructible(perm) and not perm.phased_out:
             toughness = _effective_toughness(perm)
             if toughness is not None and toughness > 0 and perm.damage_marked >= toughness:
                 to_remove.append(perm)
@@ -171,7 +171,7 @@ def _check_once(game_state: GameState) -> tuple[GameState, list[SBAEvent]]:
     # Tracked via "__deathtouch_damage__" counter on the permanent
     to_remove = []
     for perm in game_state.battlefield:
-        if _is_creature(perm) and not _is_indestructible(perm):
+        if _is_creature(perm) and not _is_indestructible(perm) and not perm.phased_out:
             if perm.counters.get("__deathtouch_damage__", 0) > 0:
                 to_remove.append(perm)
     for perm in to_remove:
@@ -251,13 +251,11 @@ def _check_once(game_state: GameState) -> tuple[GameState, list[SBAEvent]]:
     # CR 704.5m: Aura not attached to a legal permanent → graveyard
     to_remove = []
     for perm in game_state.battlefield:
-        if "aura" in perm.card.type_line.lower():
-            if not perm.attached_to:
+        if "aura" in perm.card.type_line.lower() and not perm.phased_out:
+            if not perm.attached_to or not any(
+                p.id == perm.attached_to for p in game_state.battlefield
+            ):
                 to_remove.append(perm)
-            else:
-                target_exists = any(p.id == perm.attached_to for p in game_state.battlefield)
-                if not target_exists:
-                    to_remove.append(perm)
     for perm in to_remove:
         game_state = _move_to_graveyard(game_state, perm)
         events.append(SBAEvent("aura_illegal", f"{perm.card.name} aura has no legal enchanted object", [perm.id]))
@@ -276,7 +274,7 @@ def _check_once(game_state: GameState) -> tuple[GameState, list[SBAEvent]]:
 
     # CR 704.5n: Equipment attached to illegal permanent → becomes unattached (stays on battlefield)
     for perm in game_state.battlefield:
-        if "equipment" in perm.card.type_line.lower() and perm.attached_to:
+        if "equipment" in perm.card.type_line.lower() and perm.attached_to and not perm.phased_out:
             target_exists = any(
                 p.id == perm.attached_to and _is_creature(p)
                 for p in game_state.battlefield
@@ -306,7 +304,7 @@ def _check_once(game_state: GameState) -> tuple[GameState, list[SBAEvent]]:
     # above.
     from mtg_engine.ability.keywords.fortify import Fortify
     for perm in game_state.battlefield:
-        if Fortify.is_fortification(perm.card) and perm.attached_to:
+        if Fortify.is_fortification(perm.card) and perm.attached_to and not perm.phased_out:
             target_perm = next((p for p in game_state.battlefield if p.id == perm.attached_to), None)
             if target_perm is None or not Fortify.is_land_card(target_perm.card):
                 perm.attached_to = None

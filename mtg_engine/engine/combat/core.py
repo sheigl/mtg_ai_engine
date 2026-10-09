@@ -248,6 +248,12 @@ def declare_attackers(
     for decl in attack_declarations:
         perm = _get_perm(game_state, decl.attacker_id)
 
+        # US15 (Phasing, CR 702.26): a phased-out permanent doesn't exist — it can't
+        # be declared as an attacker.
+        from mtg_engine.ability.keywords.phasing import is_phased_out as _is_phased_out
+        if _is_phased_out(game_state, perm.id):
+            raise ValueError(f"{perm.card.name} is phased out and cannot attack")
+
         # CR 508.1a: must be a creature, untapped, and either has haste or not summoning sick
         if not _is_creature(perm):
             raise ValueError(f"{perm.card.name} is not a creature")
@@ -294,6 +300,17 @@ def declare_blockers(
 
     for decl in block_declarations:
         blocker = _get_perm(game_state, decl.blocker_id)
+
+        # US15 (Phasing, CR 702.26): a phased-out permanent doesn't exist — it can't
+        # be declared as a blocker or be blocked.
+        from mtg_engine.ability.keywords.phasing import is_phased_out as _is_phased_out
+        if _is_phased_out(game_state, blocker.id):
+            raise ValueError(f"{blocker.card.name} is phased out and cannot block")
+        attacker = _get_perm(game_state, decl.attacker_id)
+        if _is_phased_out(game_state, attacker.id):
+            raise ValueError(
+                f"{attacker.card.name} is phased out and cannot be blocked"
+            )
 
         # CR 509.1a: must be untapped creature
         if not _is_creature(blocker):
@@ -624,12 +641,20 @@ def assign_combat_damage(
         has_deathtouch = _has_keyword(source, "deathtouch")
         has_infect     = _has_keyword(source, "infect")
 
+        # US15 (Phasing, CR 702.26): a phased-out permanent doesn't exist — it can't
+        # deal or take combat damage. Skip the assignment entirely.
+        from mtg_engine.ability.keywords.phasing import is_phased_out as _is_phased_out
+        if _is_phased_out(game_state, source.id):
+            continue
+        target_perm = next((p for p in game_state.battlefield if p.id == assign.target_id), None)
+        if target_perm is not None and _is_phased_out(game_state, target_perm.id):
+            continue
+
         # Emit damage event (must happen before state transforms for transcript)
         _emit_damage_dealt(game_state, source.id, source.controller,
-                           assign.target_id, assign.damage, is_combat=True)
+                            assign.target_id, assign.damage, is_combat=True)
 
         # Deal damage to target permanent
-        target_perm = next((p for p in game_state.battlefield if p.id == assign.target_id), None)
         if target_perm:
             is_planeswalker_target = "planeswalker" in target_perm.card.type_line.lower()
             if is_planeswalker_target:

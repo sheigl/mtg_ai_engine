@@ -774,6 +774,29 @@ def put_permanent_onto_battlefield(
             # Update perm reference to the possibly updated version in game_state
             perm = next((p for p in game_state.battlefield if p.id == perm.id), perm)
 
+    # US15 (Phasing, CR 702.26): record phasing on the permanent at creation so
+    # end-of-untap phase-out can find it via the flag (falls back to keyword/oracle
+    # detection in the keyword module regardless).
+    from mtg_engine.ability.keywords.phasing import PhasingKeyword as _Phasing
+    if _Phasing.has_phasing(perm):
+        perm = perm.model_copy(update={"has_phasing": True})
+        game_state = game_state.model_copy(
+            update={"battlefield": [p if p.id != perm.id else perm for p in game_state.battlefield]}
+        )
+
+    # SADDLE (BLI 2025): "Saddle — This enters the battlefield attached to target
+    # creature you control, as an Equipment would." Reuse _apply_equip (attach +
+    # attach triggers). Human path queues pending_saddle_choice and stays loose; AI
+    # attaches immediately. Gated on has_saddle so non-saddled permanents are
+    # byte-identical to current behavior.
+    from mtg_engine.ability.keywords.saddle import SaddleKeyword as _Saddle
+    if _Saddle.has_saddle(perm):
+        from mtg_engine.ability.keywords.saddle import apply_saddle
+        game_state = apply_saddle(game_state, perm.id)
+        # AI attach path rebuilds the battlefield via _apply_equip; refresh the local
+        # reference so callers see the attached permanent (mirrors Bloodthirst/Phasing).
+        perm = next((p for p in game_state.battlefield if p.id == perm.id), perm)
+
     return game_state, perm
 
 

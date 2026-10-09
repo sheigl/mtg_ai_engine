@@ -125,9 +125,29 @@ def begin_step(game_state: GameState) -> GameState:
     step = game_state.step
 
     if step == Step.UNTAP:
-        # REQ-T03: untap active player's permanents (pure transform via model_copy)
+        from mtg_engine.ability.keywords.phasing import phase_in as _phase_in
+        from mtg_engine.ability.keywords.phasing import phase_out as _phase_out
+        from mtg_engine.ability.keywords.phasing import (
+            _controller_has_phasing as _controller_has_phasing,
+        )
+
+        # US15 (Phasing, CR 702.26): capture which of the active player's phasing
+        # permanents are phased out at step start — these will phase back in this
+        # untap step and must be protected from immediate re-phase-out at the end.
+        pre_phase_ids = set(game_state.phased_out_permanents.keys())
+
+        # US15 (Phasing, CR 702.26): phase IN any permanents this controller
+        # phased out last turn — at the START of the untap step, before untapping.
+        # Gated on there being anything phased out so no-phasing games are unchanged.
+        if pre_phase_ids:
+            gs = _phase_in(game_state, game_state.active_player)
+        else:
+            gs = game_state
+
+        # REQ-T03: untap active player's permanents (pure transform via model_copy).
+        # Operate on the post-phase-in `gs` so returning permanents are untapped too.
         new_battlefield = []
-        for perm in game_state.battlefield:
+        for perm in gs.battlefield:
             if perm.controller == game_state.active_player:
                 new_perm = perm.model_copy(update={
                     "tapped": False,
@@ -139,14 +159,14 @@ def begin_step(game_state: GameState) -> GameState:
                 new_battlefield.append(perm)
 
         # Reset lands played this turn for active player (new PlayerState via model_copy)
-        active = get_player(game_state, game_state.active_player)
+        active = get_player(gs, game_state.active_player)
         new_active = active.model_copy(update={"lands_played_this_turn": 0})
         new_players = [
             new_active if p.name == game_state.active_player else p
-            for p in game_state.players
+            for p in gs.players
         ]
 
-        gs = game_state.model_copy(update={
+        gs = gs.model_copy(update={
             "battlefield": new_battlefield,
             "players": new_players,
         })
@@ -160,6 +180,16 @@ def begin_step(game_state: GameState) -> GameState:
             if gs.is_day != prev_is_day:
                 from mtg_engine.engine.triggers import check_day_night_change_triggers
                 gs = check_day_night_change_triggers(gs)
+
+        # US15 (Phasing, CR 702.26): phase OUT this controller's phasing permanents
+        # at the END of the untap step. Pass pre_phase_ids so permanents that just
+        # phased back in this turn are NOT immediately re-phased-out (CR 702.26
+        # ordering: phase-in at start, phase-out at end — a returning permanent
+        # survives the whole turn). Gated on there being anything phased out OR any
+        # phasing permanent owned by the active player so no-phasing games are
+        # byte-identical to before.
+        if pre_phase_ids or _controller_has_phasing(gs, game_state.active_player):
+            gs = _phase_out(gs, game_state.active_player, skip_ids=pre_phase_ids)
 
         # No priority in untap step; mana pools don't need clearing
         return gs

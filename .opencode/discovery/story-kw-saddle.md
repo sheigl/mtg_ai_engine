@@ -1,39 +1,41 @@
-# Story: Saddle (CR 702.XX — Outlaws of Thunder Junction)
+# Story: Saddle (rulebook keyword, no CR number yet)
 
 ## User Story
-As an MTG engine developer, I want a new saddle keyword module with real apply() and integration tests, so that Mount cards with saddle N work correctly in the engine.
+As a player, I want to cast cards with the Saddle ability ("Saddle — This enters the battlefield attached to target creature you control, as an Equipment would") so that Bloomburrow (2025) non-Equipment saddled cards attach to my creatures on resolution instead of entering unattached and no-op'ing.
 
 ## Context
-No file exists for saddle. A new module must be created following the KeywordAbility pattern in `base.py`, with detection from oracle text and real apply() logic.
+Saddle is a keyword introduced in *Bloomburrow* (BLI, 2025). It behaves **like Equipment attachment but triggers at enter-the-battlefield rather than via an activated Equip ability**: when the saddled spell resolves, the permanent enters the battlefield already attached to target creature you control.
 
-### Comprehensive Rules Grounding
-- **CR 702.XX**: "Saddle is an activated ability. 'Saddle N' means 'Tap any number of other untapped creatures you control with total power N or greater: This permanent becomes saddled until end of turn. Saddle only as a sorcery.'"
-- **Rule source**: Activated ability on Mounts/Vehicles that requires tapping other creatures
-- **Example card**: Llanowar Knight — "Saddle 2 (Tap any number of other untapped creatures you control with total power 2 or greater: This Mount becomes saddled until end of turn. Saddle only as a sorcery.)"
+The engine already has mature attachment infrastructure:
+- `Permanent.attached_to` / `Permanent.attachments` (models/game.py).
+- `_apply_equip()` in stack.py — attaches a permanent to a creature and fires attach triggers (CR 702.5), pure transform.
+- SBA detach logic in sba.py for Equipment/Auras.
+
+Saddle should reuse this: at ETB, detect the Saddle keyword, queue a pending choice for the human to pick the target creature (or AI auto-picks highest-power creature), then call `_apply_equip`-style attachment + attach triggers. The main wiring gap is `zones.py put_permanent_onto_battlefield()` — it currently does NOT detect Saddle and attach at ETB; that's where Saddle must hook so the permanent enters attached rather than loose on the battlefield.
+
+`saddle` IS already in the parser keyword list, unlike Modulate/Prototype.
 
 ## Acceptance Criteria
-- [ ] New module at `mtg_engine/ability/keywords/saddle.py` with `Saddle` class extending `KeywordAbility`
-- [ ] `parse_saddle(oracle_text) -> int | None` detects saddle N threshold
-- [ ] `apply()` checks if the player can tap creatures with total power >= N (other than this creature)
-- [ ] `is_saddled(game_state, permanent_id) -> bool` query helper
-- [ ] For human players: queues `pending_saddle_choice` with eligible creature selections
-- [ ] For AI players: auto-resolves (taps the minimum number of creatures to meet threshold)
-- [ ] Mount becomes "saddled until end of turn" — tracked via `saddled: bool` on Permanent
-- [ ] Sorcery speed restriction
-- [ ] Pure transform: returns new `GameState` via `model_copy(update={...})`, never mutates directly
-- [ ] Integration tests cover: basic saddle 2, saddle with tapped creatures (can't use), saddle at sorcery speed, saddled until end of turn, mount effects that require saddled, multiple saddles in one turn, creature dies mid-resolution
-- [ ] No regressions in existing test suite
+- [ ] Create `mtg_engine/ability/keywords/saddle.py` with `SaddleKeyword(CostKeyword)` class (see plan for base-class choice).
+- [ ] Detection via regex `\bsaddle\b` in oracle text; `from_oracle_text()` / `has_saddle()` helpers.
+- [ ] `SaddleKeyword.apply(game_state, permanent)`: when the spell resolves, the permanent enters attached to target creature the controller controls (like Equipment attachment at ETB).
+- [ ] Reuses existing attachment infrastructure (`perm.attached_to = target_perm_id`, host's `attachments` list updated) and fires attach triggers — same as Equip but triggered at ETB.
+- [ ] Queues `pending_saddle_choice` for human players with valid target list; AI auto-resolves by targeting highest-power creature.
+- [ ] Pure transform: returns new GameState via `model_copy` with the saddle permanent attached to its target; no-op paths return SAME object.
+- [ ] Integration tests in `tests/engine/test_saddle_integration.py` (8–15): detection, human choice queuing, AI auto-resolution, enters attached to creature, attachment state correct (`attached_to`, host `attachments`).
+
+## Technical Plan
+**Plan file**: `plans/story-kw-saddle-plan.md`
 
 ## Dependencies
-- Story guidelines at STORY-GUIDELINES.md
+- Depends on **zones.py `put_permanent_onto_battlefield()`** gaining Saddle detection at ETB (cross-cutting — see plan). This is the one hard external dependency.
+- Reuses `_apply_equip` / attachment infra in stack.py — no new infra, just reuse.
+- No dependency on Phasing/Modulate/Prototype.
 
-## Priority: Medium
+## Priority: High
 
-## Estimated Effort: M
-
-## Notes
-- Similar to Crew (Vehicles) but with a power threshold and works on Mounts
-- The "saddled" status lasts until end of turn (regardless of whether the tapper creatures are still tapped)
-- Mounts have abilities that reference "whenever this Mount attacks while saddled, ..."
-- Outlaws of Thunder Junction mechanic
-- The creature used to saddle cannot be the Mount itself
+## Notes / CR Gaps
+- **No Comprehensive Rules number exists for Saddle** as of this writing (spec's "CR 702.XX" is genuine; Bloomburrow is brand new). Implement to the official oracle wording in the spec; flag that a CR number may be assigned later.
+- Distinction from Equip: Saddle attaches at ETB (no activated ability, no mana cost, sorcery-speed tap); Equip is an activated ability. Don't conflate — Saddle should NOT require sorcery-speed timing or tap; it's part of the spell resolving.
+- Edge case: no legal target creature on battlefield when the saddled spell resolves → the permanent enters attached to nothing (loose on battlefield), i.e. attachment simply doesn't happen; handle as graceful no-op attachment, not a failure.
+- Saddle permanents should still detach cleanly via existing SBA logic when their host leaves (reuse Equipment/Aura detach). Confirm in plan.

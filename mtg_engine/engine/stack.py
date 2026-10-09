@@ -424,6 +424,16 @@ def cast_spell(
         if "human" in target_perm.card.type_line.lower():
             raise ValueError(f"Cannot mutate onto Human creature {target_perm.card.name!r}")
 
+    # US15 (Phasing, CR 702.26a): a phased-out permanent is treated as though it
+    # doesn't exist, so it can never be chosen as a target. Reject the cast at
+    # runtime rather than letting the spell resolve against a non-existent object.
+    from mtg_engine.ability.keywords.phasing import is_phased_out as _is_phased_out
+    for t in targets or []:
+        if _is_phased_out(game_state, t):
+            raise ValueError(
+                f"{card.name} targets a phased-out permanent ({t!r})"
+            )
+
     stack_obj = StackObject(
         id=str(uuid.uuid4()),
         source_card=card,
@@ -456,9 +466,14 @@ def cast_spell(
     # Wire: Becomes Target Trigger (CR 109.3) — fire for each permanent target
     if targets:
         from mtg_engine.engine.triggers import check_becomes_target_triggers as _check_becomes_target
+        from mtg_engine.ability.keywords.phasing import is_phased_out as _is_phased_out
         for t in targets:
             # Only fire for targets that are permanent IDs on battlefield
             target_perm = next((p for p in game_state.battlefield if p.id == t), None)
+            # US15 (Phasing, CR 702.26): a phased-out permanent is treated as though
+            # it doesn't exist — no becomes-target / ward triggers fire for it.
+            if target_perm is not None and _is_phased_out(game_state, t):
+                continue
             if target_perm is not None:
                 game_state = _check_becomes_target(game_state, t)
                 # Ward (CR 702.145): an opponent targeting a permanent with ward

@@ -2271,6 +2271,17 @@ def submit_choice(game_id: str, req: ChoiceRequest) -> dict:
             gs = resolve_equip_choice(gs, player_name, req.selection)
             mgr.update(game_id, gs)
 
+    elif choice_id == "saddle_confirm":
+        # Saddle (BLI 2025): Human resolves a pending ETB attachment by attaching the
+        # saddle permanent to one of the eligible creatures it controls (req.selection
+        # is the chosen creature id; otherwise the choice is cleared without attaching).
+        # No sorcery-speed tap / mana cost — Saddle attaches as part of spell resolution.
+        if gs.pending_saddle_choice:
+            player_name = gs.pending_saddle_choice.get("player", gs.priority_holder)
+            from mtg_engine.ability.keywords.saddle import resolve_saddle_choice
+            gs = resolve_saddle_choice(gs, "saddle_confirm", req.selection)
+            mgr.update(game_id, gs)
+
     elif choice_id == "cycling":
         # CR 702.36 / 702.46: Human resolves a pending Cycling / Type cycling
         # choice by paying the cost (from mana pool), discarding the card from hand
@@ -3156,6 +3167,24 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
             actions.append(LegalAction(action_type="pass", description="Pass priority"))
         return actions
 
+    # Saddle (BLI 2025) choice pending for the priority holder — a saddled permanent
+    # entered the battlefield and is awaiting attachment to a creature it controls.
+    # Unlike Equip there is NO sorcery-speed gate, no tap, and no mana cost: Saddle
+    # attaches as part of spell resolution, not an activated ability. Offer the
+    # saddle_confirm resolution (and pass) so the human can pick a target or decline.
+    if gs.pending_saddle_choice and gs.pending_saddle_choice.get("player") == player_name:
+        saddle = gs.pending_saddle_choice
+        card_name = saddle.get("card_name", "that card")
+        actions.append(LegalAction(
+            action_type="choice",
+            card_name="saddle_confirm",
+            description=f"Saddle {card_name} (attach to a creature you control)",
+            valid_targets=list(saddle.get("available_creatures", [])),
+        ))
+        if not any(a.action_type == "pass" for a in actions):
+            actions.append(LegalAction(action_type="pass", description="Pass priority"))
+        return actions
+
     # CR 702.36 / 702.46: Cycling / Type cycling choice pending for the priority
     # holder — offer the "cycling" action, gated to sorcery timing (same style as
     # Equip: activate any time you could cast a sorcery). The pending choice is
@@ -3730,6 +3759,11 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
 
     def _is_targetable(perm: "Permanent", targeting_player: str, spell_card: "Card") -> bool:
         """Return False if perm cannot be targeted by spell_card cast by targeting_player."""
+        # US15 (Phasing, CR 702.26a): a phased-out permanent is treated as though it
+        # doesn't exist — it can never be chosen as a target. Checked first so the
+        # aura/pump/removal/burn spell-target comprehensions all exclude it.
+        if getattr(perm, "phased_out", False):
+            return False
         kws = [k.lower() for k in (perm.card.keywords or [])]
         oracle = (perm.card.oracle_text or "").lower()
         # Shroud: untargetable by anyone
@@ -4067,6 +4101,10 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
             for perm in gs.battlefield:
                 if perm.controller != player_name:
                     continue
+                # US15 (Phasing, CR 702.26a): a phased-out permanent doesn't exist —
+                # it can't be a mutate target.
+                if getattr(perm, "phased_out", False):
+                    continue
                 if "creature" not in perm.card.type_line.lower():
                     continue
                 if "human" in perm.card.type_line.lower():
@@ -4300,6 +4338,8 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
                 and not p.tapped
                 and (not p.summoning_sick or "haste" in p.card.keywords)
                 and "defender" not in p.card.keywords
+                # US15 (Phasing, CR 702.26a): a phased-out permanent can't attack.
+                and not getattr(p, "phased_out", False)
             ):
                 continue
             # Check attack constraints
@@ -4406,6 +4446,8 @@ def _compute_legal_actions(gs: GameState) -> list[LegalAction]:
             if p.controller == player_name
             and "creature" in p.card.type_line.lower()
             and not p.tapped
+            # US15 (Phasing, CR 702.26a): a phased-out permanent can't block.
+            and not getattr(p, "phased_out", False)
             and p.id not in cannot_block_ids
             and p.id not in goaded_ids
             and _blocker_can_block_any(p)

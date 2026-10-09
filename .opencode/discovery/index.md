@@ -266,7 +266,18 @@ See **[FORGE-GAP-ANALYSIS.md](FORGE-GAP-ANALYSIS.md)** for the complete comparis
 
 | # | Story | File | Priority | Dependencies | Status |
 |---|-------|------|----------|--------------|--------|
-| 7-7 | Phasing, Modulate, Saddle, Prototype new modules + tests | SPRINT7-P1-modern-keywords.md | High | none | ⏳ |
+| 7-7 | Phasing, Modulate, Saddle, Prototype new modules + tests | SPRINT7-P1-modern-keywords.md | High | none | 🔄 in progress — sub-stories below (discovery complete) |
+
+#### 7-7: Modern Keyword Sub-Stories (discovery complete; plans authored)
+
+| # | Story | File | Plan | Priority | Dependencies | Status |
+|---|-------|------|------|----------|--------------|--------|
+| 7-7a | Phasing (CR 702.26) — end-of-untap phase out/in, phased-out treated as nonexistent | story-kw-phasing.md | plans/story-kw-phasing-plan.md | High | none (turn_manager UNTAP hook is the one external dep) | 📋 ready to implement |
+| 7-7b | Saddle (BLI 2025, no CR yet) — ETB attaches like Equipment, reuses `_apply_equip` infra | story-kw-saddle.md | plans/story-kw-saddle-plan.md | High | none (zones.py put_permanent_onto_battlefield is the one external dep) | 📋 ready to implement |
+| 7-7c | Modulate (MOM 2023, no CR yet) — exile creature, create X/X artifact-creature token copy | story-kw-modulate.md | plans/story-kw-modulate-plan.md | High | none (token-copy extension is the one external dep) | 📋 ready to implement |
+| 7-7d | Prototype (BLI 2025, no CR yet) — alternative cost: exile artifact from graveyard, enter as copy w/o mana cost | story-kw-prototype.md | plans/story-kw-prototype-plan.md | High | none (stack.py cast_spell interception is the one external dep) | 📋 ready to implement |
+
+**Recommended implementation order:** 7-7a Phasing first (safest, most rules-defined; isolated turn_manager hook), then 7-7b Saddle (most infra reuse via `_apply_equip`), then 7-7c Modulate and 7-7d Prototype in parallel (both self-contained). Each adds one new `pending_*_choice` GameState field and its own integration test file; no cross-dependencies between the four.
 
 ### P2: Common Modern Mechanics (NEW)
 

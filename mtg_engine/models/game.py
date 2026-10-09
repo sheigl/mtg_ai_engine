@@ -492,6 +492,13 @@ class GameState(BaseModel):
     #         "card_name": str, "equipment_cost": str,
     #         "available_creatures": list[str], "resolved": bool}
     pending_equip_choice: Optional[dict] = None
+    # Saddle (BLI 2025): pending ETB attachment choice for human players. Queued by
+    # SaddleKeyword at enter-the-battlefield WITHOUT attaching; the human later picks
+    # which creature to attach to via the "saddle_confirm" choice handler (mirrors the
+    # pending_equip_choice / equip pattern). Format: {"player": str, "card_id": str,
+    #         "permanent_id": str, "card_name": str, "available_creatures": list[str],
+    #         "resolved": bool}
+    pending_saddle_choice: Optional[dict] = None
     # KW-Cycle: Cycling / Type cycling (CR 702.36, CR 702.46) pending choice for
     # human players. Queued by CyclingKeyword.apply() / TypeCyclingKeyword.apply()
     # WITHOUT discarding/drawing; the human later resolves it via the "cycling"
@@ -519,6 +526,16 @@ class GameState(BaseModel):
     draw_replacements: list = Field(default_factory=list)
     # REP-03: Duration-tracked effects
     duration_effects: list[DurationEffect] = Field(default_factory=list)
+    # US15 (Phasing, CR 702.26): perm_id -> controller_name for every permanent
+    # currently phased out. Drives the start-of-untap phase-in and end-of-untap
+    # phase-out in turn_manager.py begin_step() UNTAP branch. Only populated when
+    # a phasing permanent has actually phased out, so games that never use phasing
+    # stay byte-identical (the hook is gated on this being non-empty).
+    phased_out_permanents: dict[str, str] = Field(default_factory=dict)
+    # US15 (Phasing): perm_id -> turn number on which it last phased out. Recorded
+    # for return-timing clarity; the phase-in/phase-out flow is driven by controller
+    # ownership via phased_out_permanents instead.
+    phased_out_turns: dict[str, int] = Field(default_factory=dict)
 
     def compute_hash(self) -> str:
         """Compute deterministic hash of state, excluding state_hash itself. REQ-API05"""
